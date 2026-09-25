@@ -1,0 +1,18 @@
+# built binaries
+/stone-llama
+/bin/
+/dist/
+
+# model data, downloads, runtime (never in git)
+/models/
+/downloads/
+/runtime/
+*.part
+
+# logs
+/logs/
+*.log
+
+# editor/OS noise
+*.swp
+.DS_Store
