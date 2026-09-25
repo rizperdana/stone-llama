@@ -67,8 +67,8 @@ curl http://127.0.0.1:5111/v1/chat/completions -d '{
 | `stone-llama list` | models with size, quant, gate verdict, source | ✅ shipped |
 | `stone-llama import <dir> --name <n>` | symlink an existing model dir in (zero copy) | ✅ shipped |
 | `stone-llama rm <model>` | remove a model (import symlinks: link only, target untouched) | ✅ shipped |
-| `stone-llama pull <model>[:tag]` | pre-download gate → consent → resumable download + sha256 verify | 🚧 M2 |
-| `stone-llama login` | HuggingFace token for gated repos (stored 0600) | 🚧 M2 |
+| `stone-llama pull <model>[:tag]` | pre-download gate → consent → resumable download + sha256 verify | ✅ shipped |
+| `stone-llama login` | HuggingFace token for gated repos (stored 0600) | ✅ shipped |
 | `stone-llama setup` | provision the pinned Python runtime (consent-gated, resumable) | 🚧 M4 |
 | `stone-llama serve` | daemon: OpenAI-compatible proxy over supervised TabbyAPI | 🚧 M5 |
 | `stone-llama ps` | loaded model + live VRAM | 🚧 M5 |

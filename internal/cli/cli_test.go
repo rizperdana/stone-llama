@@ -10,7 +10,7 @@ import (
 
 func run(args ...string) (int, string, string) {
 	var out, errb bytes.Buffer
-	code := Run(args, "v9.9.9", &out, &errb)
+	code := Run(args, "v9.9.9", bytes.NewReader(nil), &out, &errb)
 	return code, out.String(), errb.String()
 }
 
@@ -31,9 +31,9 @@ func TestBareAndHelpPrintUsage(t *testing.T) {
 }
 
 func TestPlannedCommandNamesMilestone(t *testing.T) {
-	code, _, errOut := run("pull")
-	if code != 2 || !strings.Contains(errOut, "M2") {
-		t.Errorf("code/err = %d/%q, want 2/mentions M2", code, errOut)
+	code, _, errOut := run("setup")
+	if code != 2 || !strings.Contains(errOut, "M4") {
+		t.Errorf("code/err = %d/%q, want 2/mentions M4", code, errOut)
 	}
 }
 
@@ -158,5 +158,75 @@ func TestImportRequiresName(t *testing.T) {
 	code, _, errOut := run("import", "/tmp/whatever")
 	if code != 2 || !strings.Contains(errOut, "--name") {
 		t.Errorf("code/err = %d/%q", code, errOut)
+	}
+}
+
+func runIn(stdin string, args ...string) (int, string, string) {
+	var out, errb bytes.Buffer
+	code := Run(args, "v9.9.9", strings.NewReader(stdin), &out, &errb)
+	return code, out.String(), errb.String()
+}
+
+func TestPullUsageWithoutRef(t *testing.T) {
+	code, _, errOut := run("pull")
+	if code != 2 || !strings.Contains(errOut, "usage: stone-llama pull") {
+		t.Errorf("code/err = %d/%q", code, errOut)
+	}
+}
+
+func TestPullRequiresNVIDIAGPU(t *testing.T) {
+	t.Setenv("PATH", "") // no nvidia-smi → doctor not ready
+	code, out, errOut := run("pull", "org/model")
+	if code != 1 {
+		t.Errorf("code = %d, want 1", code)
+	}
+	if !strings.Contains(out, "NVIDIA GPU") {
+		t.Errorf("doctor report not shown:\n%s", out)
+	}
+	if !strings.Contains(errOut, "needs a working NVIDIA GPU") {
+		t.Errorf("err = %q", errOut)
+	}
+}
+
+func TestLoginWritesTokenFile0600(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	code, out, errOut := runIn("hf_abcdef123456\n", "login")
+	if code != 0 {
+		t.Fatalf("code = %d, err = %q", code, errOut)
+	}
+	path := filepath.Join(os.Getenv("XDG_DATA_HOME"), "stone-llama", "hf_token")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "hf_abcdef123456" {
+		t.Errorf("file content = %q", data)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", st.Mode().Perm())
+	}
+	if !strings.Contains(out, "token saved") {
+		t.Errorf("out = %q", out)
+	}
+	if strings.Contains(out+errOut, "hf_abcdef123456") {
+		t.Error("token must never be echoed to any output stream")
+	}
+}
+
+func TestLoginRejectsBadTokenAndArgs(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	code, _, errOut := runIn("not-a-token\n", "login")
+	if code != 1 || !strings.Contains(errOut, "doesn't look like") {
+		t.Errorf("code/err = %d/%q", code, errOut)
+	}
+	code, _, errOut = run("login", "extra-arg")
+	if code != 2 || !strings.Contains(errOut, "never argv") {
+		t.Errorf("args accepted: %d/%q", code, errOut)
 	}
 }

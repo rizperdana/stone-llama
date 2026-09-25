@@ -23,6 +23,13 @@ type Verdict struct {
 	Note      string `json:"note,omitempty"`
 }
 
+// Verdict status values.
+const (
+	VerdictOK     = "fit"
+	VerdictWarn   = "warn"
+	VerdictRefuse = "refuse"
+)
+
 // Manifest is the pull provenance + integrity record stored as
 // manifest.json inside a model directory. Directories without one are
 // listed as imported/unmanaged.
