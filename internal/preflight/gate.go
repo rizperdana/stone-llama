@@ -145,7 +145,7 @@ func fitStatus(res autofit.Result) string {
 	switch {
 	case !res.Fits:
 		return StatusRefuse
-	case res.Reduced:
+	case res.Reduced || res.Warning != "":
 		return StatusWarn
 	default:
 		return StatusOK

@@ -97,20 +97,27 @@ func TestParseTextConfigNested(t *testing.T) {
 	}
 }
 
-func TestFitRealSmolLM3DefaultQ4At65536(t *testing.T) {
+func TestFitRealSmolLM3DefaultQ4At32768(t *testing.T) {
 	res, err := Fit(realSpec(t), smolWeights, 4096, smolOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Fits || res.Ctx != 65536 || res.Mode != "Q4" || res.Reduced || res.Clamped {
-		t.Fatalf("result = %+v, want Q4@65536 fit", res)
+	// Prefill-evidence rule: 65536/Q4 (3146 load + 1536 headroom = 4682 >
+	// 4096) is refused; the ladder halves and lands Q4@32768 with room for
+	// a cold prefill workspace — and the still-thin margin is called out.
+	if !res.Fits || res.Ctx != 32768 || res.Mode != "Q4" || !res.Reduced || res.Clamped {
+		t.Fatalf("result = %+v, want reduced Q4@32768 fit", res)
 	}
-	if res.WeightsMiB != 1866 || res.KVMiB != 1152 || res.BudgetMiB != 3584 {
-		t.Errorf("weights/kv/budget = %d/%d/%d, want 1866/1152/3584", res.WeightsMiB, res.KVMiB, res.BudgetMiB)
+	if res.WeightsMiB != 1866 || res.KVMiB != 576 || res.BudgetMiB != 2816 || res.HeadroomMiB != 1280 {
+		t.Errorf("weights/kv/budget/headroom = %d/%d/%d/%d, want 1866/576/2816/1280",
+			res.WeightsMiB, res.KVMiB, res.BudgetMiB, res.HeadroomMiB)
+	}
+	if !strings.Contains(res.Warning, "drop --ctx") {
+		t.Errorf("Warning = %q, want drop --ctx guidance", res.Warning)
 	}
 	sum := res.Summary()
-	if !strings.Contains(sum, "3146") || !strings.Contains(sum, "3584") {
-		t.Errorf("Summary = %q, want 3146/3584", sum)
+	if !strings.Contains(sum, "2570") || !strings.Contains(sum, "2816") {
+		t.Errorf("Summary = %q, want 2570/2816", sum)
 	}
 }
 
@@ -129,14 +136,14 @@ func TestFitPrefersFP16WhenItFits(t *testing.T) {
 }
 
 func TestFitReducesCtxBeforeQuality(t *testing.T) {
-	// 2600 MiB weights: Q4@65536 (3880) and Q8@32768 (3880) both bust the
-	// 3584 budget → Q4@32768 (3304) is the first fit.
+	// 2600 MiB weights: every mode at 65536/32768/16384 busts the
+	// headroom-aware budgets → Q4@8192 (2872 ≤ 3008) is the first fit.
 	res, err := Fit(realSpec(t), 2600<<20, 4096, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Fits || res.Ctx != 32768 || res.Mode != "Q4" || !res.Reduced {
-		t.Errorf("result = %+v, want reduced Q4@32768", res)
+	if !res.Fits || res.Ctx != 8192 || res.Mode != "Q4" || !res.Reduced {
+		t.Errorf("result = %+v, want reduced Q4@8192", res)
 	}
 }
 
@@ -148,10 +155,12 @@ func TestFitRefusalCarriesFullArithmetic(t *testing.T) {
 	if res.Fits {
 		t.Fatal("3400 MiB weights must not fit")
 	}
-	if res.LargestCtx != 3072 {
-		t.Errorf("LargestCtx = %d, want 3072", res.LargestCtx)
+	// The prefill workspace lives in the headroom, so even the 4096 floor
+	// refuses — and the largest-fitting-ctx answer is honestly "none".
+	if res.LargestCtx != 0 {
+		t.Errorf("LargestCtx = %d, want 0", res.LargestCtx)
 	}
-	for _, want := range []string{"weights 3400", "= 3600 MiB > 3584 MiB", "largest ctx that would fit: 3072 (Q4)"} {
+	for _, want := range []string{"weights 3400", "= 3600 MiB > 3040 MiB", "prefill workspace [est]"} {
 		if !strings.Contains(res.Reason, want) {
 			t.Errorf("Reason missing %q:\n%s", want, res.Reason)
 		}
@@ -163,18 +172,19 @@ func TestFitUserCtxAboveTrainedMaxClamps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Clamped || res.Ctx != 65536 {
-		t.Errorf("Clamped/Ctx = %v/%d, want true/65536", res.Clamped, res.Ctx)
+	if !res.Clamped || res.Ctx > 65536 {
+		t.Errorf("Clamped/Ctx = %v/%d, want clamped and ≤ 65536", res.Clamped, res.Ctx)
 	}
 }
-
 func TestFitUserCtxAlignedTo256(t *testing.T) {
 	res, err := Fit(realSpec(t), smolWeights, 4096, Options{UserCtx: 50000})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Ctx != 49920 || res.Mode != "Q4" {
-		t.Errorf("Ctx/Mode = %d/%s, want 49920/Q4", res.Ctx, res.Mode)
+	// 50000 → 49920 (256-aligned); at 49920 no mode fits under the prefill
+	// headroom, so the ladder halves to the 256-aligned 24832 tier.
+	if res.Ctx != 24832 || res.Mode != "Q8" {
+		t.Errorf("Ctx/Mode = %d/%s, want 24832/Q8", res.Ctx, res.Mode)
 	}
 }
 
@@ -192,10 +202,10 @@ func TestFitForceModeBypassesLadder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Fits || res.Ctx != 0 || res.LargestCtx != 22528 {
-		t.Errorf("result = %+v, want no-fit with LargestCtx 22528", res)
+	if res.Fits || res.Ctx != 0 || res.LargestCtx != 13568 {
+		t.Errorf("result = %+v, want no-fit with LargestCtx 13568", res)
 	}
-	if !strings.Contains(res.Reason, "largest ctx that would fit: 22528 (FP16)") {
+	if !strings.Contains(res.Reason, "largest ctx that would fit: 13568 (FP16)") {
 		t.Errorf("Reason = %s", res.Reason)
 	}
 

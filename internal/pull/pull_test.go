@@ -208,6 +208,9 @@ func TestPullHappyPath(t *testing.T) {
 	seedTiny(f)
 	models := t.TempDir()
 	opts := baseOpts(srv, models)
+	// Roomy VRAM so the gate's verdict is a clean OK at the trained max —
+	// on a tight card the prefill margin correctly downgrades it to warn.
+	opts.VRAMMiB = 8192
 
 	res, err := Run(opts)
 	if err != nil {

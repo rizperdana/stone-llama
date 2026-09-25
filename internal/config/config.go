@@ -13,10 +13,12 @@ import (
 )
 
 type Autofit struct {
-	Enabled     bool `json:"enabled"`
-	HeadroomMiB int  `json:"headroom_mib"`
-	OverheadMiB int  `json:"overhead_mib"`
-	MinCtx      int  `json:"min_ctx"`
+	Enabled        bool `json:"enabled"`
+	HeadroomMiB    int  `json:"headroom_mib"`     // base fragmentation headroom
+	WorkspaceMiB   int  `json:"workspace_mib"`    // cold prefill workspace reserve [est]
+	CtxHeadroomMiB int  `json:"ctx_headroom_mib"` // extra headroom at 65536 ctx, linear [est]
+	OverheadMiB    int  `json:"overhead_mib"`
+	MinCtx         int  `json:"min_ctx"`
 }
 
 type Config struct {
@@ -35,10 +37,12 @@ func Default() Config {
 		Host:      "127.0.0.1",
 		Port:      5111,
 		Autofit: Autofit{
-			Enabled:     true,
-			HeadroomMiB: 512,
-			OverheadMiB: 128,
-			MinCtx:      4096,
+			Enabled:        true,
+			HeadroomMiB:    512,
+			WorkspaceMiB:   512,
+			CtxHeadroomMiB: 512,
+			OverheadMiB:    128,
+			MinCtx:         4096,
 		},
 	}
 }

@@ -2,9 +2,21 @@
 // a model's config.json plus the GPU's total VRAM. This is the only place
 // the KV-cache arithmetic exists (ARCHITECTURE.md §5):
 //
-//	elems/token = layers × 2 × kv_heads × head_dim
-//	load        = weights + ctx × elems/token × bytes/element + overhead
-//	fits        ⟺ load ≤ vram_total − headroom
+//	elems/token   = layers × 2 × kv_heads × head_dim
+//	load          = weights + ctx × elems/token × bytes/element + overhead
+//	headroom(ctx) = base + prefill workspace [est] + ctx margin [est]
+//	fits          ⟺ load ≤ vram_total − headroom(ctx)
+//
+// The two [est] terms come from live prefill evidence (2026-09-26, measured
+// in attach mode against a running TabbyAPI on a used 4 GB card): CUDA OOM
+// happens during PREFILL, in a cold hgemm/cublas workspace allocated before
+// the first token is produced (max_tokens=1 does not avoid it), and a
+// ~2.5k-token agent prompt OOMs on a used card under a config that reads as
+// "fit" at idle — sustained to ~1,282 prompt tokens, intermittent around
+// ~1,780, consistent OOM at ~2,500+, while a 60k-token prompt had worked
+// earlier from a clean card (capacity + fragmentation, not generation).
+// Both terms are tunable (autofit.workspace_mib / autofit.ctx_headroom_mib)
+// and should be replaced by measurements when someone can produce them.
 //
 // Bytes per element: FP16 = 2, Q8 = 1, Q6 = 0.75, Q4 = 0.5, Q2 = 0.25;
 // a "k,v" pair averages to (k+v)/16.
@@ -19,6 +31,12 @@ import (
 )
 
 const mib = 1 << 20
+
+// thinMarginMiB: an accepted config with less than this above its full
+// headroom is "thin" — it fits at idle but leaves the prefill workspace no
+// slack on a used card, so it prints a warning (drop --ctx if prompts OOM
+// before the first token).
+const thinMarginMiB = 512
 
 // Spec is everything the fit math needs from a HF config.json.
 type Spec struct {
@@ -108,11 +126,13 @@ func kvLayers(total int, layerTypes []string) int {
 // Options are the config knobs (ARCHITECTURE.md §5/§7). Zero values take
 // the approved defaults.
 type Options struct {
-	HeadroomMiB int    // default 512
-	OverheadMiB int    // default 128 (measured fixed overhead)
-	MinCtx      int    // default 4096 (ladder floor)
-	UserCtx     int    // 0 → trained max; above trained max is clamped (Q3a)
-	ForceMode   string // non-empty → bypass the ladder entirely (Q3b)
+	HeadroomMiB    int    // base fragmentation headroom; default 512
+	WorkspaceMiB   int    // cold prefill workspace reserve [est]; default 512
+	CtxHeadroomMiB int    // extra headroom at 65536 ctx, linear in ctx [est]; default 512
+	OverheadMiB    int    // default 128 (measured fixed overhead)
+	MinCtx         int    // default 4096 (ladder floor)
+	UserCtx        int    // 0 → trained max; above trained max is clamped (Q3a)
+	ForceMode      string // non-empty → bypass the ladder entirely (Q3b)
 }
 
 // Result is the autofit decision plus the arithmetic behind it.
@@ -122,11 +142,13 @@ type Result struct {
 	WeightsMiB  int
 	KVMiB       int
 	OverheadMiB int
-	BudgetMiB   int // vram_total − headroom
+	BudgetMiB   int // vram_total − headroom at the chosen ctx
+	HeadroomMiB int // base + prefill workspace + ctx margin at the chosen ctx
 	Fits        bool
-	Clamped     bool // UserCtx exceeded the trained max and was clamped (Q3a)
-	Reduced     bool // ladder lowered ctx below the target to make it fit
-	LargestCtx  int  // largest ctx that would fit at the effective mode, 256-aligned
+	Clamped     bool   // UserCtx exceeded the trained max and was clamped (Q3a)
+	Reduced     bool   // ladder lowered ctx below the target to make it fit
+	Warning     string // thin headroom: prefill may OOM on a used card; drop --ctx
+	LargestCtx  int    // largest ctx that would fit at the effective mode, 256-aligned
 	Reason      string
 	ElemsPerTok int64
 }
@@ -135,12 +157,27 @@ func (o *Options) fillDefaults() {
 	if o.HeadroomMiB <= 0 {
 		o.HeadroomMiB = 512
 	}
+	if o.WorkspaceMiB <= 0 {
+		o.WorkspaceMiB = 512
+	}
+	if o.CtxHeadroomMiB <= 0 {
+		o.CtxHeadroomMiB = 512
+	}
 	if o.OverheadMiB <= 0 {
 		o.OverheadMiB = 128
 	}
 	if o.MinCtx <= 0 {
 		o.MinCtx = 4096
 	}
+}
+
+// headroomFor is the space that must stay free above the load for a ctx:
+// base headroom + cold prefill workspace [est] + a margin that scales with
+// the on-card KV reservation [est] — a fuller card fragments worse, and an
+// agent session grows its KV toward ctx mid-run. At 65536 ctx the margin is
+// CtxHeadroomMiB; it halves with each ctx halving.
+func (o Options) headroomFor(ctx int) int {
+	return o.HeadroomMiB + o.WorkspaceMiB + o.CtxHeadroomMiB*ctx/65536
 }
 
 // Fit runs the ladder (or the forced override) against real numbers.
@@ -155,13 +192,10 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 	elems := int64(spec.Layers) * 2 * int64(spec.KVHeads) * int64(spec.HeadDim)
 	weightsB := float64(weightsBytes)
 	overheadB := float64(opts.OverheadMiB) * mib
-	budgetMiB := vramTotalMiB - opts.HeadroomMiB
-	budgetB := float64(budgetMiB) * mib
 
 	res := Result{
 		WeightsMiB:  int(math.Round(weightsB / mib)),
 		OverheadMiB: opts.OverheadMiB,
-		BudgetMiB:   budgetMiB,
 		ElemsPerTok: elems,
 	}
 
@@ -169,10 +203,23 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 		return float64(ctx) * float64(elems) * bpe
 	}
 	fits := func(ctx int, bpe float64) bool {
-		return weightsB+kvB(ctx, bpe)+overheadB <= budgetB
+		return weightsB+kvB(ctx, bpe)+overheadB <= float64(vramTotalMiB-opts.headroomFor(ctx))*mib
 	}
 	setKV := func(ctx int, bpe float64) {
 		res.KVMiB = int(math.Ceil(kvB(ctx, bpe) / mib))
+	}
+	// accept records the budget/headroom for a config that passed fits()
+	// and warns when the remaining margin is thin (see thinMarginMiB).
+	accept := func(ctx int) {
+		res.HeadroomMiB = opts.headroomFor(ctx)
+		res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
+		load := res.WeightsMiB + res.KVMiB + res.OverheadMiB
+		if slack := vramTotalMiB - load - res.HeadroomMiB; slack < thinMarginMiB {
+			res.Warning = fmt.Sprintf(
+				"only %d MiB margin above the %d MiB headroom (prefill workspace [est] included): "+
+					"multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx",
+				slack, res.HeadroomMiB)
+		}
 	}
 
 	// Target ctx — Q3a: never exceed the trained maximum.
@@ -198,8 +245,12 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 		res.Fits = fits(target, bpe)
 		if !res.Fits {
 			res.Ctx = 0
-			res.LargestCtx = largestCtx(elems, bpe, budgetB, weightsB, overheadB)
+			res.HeadroomMiB = opts.headroomFor(target)
+			res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
+			res.LargestCtx = largestCtx(elems, bpe, vramTotalMiB, res.WeightsMiB, res.OverheadMiB, opts)
 			res.Reason = refusalReason(res, opts, target, res.Mode)
+		} else {
+			accept(target)
 		}
 		return res, nil
 	}
@@ -221,6 +272,7 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 				setKV(ctx, m.bpe)
 				res.Fits = true
 				res.Reduced = ctx < target
+				accept(ctx)
 				return res, nil
 			}
 		}
@@ -238,17 +290,24 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 	}
 
 	// Nothing fits — arithmetic for the refusal message.
-	res.LargestCtx = largestCtx(elems, 0.5, budgetB, weightsB, overheadB)
+	res.HeadroomMiB = opts.headroomFor(floor)
+	res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
+	res.LargestCtx = largestCtx(elems, 0.5, vramTotalMiB, res.WeightsMiB, res.OverheadMiB, opts)
 	setKV(floor, 0.5)
 	res.Reason = refusalReason(res, opts, floor, "Q4")
 	return res, nil
 }
 
-// Summary is the always-printed projection line (Q3c).
+// Summary is the always-printed projection line (Q3c), plus the thin-headroom
+// warning when one applies.
 func (r Result) Summary() string {
-	return fmt.Sprintf("weights %d + KV %d + overhead %d = %d MiB (budget %d)",
+	s := fmt.Sprintf("weights %d + KV %d + overhead %d = %d MiB (headroom %d, budget %d)",
 		r.WeightsMiB, r.KVMiB, r.OverheadMiB,
-		r.WeightsMiB+r.KVMiB+r.OverheadMiB, r.BudgetMiB)
+		r.WeightsMiB+r.KVMiB+r.OverheadMiB, r.HeadroomMiB, r.BudgetMiB)
+	if r.Warning != "" {
+		s += "\nwarning: " + r.Warning
+	}
+	return s
 }
 
 func refusalReason(res Result, opts Options, ctx int, modeLabel string) string {
@@ -257,19 +316,29 @@ func refusalReason(res Result, opts Options, ctx int, modeLabel string) string {
 	if res.LargestCtx > 0 {
 		largest = strconv.Itoa(res.LargestCtx) + " (" + modeLabel + ")"
 	}
+	blanket := res.HeadroomMiB - opts.HeadroomMiB - opts.WorkspaceMiB
+	if blanket < 0 {
+		blanket = 0
+	}
 	return fmt.Sprintf(
-		"no config fits: weights %d + KV (%s @ %d) %d + overhead %d = %d MiB > %d MiB budget (%d MiB VRAM − %d headroom)\n"+
+		"no config fits: weights %d + KV (%s @ %d) %d + overhead %d = %d MiB > %d MiB budget (%d MiB VRAM − %d headroom: %d base + %d prefill workspace [est] + %d ctx margin [est])\n"+
 			"largest ctx that would fit: %s",
 		res.WeightsMiB, modeLabel, ctx, res.KVMiB, res.OverheadMiB,
-		required, res.BudgetMiB, res.BudgetMiB+opts.HeadroomMiB, opts.HeadroomMiB, largest)
+		required, res.BudgetMiB, res.BudgetMiB+res.HeadroomMiB, res.HeadroomMiB,
+		opts.HeadroomMiB, opts.WorkspaceMiB, blanket, largest)
 }
 
-func largestCtx(elems int64, bpe, budgetB, weightsB, overheadB float64) int {
-	avail := budgetB - weightsB - overheadB
-	if avail <= 0 {
+// largestCtx solves load(ctx) + headroom(ctx) ≤ vram_total for ctx: the
+// per-token cost is the KV bytes plus the ctx margin's per-token share, so
+// the answer is smaller than the old headroom-free division (which ignored
+// the margin's growth with ctx). Always 256-aligned downward.
+func largestCtx(elems int64, bpe float64, vramTotalMiB, weightsMiB, overheadMiB int, opts Options) int {
+	availMiB := float64(vramTotalMiB - opts.HeadroomMiB - opts.WorkspaceMiB - weightsMiB - overheadMiB)
+	if availMiB <= 0 {
 		return 0
 	}
-	return align256(int(avail / (float64(elems) * bpe)))
+	perTokenMiB := float64(elems)*bpe/mib + float64(opts.CtxHeadroomMiB)/65536
+	return align256(int(availMiB / perTokenMiB))
 }
 
 func align256(n int) int {

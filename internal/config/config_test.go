@@ -43,6 +43,7 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("defaults host/port = %s:%d, want 127.0.0.1:5111", cfg.Host, cfg.Port)
 	}
 	if !cfg.Autofit.Enabled || cfg.Autofit.HeadroomMiB != 512 ||
+		cfg.Autofit.WorkspaceMiB != 512 || cfg.Autofit.CtxHeadroomMiB != 512 ||
 		cfg.Autofit.OverheadMiB != 128 || cfg.Autofit.MinCtx != 4096 {
 		t.Errorf("autofit defaults = %+v", cfg.Autofit)
 	}

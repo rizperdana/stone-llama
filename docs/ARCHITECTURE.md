@@ -21,7 +21,7 @@
 | Architecture support matrix | `/home/anon/ai/research/exllamav3-support.md` — built from installed `architecture/*.py` + upstream README + TabbyAPI templates (A5 source) |
 | GPU | RTX 3050 Laptop, **4096 MiB**, driver 580.178.04 |
 | Measured model | `SmolLM3-3B-exl3`: `model.safetensors` = 1,957,008,720 B (**1866 MiB**) |
-| Measured load | Q4 @ 65536 → **peak 3105 MiB** (1866 weights + 1152 KV + ≈ 87 overhead) |
+| Measured load | Q4 @ 65536 → **peak 3105 MiB** (1866 weights + 1152 KV + ≈ 87 overhead) — the *old* default; under A10's headroom it is refused and the ladder lands Q4@32768 |
 | KV arithmetic | `layers × 2 × kv_heads × head_dim` = 36 × 2 × 4 × 128 = **36,864 elems/token** → FP16 72 KiB, Q8 36 KiB, Q4 18 KiB per token; @65536: 4608 / 2304 / 1152 MiB. **Verified against `config.json`.** |
 | Go | go1.24.4 linux/amd64 installed |
 | `gh` | **active account `rizperdana`** (verified this session; two other logged-in accounts exist but are inactive — repo creation gated on this check per A8) |
@@ -48,7 +48,7 @@
 | Q11 track pinned upstream, never fork | **APPROVED** |
 | Q12 auto-start daemon + `STONE_LLAMA_NO_AUTOSTART=1` | **APPROVED** |
 
-New amendments A5–A8: §4 (A5 gate), §6 (A6 licensing + A7 setup preflight), §9 (A8 repo/delivery), §12 (G13–G16 with residual risk). **No further review round is required before M0/M1** (director instruction); remaining open points are listed in §13 with defaults.
+New amendments A5–A8, A10: §4 (A5 gate), §6 (A6 licensing + A7 setup preflight), §9 (A8 repo/delivery), §5 (A10 prefill workspace headroom), §12 (G13–G16 with residual risk). **No further review round is required before M0/M1** (director instruction); remaining open points are listed in §13 with defaults. (A9 = attach seam, lands with M5.)
 
 ---
 
@@ -146,10 +146,27 @@ elems/tok = num_hidden_layers × 2 × num_key_value_heads × head_dim  # 36×2×
 kv_bytes(ctx, mode) = ctx × elems/tok × {FP16: 2.0, Q8: 1.0, Q4: 0.5}
 weights_mib = Σ safetensors sizes / 2²⁰                          # 1866 for SmolLM3-3B-3.5bpw
 load_mib(mode, ctx) = weights_mib + kv/2²⁰ + 128                 # 128 = measured fixed overhead
-fit ⟺ load_mib ≤ vram_total_mib − 512                            # headroom (Q4-approved constants)
+headroom_mib(ctx) = 512 base + 512 prefill workspace [est] + 512 × ctx/65536 [est]   # A10
+fit ⟺ load_mib ≤ vram_total_mib − headroom_mib(ctx)
 ```
 
-Calibration: `1866 + 1152 + 128 = 3146 ≤ 3584` ✓ → Q4@65536 (known-good); FP16@65536 → 6602 ✗, Q8@65536 → 4298 ✗.
+Calibration: `1866 + 576 + 128 = 2570 ≤ 4096 − 1280 = 2816` ✓ → **Q4@32768**; 65536/Q4 is refused
+(`3146 + 1536 = 4682 > 4096`); at 32768 FP16 → 4298 ✗, Q8 → 3146 ✗.
+
+**A10 — prefill workspace (live evidence, 2026-09-26).** Every failure at ≥~1.8k prompt tokens on
+the live 4 GB stack was **CUDA OOM during prefill-workspace allocation** (`reconstruct_hgemm`,
+`cublasCreate`, `device_copy`) — the workspace is allocated *before* the first token exists, so
+`max_tokens=1` does not help. Sustained to ~1,282 prompt tokens, intermittent ~1,780, consistent
+OOM ≥~2,500 at ~20 MiB mean free VRAM; a 60,076-token prompt had succeeded earlier **from a clean
+card** → capacity + fragmentation that degrades after traffic, not a generation limit. Hence the
+ctx-scaled headroom: a fuller card fragments worse, and a live session grows its KV toward ctx.
+Both new terms are **[est]** until measured and tunable (`autofit.workspace_mib` = 512,
+`autofit.ctx_headroom_mib` = 512 @ 65536). Consequences: the SmolLM3 default moves 65536/Q4 →
+32768/Q4; configs with <512 MiB margin above the headroom print a warning (drop `--ctx` on
+prefill OOM); README frames large `max_seq_len` on 4 GB as a capacity trade — "safe context" =
+the ladder's default, "max context" = explicit `--ctx`, printed with the warning. Q3 ladder order
+and guard rails unchanged. Measured **in attach mode against the live TabbyAPI** (zero downloads,
+stack untouched) — which validates the A9 attach seam as the intended live-test seam.
 
 **Ladder (approved Q3 + guard rails):**
 
@@ -166,9 +183,10 @@ for ctx in [target, target/2, target/4, … down to 4096]:
 ```
 
 ```
-autofit: SmolLM3-3B-exl3 → cache Q4, max_seq_len 65536
-  weights 1866 + KV 1152 + overhead 128 = 3146 MiB   (budget 4096 − 512 = 3584) ✓
-  (FP16 would need 6602, Q8 4298 → both exceed budget)
+autofit: SmolLM3-3B-exl3 → cache Q4, max_seq_len 32768
+  weights 1866 + KV 576 + overhead 128 = 2570 MiB   (headroom 1280, budget 2816) ✓
+  warning: only 246 MiB margin … drop --ctx if prompts OOM during prefill
+  (at 32768: FP16 4298, Q8 3146 → both exceed budget; 65536 refused: 3146 + 1536 > 4096)
 ```
 
 Failure path prints the full breakdown (weights / per-token / ctx / required vs free) + the largest ctx that *would* fit. VRAM from `nvidia-smi` shell-out. `gpu_split`: not computed (single-GPU v1; `gpu_split_auto` passthrough).
@@ -222,7 +240,9 @@ Stdlib `flag` dispatch (no cobra). Sample output:
 $ stone-llama pull SmolLM3-3B-exl3
 resolving… found 1 quant (3.5bpw)
 gate: arch SmolLM3ForCausalLM ✓   quant exl3 ✓
-gate: fit on RTX 3050 (4096 MiB): 1866 weights + 1152 KV@Q4 + 128 = 3146 / 3584 MiB ✓  (max ctx 65536)
+gate: fit ⚠ fits only at reduced ctx: Q4 @ 32768 (trained max)
+      weights 1866 + KV 576 + overhead 128 = 2570 MiB (headroom 1280, budget 2816)
+      warning: only 246 MiB margin … drop --ctx if prompts OOM during prefill
 preflight: 1.84 GiB download (HEAD-measured), 412.6 GiB free → ~/.local/share/stone-llama/models
 Download? [y/N] y
 pulling SmolLM3-3B-exl3: model.safetensors ━━━━━━━━━━━ 100% 1.8/1.8 GiB
@@ -231,13 +251,14 @@ pulled SmolLM3-3B-exl3:3.5bpw (1.84 GiB)
 
 $ stone-llama list
 NAME                  QUANT    SIZE      VERDICT       SOURCE
-SmolLM3-3B-exl3       3.5bpw   1.84 GiB  fit:65536 Q4  turboderp/SmolLM3-3B-exl3
+SmolLM3-3B-exl3       3.5bpw   1.84 GiB  warn:32768 Q4 turboderp/SmolLM3-3B-exl3
 mistral-7B-exl3       4.0bpw   4.21 GiB  -             imported
 
 $ stone-llama run SmolLM3-3B-exl3
 starting runtime…
-autofit: cache Q4, max_seq_len 65536
-  weights 1866 + KV 1152 + overhead 128 = 3146 MiB (budget 3584) ✓
+autofit: cache Q4, max_seq_len 32768
+  weights 1866 + KV 576 + overhead 128 = 2570 MiB (headroom 1280, budget 2816) ✓
+  warning: only 246 MiB margin … drop --ctx if prompts OOM during prefill
 >>> hello
 Hi! …                                          (streamed)
 >>> /bye
@@ -245,7 +266,7 @@ unloaded.
 
 $ stone-llama ps
 NAME                  CTX     CACHE  VRAM PEAK   UPTIME
-SmolLM3-3B-exl3       65536   Q4     3105 MiB    4m12s
+SmolLM3-3B-exl3       32768   Q4     2529 MiB    4m12s
 
 $ stone-llama serve
 stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)

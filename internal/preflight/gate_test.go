@@ -28,7 +28,11 @@ func baseInput() Input {
 }
 
 func TestEvaluateCleanExl3Fits(t *testing.T) {
-	r := Evaluate(baseInput())
+	in := baseInput()
+	// Small weights: the prefill-aware headroom still leaves a fat margin
+	// at the trained max, so this stays a clean, note-less fit.
+	in.WeightsBytes = 400 << 20
+	r := Evaluate(in)
 	if r.Refused || r.Warned {
 		t.Fatalf("checks = %+v", r.Checks)
 	}
@@ -43,7 +47,7 @@ func TestEvaluateCleanExl3Fits(t *testing.T) {
 	}
 	lines := r.Format("RTX 3050")
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"gate: arch", "✓", "quant ✓ exl3", "3146 MiB (budget 3584) ✓"} {
+	for _, want := range []string{"gate: arch", "✓", "quant ✓ exl3", "1680 MiB (headroom 1536, budget 2560) ✓"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("Format missing %q:\n%s", want, joined)
 		}
@@ -161,10 +165,10 @@ func TestEvaluateReducedFitWarns(t *testing.T) {
 	if r.Refused || !r.Warned {
 		t.Fatalf("Refused/Warned = %v/%v", r.Refused, r.Warned)
 	}
-	if r.Verdict.MaxCtx != 32768 || r.Verdict.CacheMode != "Q4" {
+	if r.Verdict.MaxCtx != 8192 || r.Verdict.CacheMode != "Q4" {
 		t.Errorf("verdict = %d %s", r.Verdict.MaxCtx, r.Verdict.CacheMode)
 	}
-	if !strings.Contains(r.Verdict.Note, "reduced ctx: Q4 @ 32768") {
+	if !strings.Contains(r.Verdict.Note, "reduced ctx: Q4 @ 8192") {
 		t.Errorf("note = %q", r.Verdict.Note)
 	}
 }
@@ -176,10 +180,10 @@ func TestEvaluateNoFitRefusesWithArithmetic(t *testing.T) {
 	if !r.Refused {
 		t.Fatal("must refuse")
 	}
-	if !strings.Contains(r.Verdict.Note, "3600 MiB > 3584 MiB") {
+	if !strings.Contains(r.Verdict.Note, "3600 MiB > 3040 MiB") {
 		t.Errorf("note = %q", r.Verdict.Note)
 	}
-	if !strings.Contains(r.Verdict.Note, "largest ctx that would fit: 3072") {
+	if !strings.Contains(r.Verdict.Note, "largest ctx that would fit: none") {
 		t.Errorf("note misses largest ctx: %q", r.Verdict.Note)
 	}
 }

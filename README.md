@@ -5,10 +5,11 @@ for local EXL3 models — as a single small Go binary with a supervised Python i
 sidecar.
 
 **Positioning, honestly:** EXL3 inference speed and VRAM efficiency on NVIDIA GPUs, plus
-**VRAM-aware auto-fit context** — stone-llama computes your largest usable context window
-and cache mode from your GPU and the model's own `config.json`, instead of shipping
-conservative defaults. It is *not* a better ollama: if you want CPU/AMD/Apple support or a
-huge model catalog, use ollama with GGUF.
+**VRAM-aware auto-fit context** — stone-llama computes a safe context window and cache mode
+from your GPU and the model's own `config.json`, instead of shipping conservative defaults
+(it may also warn when your chosen config is too close to the edge for reliable prefill).
+It is *not* a better ollama: if you want CPU/AMD/Apple support or a huge model catalog, use
+ollama with GGUF.
 
 ## NVIDIA/CUDA only — read this first
 
@@ -94,29 +95,48 @@ Everything is derived from the model's own `config.json` plus your VRAM:
 head_dim  = hidden_size / num_attention_heads                    # 2048/16 = 128
 elems/tok = num_hidden_layers × 2 × num_key_value_heads × head_dim
 
-load_mib  = weights_mib + ctx × elems/tok × bytes_per_element/2²⁰ + 128   # fixed overhead
-fits      ⟺ load_mib ≤ vram_total_mib − 512                       # headroom
+load_mib    = weights_mib + ctx × elems/tok × bytes_per_element/2²⁰ + 128   # fixed overhead
+headroom_mib(ctx) = 512 base + 512 prefill workspace [est] + 512 × ctx/65536 [est]
+fits        ⟺ load_mib ≤ vram_total_mib − headroom_mib(ctx)
 ```
 
 Cache mode cost per token: **FP16 = 2 B, Q8 = 1 B, Q4 = 0.5 B per element.**
 
+**Why headroom grows with ctx — [est], from live measurements.** The OOM you actually hit on a
+4 GB card is in *prefill*: a cold cublas/hgemm workspace is allocated **before the first token is
+generated**, so raising `max_tokens` does not avoid it. Measured live (2026-09-26): a *used* card
+sustains ~1,300 prompt tokens and OOMs consistently around ~2,500, while the same prompt succeeds
+from a clean card — capacity and fragmentation, not generation. So a config reserving more on-card
+KV keeps a proportionally larger reserve. Both new terms are estimates until measured and are
+tunable in config (`autofit.workspace_mib`, `autofit.ctx_headroom_mib`).
+
 Worked example, measured on an RTX 3050 Laptop (4096 MiB) with `SmolLM3-3B-exl3`
 (36 layers × 2 × 4 KV heads × 128 head_dim = **36,864 elems/token**):
 
-| Config | KV @ 65536 ctx | Total (1866 MiB weights + 128) | Fits 3584 budget? |
-|---|---|---|---|
-| FP16 | 4608 MiB | 6602 MiB | ❌ |
-| Q8 | 2304 MiB | 4298 MiB | ❌ |
-| **Q4** | **1152 MiB** | **3146 MiB** | ✅ → picks **Q4 @ 65536** |
+| Config | KV @ ctx | headroom(ctx) | Total (1866 weights + 128) | Fits 4096? |
+|---|---|---|---|---|
+| FP16 @ 65536 | 4608 MiB | 1536 | 6602 MiB | ❌ |
+| Q8 @ 65536 | 2304 MiB | 1536 | 4298 MiB | ❌ |
+| Q4 @ 65536 | 1152 MiB | 1536 | 3146 MiB | ❌ (4682 > 4096) |
+| **Q4 @ 32768** | **576 MiB** | **1280** | **2570 MiB** | ✅ → picks **Q4 @ 32768** |
 
-(Calibration: measured real peak was 3105 MiB — the model over-reserves by 43 MiB.)
+(Calibration: Q4 @ 65536 was the old default and measured real peak 3105 MiB — it *serves*, but
+prefill of multi-KB prompts on a used card is where it OOMs. That is the capacity trade.)
 
 The ladder tries `ctx = trained max`, then halves it down to 4096, preferring better cache
 quality at each tier (FP16 → Q8 → Q4). Guard rails:
 
 - **never exceeds `max_position_embeddings`** (untrained extrapolation is not a feature),
 - `--ctx` / `--cache-mode` bypass the ladder entirely,
-- the decision and its arithmetic are **printed**, always — you can see *why* you got Q4.
+- the decision and its arithmetic are **printed**, always — you can see *why* you got Q4,
+- a config with a thin remaining margin prints a **warning**: multi-KB prompts can OOM during
+  prefill on a used card — **drop `--ctx` if you see CUDA OOM before the first token**.
+
+**Large `max_seq_len` on a 4 GB card is a capacity trade, not free.** 65536 context at Q4 KV
+reserves ~1.15 GiB of a 4 GiB card before a single token exists. The ladder default is the
+"safe context"; explicitly passing `--ctx 65536` buys the "max context" and prints exactly what
+it costs. If prompts OOM during prefill (CUDA OOM *before* the first token — generating fewer
+tokens will not help), lower `--ctx` one tier (32768 → 16384) or restart the model.
 
 If even the smallest config doesn't fit, you get the full breakdown plus the largest ctx
 that *would* fit — before anything is downloaded.
