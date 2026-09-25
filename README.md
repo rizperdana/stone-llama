@@ -47,17 +47,23 @@ Release tarballs + `install.sh` (with sha256) land at M7 — see
 ```bash
 stone-llama doctor                       # GPU + driver check, picks cu12/cu13 — no downloads
 stone-llama setup                        # Python/torch runtime; announces sizes, asks before any byte
-stone-llama pull SmolLM3-3B-exl3         # gate runs first, then resumable download
-stone-llama run SmolLM3-3B-exl3          # CLI chat (prints the autofit decision)
+stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw  # gate runs first, then resumable download
+stone-llama run Qwen3-1.7B-exl3_4.0bpw  # CLI chat (prints the autofit decision)
 stone-llama serve                        # OpenAI-compatible API on 127.0.0.1:5111
 ```
 
 ```bash
 curl http://127.0.0.1:5111/v1/chat/completions -d '{
-  "model": "SmolLM3-3B-exl3",
+  "model": "Qwen3-1.7B-exl3_4.0bpw",
   "messages": [{"role": "user", "content": "hello"}]
 }'
 ```
+
+Model repos on the Hub churn: quant converters routinely delete or move
+weights — the original example here (`turboderp/SmolLM3-3B-exl3`) now serves
+only a README. That is why `pull` runs the A5 gate (arch / quant / fit, from
+metadata) **before** any byte moves, and why `import` can link a model dir you
+already own instead of trusting the Hub to stay up.
 
 ## Commands
 
