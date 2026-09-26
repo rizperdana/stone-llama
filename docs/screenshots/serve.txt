@@ -1,0 +1,6 @@
+$ stone-llama serve
+stone-llama serve: not implemented yet (ships in M5)
+EXIT=2
+$ stone-llama serve --attach 127.0.0.1:5002
+stone-llama serve: not implemented yet (ships in M5)
+EXIT=2

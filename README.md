@@ -162,6 +162,12 @@ model linked in with `import` from a directory already on this machine — also 
 download. A rendering of these captures: [docs/screenshots/cli.svg](docs/screenshots/cli.svg).
 Model-download steps are deliberately omitted from these captures.
 
+`serve` + `curl` is not captured yet: at the time of writing `serve` ships with
+milestone M5 and the build reports `not implemented yet (ships in M5)` (raw
+capture: [docs/screenshots/serve.txt](docs/screenshots/serve.txt)) — no server was
+started and no upstream was disturbed. The `serve`/`curl` transcript lands here
+when M5 does.
+
 ## How autofit picks your context
 
 Everything is derived from the model's own `config.json` plus your VRAM:
