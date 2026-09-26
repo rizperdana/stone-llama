@@ -106,13 +106,8 @@ Nothing. All three previously-unverified items — **uv** (Apache-2.0 OR MIT),
 EULA, exact package set enumerated above) — have been verified from real
 sources. The A6/M7 gate is cleared.
 
-## Report: inconsistency found in our own docs
+## README alignment
 
-The README's third-party table (`README.md` lines 279-283) lists only three
-components — TabbyAPI, exllamav3, PyTorch — and omits uv, CPython 3.12,
-Triton, Flash-linear-attention, and the 18 NVIDIA/CUDA packages. The README
-states "Verified licenses (detail + evidence in THIRD-PARTY.md)" which is now
-accurate (everything is verified here), but the summary table is incomplete.
-This is a documentation gap, not a license error. The README should ideally list
-all runtime-fetched components or link to this file for the full enumeration.
-This file was not edited per task constraints — please address separately.
+The README's third-party table (README.md lines 279-288) was expanded in
+`bbfbc16` to list all eight setup-fetched component families, matching the
+enumeration in this document.
