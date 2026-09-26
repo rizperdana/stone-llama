@@ -1,0 +1,16 @@
+$ stone-llama setup   # no --yes: plan only, refuses to download
+setup plan
+  dest:  /home/anon/.local/share/stone-llama/runtime
+  free:  88926429184 bytes
+  downloads (3):
+    https://github.com/astral-sh/uv/releases/download/0.11.6/uv-x86_64-unknown-linux-gnu.tar.gz (24284812 bytes)
+    https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl (531146695 bytes)
+    https://github.com/turboderp-org/exllamav3/releases/download/v1.5.1/exllamav3-1.5.1%2Bcu132.torch2.11.0-cp312-cp312-linux_x86_64.whl (419209397 bytes)
+  steps (5):
+    1. uv — download and verify uv 0.11.6 (24284812 bytes)
+    2. python — install Python 3.12 via uv (0 bytes)
+    3. tabby — clone TabbyAPI @ f07131cd8fe3 (0 bytes)
+    4. venv-deps — create venv and install requirements-cu13.lock (950356092 bytes)
+    5. smoke — verify exllamav3 import (0 bytes)
+Proceed? [y/N] stone-llama setup: setup: aborted (plan not confirmed)
+EXIT=1

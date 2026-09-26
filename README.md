@@ -50,7 +50,8 @@ go build -o stone-llama ./cmd/stone-llama
 install -Dm755 stone-llama ~/.local/bin/stone-llama
 ```
 
-Full prerequisites, the multi-GB `setup` provisioning step, verification and uninstall:
+Full prerequisites, the consent-gated `setup` provisioning step (≈ 1 GB announced
+before you confirm), verification and uninstall:
 [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
 ## Quickstart

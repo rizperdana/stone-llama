@@ -13,7 +13,7 @@ ever serve.
 | Driver | ≥ **570** (installs the `cu12` runtime extra) or ≥ **580** (`cu13`). Older → `doctor` refuses with the upgrade hint. |
 | OS/arch | Linux x86_64 (amd64). |
 | Disk (binary alone) | ~10–15 MB. |
-| Disk (`setup` runtime) | **Multi-GB.** PyTorch + CUDA runtime wheels dominate. Exact sizes are measured via HTTP HEAD and printed *before* you are asked to confirm; free space is checked with `statfs` and the run refuses if short. |
+| Disk (`setup` runtime) | **≈ 1 GB of downloads** — measured here: torch+cu130 531 MB, exllamav3 419 MB, uv 24 MB (950 MB total, HEAD-announced per URL before consent), plus a pinned CPython and the TabbyAPI checkout; the unpacked venv takes more than the downloads. Free space is checked with `statfs` and the run refuses if short. |
 | Disk (models) | Whatever the weights are — e.g. `SmolLM3-3B-exl3` is 1.84 GiB. Checked per-pull before any byte moves. |
 | Network | Only for `setup` (runtime) and `pull` (weights). `doctor`, `list`, `fit`, `import` need none (aside from small HuggingFace metadata for `fit`). |
 
@@ -69,7 +69,7 @@ Driver     580.178.04
 Runtime    cu13 extra
 ```
 
-## The `setup` provisioning step (multi-GB, separate from install)
+## The `setup` provisioning step (separate from install)
 
 The binary does not bundle Python. `stone-llama setup` provisions the inference
 runtime into `~/.local/share/stone-llama/runtime/`:
@@ -82,8 +82,8 @@ runtime into `~/.local/share/stone-llama/runtime/`:
    driver by `doctor`), exllamav3, CUDA runtime wheels, from hash-locked
    requirements files.
 
-Why it's large: PyTorch and the CUDA runtime wheels are gigabytes by nature —
-that is the inference stack, not bloat. There is no small variant.
+Why it's large: PyTorch + exllamav3 are the bulk of it (950 MB announced on this
+machine) — that is the inference stack, not bloat. There is no small variant.
 
 Safety properties:
 
@@ -100,6 +100,29 @@ Safety properties:
 stone-llama setup          # shows sizes + free space, then one confirmation
 stone-llama setup --yes    # non-interactive consent
 ```
+
+Real preflight on this machine (sizes are HTTP HEAD requests; without consent
+nothing is downloaded — the run aborts at the prompt):
+
+```console
+$ stone-llama setup
+setup plan
+  dest:  /home/anon/.local/share/stone-llama/runtime
+  free:  88926429184 bytes
+  downloads (3):
+    https://github.com/astral-sh/uv/releases/download/0.11.6/uv-x86_64-unknown-linux-gnu.tar.gz (24284812 bytes)
+    https://download-r2.pytorch.org/whl/cu130/torch-2.11.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl (531146695 bytes)
+    https://github.com/turboderp-org/exllamav3/releases/download/v1.5.1/exllamav3-1.5.1%2Bcu132.torch2.11.0-cp312-cp312-linux_x86_64.whl (419209397 bytes)
+  steps (5):
+    1. uv — download and verify uv 0.11.6 (24284812 bytes)
+    2. python — install Python 3.12 via uv (0 bytes)
+    3. tabby — clone TabbyAPI @ f07131cd8fe3 (0 bytes)
+    4. venv-deps — create venv and install requirements-cu13.lock (950356092 bytes)
+    5. smoke — verify exllamav3 import (0 bytes)
+Proceed? [y/N] stone-llama setup: setup: aborted (plan not confirmed)
+```
+
+Raw capture: [screenshots/setup-preflight.txt](screenshots/setup-preflight.txt).
 
 ## Post-install verification
 

@@ -69,7 +69,8 @@ this GPU, the chosen (ctx, cache_mode), and an estimated tok/s.
 
     stone-llama setup
 
-CRITICAL: this step downloads several GB (PyTorch + CUDA runtime wheels dominate).
+CRITICAL: this step downloads about a gigabyte (measured here: PyTorch+cu130
+531 MB, exllamav3 419 MB, uv 24 MB; CPython + the TabbyAPI checkout are extra).
 It must announce sizes and ask for confirmation before any byte moves. You MUST
 surface the size announcement to the user and get explicit approval before
 answering yes. Never pass --yes on the user's behalf without telling them the
@@ -167,6 +168,6 @@ step; do not improvise an alternative server. `doctor`, `fit`, `list`,
 | 1 | binary builds and installs | none (Go build only) |
 | 2 | GPU/driver verdict | none, no downloads |
 | 3 | model fits this GPU + speed estimate | KB of HF metadata |
-| 4 | Python inference runtime | multi-GB, consent-gated |
+| 4 | Python inference runtime | ≈ 1 GB, consent-gated |
 | 5 | model on disk | HEAD-measured size, consent-gated |
 | 6 | OpenAI endpoint answers | none |

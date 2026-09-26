@@ -17,17 +17,17 @@ Runtime    cu13 extra
 Driver decides the runtime extra: ≥ 580 → `cu13`, ≥ 570 → `cu12`, older → refusal
 with the upgrade hint. No NVIDIA GPU → hard refusal pointing you at ollama + GGUF.
 
-## 2. `setup` — provision the inference runtime (multi-GB, consent-gated)
+## 2. `setup` — provision the inference runtime (≈ 1 GB download, consent-gated)
 
 ```bash
 stone-llama setup
 ```
 
-Downloads several GB (PyTorch + CUDA runtime wheels dominate) into
-`~/.local/share/stone-llama/runtime/`: pinned `uv` → CPython 3.12 → TabbyAPI at a
-pinned commit → hash-locked wheels. Sizes are HEAD-measured and printed, free disk
-is checked, then **one** confirmation. Resumable via a step journal; log at
-`logs/setup.log`. Details: [INSTALLATION.md](INSTALLATION.md#the-setup-provisioning-step-multi-gb-separate-from-install).
+Downloads into `~/.local/share/stone-llama/runtime/`: pinned `uv` → CPython 3.12 →
+TabbyAPI at a pinned commit → hash-locked wheels. Measured on this machine: torch
++cu130 531 MB + exllamav3 419 MB + uv 24 MB = 950 MB announced (HTTP HEAD), free
+disk checked, then **one** confirmation. Resumable via a step journal; log at
+`logs/setup.log`. Details: [INSTALLATION.md](INSTALLATION.md#the-setup-provisioning-step-separate-from-install).
 
 ## 3. `fit <repo>` — will it run, how fast? **No download.**
 
