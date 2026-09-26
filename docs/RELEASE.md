@@ -11,11 +11,12 @@ the CI gate lives in `.github/workflows/ci.yml`.
 | Platform     | Status                                           |
 |--------------|--------------------------------------------------|
 | linux/amd64  | **Supported** — requires NVIDIA GPU + CUDA at runtime (driver ≥ 570 for cu12, ≥ 580 for cu13). |
-| windows/amd64| Published but **UNTESTED at runtime** — the daemonization path differs from Linux and we have no Windows test machine. Use at your own risk. |
+| windows/amd64| **Builds** (cross-compiled) but **UNTESTED at runtime** — the daemonization path differs from Linux and we have no Windows test machine. Use at your own risk. |
 | darwin/amd64 | Published for `doctor`/`list`/`fit` only. ExLlamaV3 has no Metal/CPU backend, so stone-llama **cannot serve** models on macOS. Compilation is a build-check, not support. |
 | darwin/arm64 | Same as darwin/amd64 — CLI utilities only, no serving. |
 
 > **Never claim a platform works because it compiles.** Compilation verifies the code builds for that target. Runtime support is a separate question documented above.
+> **Windows cross-compilation fixed** (commit `c4e1889` `fix(windows): build-tagged lock and disk-free probes`): `internal/fslock` and the disk-free probe were split into `fslock_unix.go` (flock) + `fslock_windows.go` (`LockFileEx` via `syscall.NewLazyDLL`). All four targets now compile cleanly from CI on Linux.
 
 ## How to Cut a Tag
 
@@ -31,6 +32,10 @@ git tag -a v0.1.0 -m "v0.1.0"
 # 3. Push — this triggers .github/workflows/release.yml
 git push origin v0.1.0
 ```
+> **Pre-release blockers** — do not cut `v0.1.0` until:
+> - `serve`, `ps`, `stop` (M5) and `run` (M6) are implemented (see ARCHITECTURE.md §11). A release whose CLI cannot serve models contradicts the documented feature surface.
+> - CI is green on all four targets (linux, windows, darwin/amd64, darwin/arm64).
+> - `install.sh` download+verify path is tested against a staging release.
 
 The workflow triggers on `push: tags: 'v*'`.  The tag name becomes:
 - The **GitHub Release tag** (`v0.1.0`)
