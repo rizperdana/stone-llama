@@ -66,6 +66,9 @@ func Evaluate(in Input) Report {
 	r.Fit = fitRes
 
 	r.Checks = []Check{checkArch(in), checkQuant(in)}
+	if in.Spec.MoE {
+		r.Checks = append(r.Checks, checkMoE())
+	}
 	if fitErr != nil {
 		r.Checks = append(r.Checks, Check{Name: "fit", Status: StatusRefuse,
 			Detail: "fit projection failed: " + fitErr.Error()})
