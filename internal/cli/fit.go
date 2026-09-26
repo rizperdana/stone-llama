@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -156,11 +155,11 @@ func localEstimate(m store.Model, gpuName string, vramMiB int, cfg config.Config
 	if gpuName == "" {
 		return "-", "-"
 	}
-	w := manifestWeights(m)
+	w := store.ModelWeights(m)
 	if w <= 0 {
 		return "-", "-"
 	}
-	spec, err := specFromDir(m.Path)
+	spec, err := store.SpecFromDir(m.Path)
 	if err != nil || spec.Layers == 0 {
 		return "-", "-"
 	}
@@ -192,84 +191,4 @@ func localEstimate(m store.Model, gpuName string, vramMiB int, cfg config.Config
 		return "-", "-"
 	}
 	return fmt.Sprintf("%.0f", p.DecodeTokPerS), fmt.Sprintf("%.0f", p.PrefillTokPerS)
-}
-
-// manifestWeights sums .safetensors bytes from the manifest, falling
-// back to a directory walk for imported/unmanaged models (no manifest).
-func manifestWeights(m store.Model) int64 {
-	if m.Manifest != nil {
-		var sum int64
-		for _, f := range m.Manifest.Files {
-			if strings.HasSuffix(strings.ToLower(f.Path), ".safetensors") {
-				sum += f.Size
-			}
-		}
-		if sum > 0 {
-			return sum
-		}
-	}
-	return safetensorsBytes(m.Path)
-}
-
-// safetensorsBytes walks dir (following the top-level symlink) and sums
-// .safetensors files, up to 2 directories deep.
-func safetensorsBytes(dir string) int64 {
-	real, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return 0
-	}
-	var sum int64
-	_ = filepath.WalkDir(real, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(real, path)
-		depth := strings.Count(filepath.ToSlash(rel), "/")
-		if d.IsDir() {
-			if depth > 2 {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(strings.ToLower(d.Name()), ".safetensors") {
-			if info, err := d.Info(); err == nil {
-				sum += info.Size()
-			}
-		}
-		return nil
-	})
-	return sum
-}
-
-// specFromDir finds config.json in a model dir (≤2 levels deep) and
-// parses it into an autofit spec.
-func specFromDir(dir string) (autofit.Spec, error) {
-	real, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return autofit.Spec{}, err
-	}
-	var spec autofit.Spec
-	err = filepath.WalkDir(real, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(real, path)
-		depth := strings.Count(filepath.ToSlash(rel), "/")
-		if d.IsDir() {
-			if depth > 2 {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if depth <= 2 && d.Name() == "config.json" {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			spec, err = autofit.ParseSpec(data)
-			return err
-		}
-		return nil
-	})
-	return spec, err
 }

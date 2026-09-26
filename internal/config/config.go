@@ -22,11 +22,12 @@ type Autofit struct {
 }
 
 type Config struct {
-	ModelsDir  string  `json:"models_dir"`
-	Host       string  `json:"host"`
-	Port       int     `json:"port"`
-	Autofit    Autofit `json:"autofit"`
-	RuntimeDir string  `json:"runtime_dir"`
+	ModelsDir       string  `json:"models_dir"`
+	Host            string  `json:"host"`
+	Port            int     `json:"port"`
+	Autofit         Autofit `json:"autofit"`
+	RuntimeDir      string  `json:"runtime_dir"`
+	UpstreamKeyFile string  `json:"upstream_key_file"` // attach-mode upstream Bearer source (file only)
 }
 
 // Default returns the built-in configuration. Missing file fields keep

@@ -6,10 +6,13 @@ package store
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/rizperdana/stone-llama/internal/autofit"
 )
 
 // Model is one entry of `stone-llama list`.
@@ -196,4 +199,84 @@ func dirSize(root string) (int64, error) {
 		return nil
 	})
 	return total, err
+}
+
+// ModelWeights sums .safetensors bytes from the manifest, falling
+// back to a directory walk for imported/unmanaged models (no manifest).
+func ModelWeights(m Model) int64 {
+	if m.Manifest != nil {
+		var sum int64
+		for _, f := range m.Manifest.Files {
+			if strings.HasSuffix(strings.ToLower(f.Path), ".safetensors") {
+				sum += f.Size
+			}
+		}
+		if sum > 0 {
+			return sum
+		}
+	}
+	return WeightsBytes(m.Path)
+}
+
+// WeightsBytes walks dir (following the top-level symlink) and sums
+// .safetensors files, up to 2 directories deep.
+func WeightsBytes(dir string) int64 {
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return 0
+	}
+	var sum int64
+	_ = filepath.WalkDir(real, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(real, path)
+		depth := strings.Count(filepath.ToSlash(rel), "/")
+		if d.IsDir() {
+			if depth > 2 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(d.Name()), ".safetensors") {
+			if info, err := d.Info(); err == nil {
+				sum += info.Size()
+			}
+		}
+		return nil
+	})
+	return sum
+}
+
+// SpecFromDir finds config.json in a model dir (≤2 levels deep) and
+// parses it into an autofit spec.
+func SpecFromDir(dir string) (autofit.Spec, error) {
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return autofit.Spec{}, err
+	}
+	var spec autofit.Spec
+	err = filepath.WalkDir(real, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(real, path)
+		depth := strings.Count(filepath.ToSlash(rel), "/")
+		if d.IsDir() {
+			if depth > 2 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if depth <= 2 && d.Name() == "config.json" {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			spec, err = autofit.ParseSpec(data)
+			return err
+		}
+		return nil
+	})
+	return spec, err
 }

@@ -31,9 +31,15 @@ func TestBareAndHelpPrintUsage(t *testing.T) {
 }
 
 func TestPlannedCommandNamesMilestone(t *testing.T) {
-	code, _, errOut := run("serve")
-	if code != 2 || !strings.Contains(errOut, "M5") {
-		t.Errorf("code/err = %d/%q, want 2/mentions M5", code, errOut)
+	// serve/ps/stop dispatch for real now (M5); only run stays planned.
+	for _, c := range []string{"serve", "ps", "stop"} {
+		if _, ok := planned[c]; ok {
+			t.Errorf("%q still in the planned map", c)
+		}
+	}
+	code, _, errOut := run("run")
+	if code != 2 || !strings.Contains(errOut, "M6") {
+		t.Errorf("code/err = %d/%q, want 2/mentions M6", code, errOut)
 	}
 }
 

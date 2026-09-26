@@ -3,14 +3,20 @@ package cli
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/rizperdana/stone-llama/internal/autofit"
 	"github.com/rizperdana/stone-llama/internal/brand"
@@ -18,6 +24,7 @@ import (
 	"github.com/rizperdana/stone-llama/internal/doctor"
 	"github.com/rizperdana/stone-llama/internal/hf"
 	"github.com/rizperdana/stone-llama/internal/pull"
+	"github.com/rizperdana/stone-llama/internal/serve"
 	"github.com/rizperdana/stone-llama/internal/setup"
 	"github.com/rizperdana/stone-llama/internal/store"
 )
@@ -25,7 +32,6 @@ import (
 // planned lists commands that exist in the product surface but are not
 // implemented yet, mapped to the milestone that ships them (ARCHITECTURE.md §11).
 var planned = map[string]string{
-	"serve": "M5", "ps": "M5", "stop": "M5",
 	"run": "M6",
 }
 
@@ -61,6 +67,12 @@ func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Write
 		return runSetup(rest, stdin, stdout, stderr)
 	case "login":
 		return runLogin(rest, stdin, stdout, stderr)
+	case "serve":
+		return runServe(rest, stdout, stderr)
+	case "ps":
+		return runPs(rest, stdout, stderr)
+	case "stop":
+		return runStop(rest, stdout, stderr)
 	}
 	if ms, ok := planned[cmd]; ok {
 		fmt.Fprintf(stderr, "stone-llama %s: not implemented yet (ships in %s)\n", cmd, ms)
@@ -396,6 +408,157 @@ func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runServe runs the daemon in the foreground (M5): a supervised child
+// by default, or --attach against an existing OpenAI-compatible server
+// (schemeless host:port accepted). Ctrl-C/SIGTERM shuts down cleanly.
+func runServe(args []string, stdout, stderr io.Writer) int {
+	attach, keyFile := "", ""
+	port := 0
+	usageLine := "usage: stone-llama serve [--attach <host:port|url>] [--port <n>] [--key-file <path>]"
+	// the loop reassigns i when consuming flag values (explicit classic loop)
+	need := func(i *int, flag string) (string, bool) {
+		if *i+1 >= len(args) {
+			fmt.Fprintf(stderr, "stone-llama serve: %s needs a value\n", flag)
+			return "", false
+		}
+		*i++
+		return args[*i], true
+	}
+	setPort := func(v string) bool {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			fmt.Fprintf(stderr, "stone-llama serve: invalid --port %q\n", v)
+			return false
+		}
+		port = p
+		return true
+	}
+	for i := 0; i < len(args); i++ {
+		var ok bool
+		switch a := args[i]; {
+		case a == "--attach" || a == "-attach":
+			if attach, ok = need(&i, "--attach"); !ok {
+				return 2
+			}
+		case strings.HasPrefix(a, "--attach="):
+			attach = strings.TrimPrefix(a, "--attach=")
+		case a == "--key-file" || a == "-key-file":
+			if keyFile, ok = need(&i, "--key-file"); !ok {
+				return 2
+			}
+		case strings.HasPrefix(a, "--key-file="):
+			keyFile = strings.TrimPrefix(a, "--key-file=")
+		case a == "--port" || a == "-port":
+			v, ok2 := need(&i, "--port")
+			if !ok2 || !setPort(v) {
+				return 2
+			}
+		case strings.HasPrefix(a, "--port="):
+			if !setPort(strings.TrimPrefix(a, "--port=")) {
+				return 2
+			}
+		default:
+			fmt.Fprintln(stderr, usageLine)
+			return 2
+		}
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama serve: %v\n", err)
+		return 1
+	}
+	if port == 0 {
+		port = cfg.Port
+	}
+	if keyFile == "" {
+		keyFile = cfg.UpstreamKeyFile
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err = serve.Serve(ctx, serve.Options{
+		Host:            cfg.Host,
+		Port:            port,
+		Attach:          attach,
+		RuntimeDir:      cfg.RuntimeDir,
+		ModelsDir:       cfg.ModelsDir,
+		DataDir:         config.DataDir(),
+		UpstreamKeyFile: keyFile,
+		PinnedCommit:    setup.TabbyPin(),
+		Fit:             cfg.Autofit,
+		Stdout:          stdout,
+		Stderr:          stderr,
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		fmt.Fprintf(stderr, "stone-llama serve: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runPs shows the running daemon (M5). Auto-starts one detached unless
+// STONE_LLAMA_NO_AUTOSTART=1; the status round trip carries readiness,
+// model, and the VRAM peak sample.
+func runPs(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		fmt.Fprintln(stderr, "stone-llama ps: takes no arguments")
+		return 2
+	}
+	dataDir := config.DataDir()
+	start := os.Getenv("STONE_LLAMA_NO_AUTOSTART") != "1"
+	if _, err := serve.EnsureDaemon(dataDir, start, 30*time.Second); err != nil {
+		fmt.Fprintf(stderr, "stone-llama ps: %v\n", err)
+		return 1
+	}
+	st, err := serve.Query(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama ps: daemon is starting (state written, status not up yet): %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "stone-llama: running (pid %d)\n", st.PID)
+	fmt.Fprintf(stdout, "  address:  %s\n", strings.TrimPrefix(st.Upstream, "http://"))
+	if st.Mode == "attach" {
+		fmt.Fprintf(stdout, "  mode:     attach (%s)\n", st.Attach)
+	} else {
+		fmt.Fprintf(stdout, "  mode:     supervised (child pid %d)\n", st.ChildPID)
+	}
+	fmt.Fprintf(stdout, "  ready:    %s\n", map[bool]string{true: "yes", false: "no"}[st.Ready])
+	model := st.Model
+	if model == "" {
+		model = "(none loaded)"
+	}
+	fmt.Fprintf(stdout, "  model:    %s\n", model)
+	if st.Ctx > 0 || st.CacheMode != "" {
+		fmt.Fprintf(stdout, "  ctx:      %d  cache: %s\n", st.Ctx, st.CacheMode)
+	}
+	if st.VRAMPeak > 0 {
+		fmt.Fprintf(stdout, "  vram peak: %d MiB\n", st.VRAMPeak)
+	}
+	fmt.Fprintf(stdout, "  uptime:   %s\n", time.Duration(st.UptimeS)*time.Second)
+	return 0
+}
+
+// runStop terminates the daemon (M5); absent state is a friendly no-op.
+func runStop(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		fmt.Fprintln(stderr, "stone-llama stop: takes no arguments")
+		return 2
+	}
+	dataDir := config.DataDir()
+	if _, err := serve.ReadState(dataDir); errors.Is(err, serve.ErrNoDaemon) {
+		fmt.Fprintln(stdout, "stone-llama: not running")
+		return 0
+	} else if err != nil {
+		fmt.Fprintf(stderr, "stone-llama stop: %v\n", err)
+		return 1
+	}
+	if err := serve.Stop(dataDir, 8*time.Second); err != nil {
+		fmt.Fprintf(stderr, "stone-llama stop: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "stone-llama: stopped")
+	return 0
+}
+
 func usage() string {
 	return `stone-llama — local model server + CLI (ExLlamaV3 + TabbyAPI), OpenAI-compatible API
 
@@ -413,9 +576,9 @@ Commands:
   rank        rank candidates by fit/speed (--collection|--file [--ratings])
   login       set a HuggingFace token
   setup       provision the pinned Python runtime (consent-gated)
-  serve       start the OpenAI-compatible API  (M5)
-  ps          show the loaded model            (M5)
-  stop        stop the daemon                  (M5)
+  serve       start the OpenAI-compatible API [--attach host:port] [--port n]
+  ps          show the running daemon + loaded model
+  stop        stop the daemon
   run         chat with a model in the CLI     (M6)
 `
 }
