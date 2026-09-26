@@ -276,11 +276,23 @@ stone-llama **redistributes none** of them; `setup` fetches each from its upstre
 on your machine, with sizes announced and your confirmation required. Verified licenses
 (detail + evidence in [THIRD-PARTY.md](THIRD-PARTY.md)):
 
-| Component | License |
-|---|---|
-| TabbyAPI (pinned commit) | **AGPL-3.0** |
-| exllamav3 | MIT |
-| PyTorch | BSD-3-Clause |
+| Component | How it arrives | License |
+|---|---|---|
+| uv | upstream release binary, SHA-256 verified | Apache-2.0 **OR** MIT (dual) |
+| CPython 3.12 | `uv python install` (python-build-standalone) | PSF-2.0 |
+| PyTorch (+cu130) | pinned wheel from lock file | BSD-3-Clause |
+| exllamav3 | pinned wheel from lock file | MIT |
+| Triton | pinned wheel from lock file | MIT |
+| Flash-linear-attention | pinned wheel from lock file | MIT |
+| NVIDIA CUDA/cuDNN (18 wheels) | transitive deps of the `+cu130` torch wheel, pinned in lock file | Proprietary — NVIDIA EULA |
+| TabbyAPI (`f07131cd`) | `git clone` + pinned checkout | **AGPL-3.0** |
+
+The NVIDIA CUDA/cuDNN wheels — all `nvidia-*` plus `cuda-toolkit`,
+`cuda-bindings`, and `cuda-pathfinder` — are **not** open source: they ship
+NVIDIA's proprietary End User License Agreement, and the user accepts those terms
+directly at `setup` time (sizes announced, one consent prompt). The lone
+exception is `nvidia-nvtx` (Apache-2.0 with LLVM exceptions). The full pinned set,
+versions, and per-package evidence are in [THIRD-PARTY.md](THIRD-PARTY.md).
 
 **AGPL note:** we neither distribute nor modify TabbyAPI — `setup` downloads upstream
 sources to your disk at your request, and stone-llama talks to it as a separate process
