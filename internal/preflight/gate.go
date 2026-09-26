@@ -4,7 +4,11 @@
 package preflight
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
+	"sort"
 	"strings"
 
 	"github.com/rizperdana/stone-llama/internal/autofit"
@@ -42,11 +46,16 @@ type Input struct {
 	HasQuantCfg   bool     // quantization_config.json exists
 	RepoFiles     []string // all repo file paths
 	Repo          string   // repo id shown in gate messages ("" → "this repo")
-	Spec          autofit.Spec
-	WeightsBytes  int64 // sum of .safetensors sizes in scope
-	VRAMMiB       int
-	GPUName       string
-	Opts          autofit.Options
+	RepoSHA       string   // resolved revision (header probe identity)
+	// FetchHeader reads a bounded byte prefix of one repo file so the
+	// gate can inspect its safetensors header; nil = offline/local path
+	// → the quant check degrades to an "unverified" warning.
+	FetchHeader  func(path string) (io.ReadCloser, error)
+	Spec         autofit.Spec
+	WeightsBytes int64 // sum of .safetensors sizes in scope
+	VRAMMiB      int
+	GPUName      string
+	Opts         autofit.Options
 }
 
 // Evaluate runs the three checks and computes the verdict. A refusal
@@ -119,6 +128,11 @@ func checkQuant(in Input) Check {
 	}
 	hint := "stone-llama only loads EXL3 quantizations — look for '-exl3' / exl3 quantization_config in " + repo
 	method := strings.ToLower(strings.TrimSpace(in.QuantMethod))
+	if method == "" {
+		// No (or unreadable) quantization_config.json: exllamav3 conversion
+		// also embeds quantization_config in config.json — ParseSpec reads it.
+		method = strings.ToLower(strings.TrimSpace(in.Spec.QuantMethod))
+	}
 	gguf := hasSuffix(in.RepoFiles, ".gguf")
 	safetensors := hasSuffix(in.RepoFiles, ".safetensors")
 
@@ -133,24 +147,226 @@ func checkQuant(in Input) Check {
 		return Check{Name: "quant", Status: StatusRefuse,
 			Detail: fmt.Sprintf("no model weights found in %s (only %d non-weight files) — pick a repo that publishes .safetensors",
 				repo, len(in.RepoFiles))}
-	case method == "exl3":
-		return Check{Name: "quant", Status: StatusOK, Detail: "exl3"}
 	case method == "exl2":
 		return Check{Name: "quant", Status: StatusRefuse,
 			Detail: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it; " + hint}
-	case method != "":
+	case method != "" && method != "exl3":
 		return Check{Name: "quant", Status: StatusRefuse,
 			Detail: fmt.Sprintf("quant_method %q not exl3 — detected format is unsupported; %s", method, hint)}
 	case gguf && !safetensors:
 		return Check{Name: "quant", Status: StatusRefuse,
 			Detail: "no EXL3 weights — this repo ships GGUF; use ollama with GGUF instead; " + hint}
-	case in.HasQuantCfg:
-		return Check{Name: "quant", Status: StatusWarn,
-			Detail: "quantization_config.json has no quant_method — cannot confirm EXL3; " + hint}
-	default:
-		return Check{Name: "quant", Status: StatusWarn,
-			Detail: "no quantization_config.json — cannot confirm EXL3 (may be unquantized FP16); " + hint}
 	}
+
+	// Safetensors present, nothing excluded the format: the verdict comes
+	// from the header itself. The tensor-suffix group is the engine's own
+	// EXL3 test (linear.py is_exl3_storage), quant-group dtypes must be in
+	// the engine's convert_dtype set, and the sidecar/embedded
+	// quantization_config — optional for exllamav3 — is corroboration
+	// only: it can neither rescue a repo without the group nor be
+	// required when the group is there.
+	return checkHeader(in, method, hint)
+}
+
+// checkHeader renders the quant verdict from the safetensors header
+// probe (see probeHeaders for bounds). Could-not-look degrades to a
+// WARN, verified-not-EXL3 refuses, loadable EXL3 passes.
+func checkHeader(in Input, method, hint string) Check {
+	p := probeHeaders(in)
+	unverified := func(why string) Check {
+		return Check{Name: "quant", Status: StatusWarn,
+			Detail: "safetensors header not fully readable (" + why + ") — EXL3 storage and quant dtypes are UNVERIFIED; " + hint}
+	}
+	switch {
+	case p.read == 0:
+		return unverified(p.reason)
+	case p.storage && p.badDtype != "":
+		return Check{Name: "quant", Status: StatusRefuse,
+			Detail: fmt.Sprintf("quant tensor %s has dtype %s, which the installed exllamav3 cannot load "+
+				"(convert_dtype supports I32,I64,I8,F8_E8M0,I16,F16,BF16,F32,F8_E4M3,U8 — the engine raises \"Unknown dtype\"): "+
+				"refusing before the download so the failure costs KB, not GB; %s",
+				p.badTensor, p.badDtype, hint)}
+	case p.storage:
+		return Check{Name: "quant", Status: StatusOK, Detail: "exl3"}
+	case p.reason == "":
+		// Every probed header read cleanly and none carries the group —
+		// this is verified "not EXL3 storage", not a failure to look.
+		if method == "exl3" {
+			return Check{Name: "quant", Status: StatusRefuse,
+				Detail: "quantization_config claims exl3, but the safetensors header has no EXL3 tensor group " +
+					"(.trellis + .su/.suh + .sv/.svh) — the engine identifies EXL3 by that group, so this is not EXL3 storage; " + hint}
+		}
+		return Check{Name: "quant", Status: StatusRefuse,
+			Detail: "no EXL3 tensor group (.trellis + .su/.suh + .sv/.svh) in the safetensors header — not EXL3 storage " +
+				"(unquantized FP16 or an EXL2 conversion); " + hint}
+	default:
+		return unverified(p.reason + "; no EXL3 tensor group confirmed in the headers that did read")
+	}
+}
+
+const (
+	// HeaderReadBytes bounds one probe request: the 8-byte size prefix
+	// plus at most 4 MiB of header JSON. Exported so pull's Range header
+	// matches exactly what the gate will consume.
+	HeaderReadBytes = 8 + 4<<20
+	// maxHeaderFiles caps probe requests per gate run — a hundred-shard
+	// repo must not turn `fit` into a crawl (≤ 4 bounded reads).
+	maxHeaderFiles = 4
+)
+
+// headerProbe aggregates the safetensors header reads for one gate run.
+type headerProbe struct {
+	read      int    // headers parsed
+	reason    string // first unreadable cause ("" = none)
+	storage   bool   // engine EXL3 tensor-suffix group found
+	badTensor string // quant-group tensor with an unloadable dtype
+	badDtype  string
+}
+
+// probeHeaders reads up to maxHeaderFiles safetensors headers via the
+// injected FetchHeader (one bounded ranged read each, closed after the
+// header). Metadata only: no tensor data is ever requested or read.
+func probeHeaders(in Input) headerProbe {
+	var p headerProbe
+	if in.FetchHeader == nil {
+		p.reason = "no header reader wired (offline or local path)"
+		return p
+	}
+	probed := 0
+	for _, path := range in.RepoFiles {
+		if !strings.HasSuffix(path, ".safetensors") {
+			continue
+		}
+		if probed >= maxHeaderFiles {
+			break
+		}
+		probed++
+		var err error
+		rc, ferr := in.FetchHeader(path)
+		if ferr == nil {
+			var names map[string]string
+			names, err = readHeader(rc)
+			if err == nil {
+				p.read++
+				if hasExl3Storage(names) {
+					p.storage = true
+				}
+				if p.badTensor == "" {
+					p.badTensor, p.badDtype = firstBadQuantDtype(names)
+				}
+			}
+		} else {
+			err = ferr
+		}
+		if err != nil && p.reason == "" {
+			p.reason = path + ": " + err.Error()
+		}
+	}
+	return p
+}
+
+// readHeader consumes one safetensors header: the 8-byte little-endian
+// header_size — validated BEFORE any allocation, remote input is never
+// trusted — then exactly that many JSON bytes, then closes the reader.
+func readHeader(rc io.ReadCloser) (map[string]string, error) {
+	defer rc.Close()
+	var prefix [8]byte
+	if _, err := io.ReadFull(rc, prefix[:]); err != nil {
+		return nil, fmt.Errorf("read size prefix: %w", err)
+	}
+	size := int64(binary.LittleEndian.Uint64(prefix[:]))
+	if size <= 0 || size > HeaderReadBytes-8 {
+		return nil, fmt.Errorf("header_size %d outside allowed range (0, %d]", size, HeaderReadBytes-8)
+	}
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(rc, buf); err != nil {
+		return nil, fmt.Errorf("read header JSON: %w", err)
+	}
+	var raw map[string]struct {
+		Dtype string `json:"dtype"`
+	}
+	if err := json.Unmarshal(buf, &raw); err != nil {
+		return nil, fmt.Errorf("parse header JSON: %w", err)
+	}
+	names := make(map[string]string, len(raw))
+	for k, v := range raw {
+		names[k] = v.Dtype
+	}
+	return names, nil
+}
+
+// hasExl3Storage mirrors the engine's own test: is_exl3_storage() at
+// modules/linear.py:385 = has_tensor_group(key, [["sv","svh"],
+// ["su","suh"],"trellis"]) with the semantics at loader/safetensors.py:
+// 472 — all groups required, list entries alternatives. Applied at
+// repo level: any module prefix carrying .trellis plus an su- and an
+// sv- variant.
+func hasExl3Storage(names map[string]string) bool {
+	for name := range names {
+		if !strings.HasSuffix(name, ".trellis") {
+			continue
+		}
+		p := strings.TrimSuffix(name, ".trellis")
+		_, su := names[p+".su"]
+		_, suh := names[p+".suh"]
+		_, sv := names[p+".sv"]
+		_, svh := names[p+".svh"]
+		if (su || suh) && (sv || svh) {
+			return true
+		}
+	}
+	return false
+}
+
+// quantDtypeSuffixes are the EXL3 quant-storage tensors load_exl3
+// actually reads (modules/linear.py:391-406). Inert buffers the loader
+// never reads are deliberately out of scope — the engine itself only
+// structurally validates them (loader/safetensors.py:52-54).
+var quantDtypeSuffixes = []string{".trellis", ".su", ".suh", ".sv", ".svh", ".mcg", ".mul1"}
+
+// engineLoadable is convert_dtype's supported set
+// (loader/safetensors.py:32-43); any other tag raises
+// ValueError("Unknown dtype ...") at load time.
+var engineLoadable = map[string]bool{
+	"I32": true, "I64": true, "I8": true, "F8_E8M0": true, "I16": true,
+	"F16": true, "BF16": true, "F32": true, "F8_E4M3": true, "U8": true,
+}
+
+// firstBadQuantDtype returns the first quant-group tensor (sorted for a
+// deterministic message) whose dtype the installed engine cannot load.
+func firstBadQuantDtype(names map[string]string) (tensor, dtype string) {
+	keys := make([]string, 0, len(names))
+	for k := range names {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		for _, suf := range quantDtypeSuffixes {
+			if !strings.HasSuffix(name, suf) {
+				continue
+			}
+			if dt := names[name]; dt != "" && !engineLoadable[dt] {
+				return name, dt
+			}
+			break // one suffix match per tensor is enough
+		}
+	}
+	return "", ""
+}
+
+// checkMoE warns when the config declares expert-parallel MoE fields.
+// Whether the conversion ships .mul1 (per-expert shards that enable CPU
+// offload) cannot be confirmed from config.json: the gate's header
+// probe lists tensor names but does not gate on .mul1 — a converter may
+// omit it without any other metadata changing. Warn-only by design —
+// refuse would block genuine .mul1 repos (e.g. Terra3312/GLM-5.3-Flash-
+// EXL3-4bpw-MUL1) that parse identically here.
+func checkMoE() Check {
+	return Check{Name: "moe", Status: StatusWarn,
+		Detail: "MoE config detected (n_routed_experts / num_local_experts / num_experts / moe_intermediate_size in config.json): " +
+			"whether this conversion ships .mul1 expert shards is NOT gated — tensor names appear in the safetensors header, " +
+			"but their presence is not checked; without .mul1, CPU expert offload is silently disabled and every expert must fit on the GPU, " +
+			"so a quant-slim model can still OOM — inspect the repo's converter flags or README before pulling"}
 }
 
 func fitStatus(res autofit.Result) string {

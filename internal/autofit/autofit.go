@@ -45,18 +45,37 @@ type Spec struct {
 	KVHeads       int
 	HeadDim       int
 	MaxCtx        int // max_position_embeddings
+	// QuantMethod is quantization_config.quant_method as embedded in
+	// config.json (exllamav3 writes both a separate file and this block;
+	// "" when absent). Not used by the fit math — it is the pre-download
+	// gate's second, independent way to confirm a repo is EXL3.
+	QuantMethod string
+	// MoE is true when the config declares expert-parallel fields
+	// (n_routed_experts / num_local_experts / num_experts /
+	// moe_intermediate_size, top level or text_config). The gate uses it
+	// to warn that .mul1 expert shards cannot be confirmed from metadata.
+	MoE bool
 }
 
 type hfConfig struct {
-	Architectures         []string         `json:"architectures"`
-	NumHiddenLayers       int              `json:"num_hidden_layers"`
-	NumKeyValueHeads      int              `json:"num_key_value_heads"`
-	HiddenSize            int              `json:"hidden_size"`
-	NumAttentionHeads     int              `json:"num_attention_heads"`
-	HeadDim               int              `json:"head_dim"`
-	MaxPositionEmbeddings int              `json:"max_position_embeddings"`
-	LayerTypes            []string         `json:"layer_types"`
-	TextConfig            *json.RawMessage `json:"text_config"`
+	Architectures         []string `json:"architectures"`
+	NumHiddenLayers       int      `json:"num_hidden_layers"`
+	NumKeyValueHeads      int      `json:"num_key_value_heads"`
+	HiddenSize            int      `json:"hidden_size"`
+	NumAttentionHeads     int      `json:"num_attention_heads"`
+	HeadDim               int      `json:"head_dim"`
+	MaxPositionEmbeddings int      `json:"max_position_embeddings"`
+	LayerTypes            []string `json:"layer_types"`
+	QuantizationConfig    *struct {
+		QuantMethod string `json:"quant_method"`
+	} `json:"quantization_config"`
+	// MoE expert markers — generic fields, not arch names (GLM-5.3-Flash
+	// is Glm5NextForConditionalGeneration with 288 routed experts).
+	NRoutedExperts      int              `json:"n_routed_experts"`
+	NumLocalExperts     int              `json:"num_local_experts"`
+	NumExperts          int              `json:"num_experts"`
+	MoEIntermediateSize int              `json:"moe_intermediate_size"`
+	TextConfig          *json.RawMessage `json:"text_config"`
 }
 
 // ParseSpec extracts the fit-relevant fields from a config.json.
@@ -66,6 +85,8 @@ func ParseSpec(configJSON []byte) (Spec, error) {
 	if err := json.Unmarshal(configJSON, &raw); err != nil {
 		return Spec{}, fmt.Errorf("parse config.json: %w", err)
 	}
+	quantMethod := embeddedQuantMethod(raw)
+	moe := hasMoEFields(raw)
 	if raw.NumHiddenLayers == 0 && raw.TextConfig != nil {
 		var inner hfConfig
 		if err := json.Unmarshal(*raw.TextConfig, &inner); err == nil && inner.NumHiddenLayers > 0 {
@@ -73,6 +94,10 @@ func ParseSpec(configJSON []byte) (Spec, error) {
 				inner.Architectures = raw.Architectures
 			}
 			raw = inner
+			if quantMethod == "" {
+				quantMethod = embeddedQuantMethod(raw)
+			}
+			moe = moe || hasMoEFields(raw)
 		}
 	}
 
@@ -95,12 +120,30 @@ func ParseSpec(configJSON []byte) (Spec, error) {
 		KVHeads:       raw.NumKeyValueHeads,
 		HeadDim:       headDim,
 		MaxCtx:        raw.MaxPositionEmbeddings,
+		QuantMethod:   quantMethod,
+		MoE:           moe,
 	}
 	if spec.Layers <= 0 || spec.KVHeads <= 0 || spec.MaxCtx <= 0 {
 		return Spec{}, fmt.Errorf("config.json: incomplete model description (layers=%d kv_heads=%d max_ctx=%d)",
 			spec.Layers, spec.KVHeads, spec.MaxCtx)
 	}
 	return spec, nil
+}
+
+// embeddedQuantMethod reads quantization_config.quant_method from one
+// config.json level (top level, or text_config for hybrid wrappers).
+func embeddedQuantMethod(c hfConfig) string {
+	if c.QuantizationConfig == nil {
+		return ""
+	}
+	return c.QuantizationConfig.QuantMethod
+}
+
+// hasMoEFields reports whether one config level declares expert-parallel
+// MoE fields. Probed generically because arch names don't reliably carry
+// "moe" (Glm5NextForConditionalGeneration ships 288 routed experts).
+func hasMoEFields(c hfConfig) bool {
+	return c.NRoutedExperts > 0 || c.NumLocalExperts > 0 || c.NumExperts > 0 || c.MoEIntermediateSize > 0
 }
 
 // kvLayers counts layers that hold a per-token KV cache. Hybrid models
