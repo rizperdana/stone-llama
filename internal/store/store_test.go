@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,5 +220,40 @@ func TestRemove(t *testing.T) {
 	}
 	if err := Remove(modelsDir, "stray"); err == nil || !strings.Contains(err.Error(), "not a model") {
 		t.Errorf("err = %v, want not a model", err)
+	}
+}
+
+func TestSaveManifestAtomicNoTempResidue(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveManifest(dir, &Manifest{RepoID: "org/x", Revision: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadManifest(dir)
+	if err != nil || got == nil || got.RepoID != "org/x" || got.Revision != "abc" {
+		t.Fatalf("LoadManifest = %+v, %v", got, err)
+	}
+	if residue, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(residue) != 0 {
+		t.Errorf("temp residue: %v", residue)
+	}
+}
+
+func TestSaveManifestFailureKeepsOldManifest(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveManifest(dir, &Manifest{RepoID: "org/old"}); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	renameFile = func(string, string) error { return errors.New("forced rename failure") }
+	t.Cleanup(func() { renameFile = orig })
+
+	if err := SaveManifest(dir, &Manifest{RepoID: "org/new"}); err == nil {
+		t.Fatal("want forced failure")
+	}
+	got, err := LoadManifest(dir)
+	if err != nil || got == nil || got.RepoID != "org/old" {
+		t.Fatalf("old manifest lost: %+v, %v", got, err)
+	}
+	if residue, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(residue) != 0 {
+		t.Errorf("temp residue after failure: %v", residue)
 	}
 }

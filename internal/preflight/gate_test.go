@@ -20,6 +20,7 @@ func baseInput() Input {
 		QuantMethod:   "exl3",
 		HasQuantCfg:   true,
 		RepoFiles:     []string{"config.json", "quantization_config.json", "model.safetensors"},
+		Repo:          "org/model",
 		Spec:          smolSpec(),
 		WeightsBytes:  1_957_008_720,
 		VRAMMiB:       4096,
@@ -68,7 +69,7 @@ func TestEvaluateUnknownArchWarnsNeverRefuses(t *testing.T) {
 		t.Errorf("note = %q", r.Verdict.Note)
 	}
 	arch := r.Checks[0]
-	if arch.Status != StatusWarn || !strings.Contains(arch.Detail, "not refusing") {
+	if arch.Status != StatusWarn || !strings.Contains(arch.Detail, "unknown to the embedded support table") {
 		t.Errorf("arch check = %+v", arch)
 	}
 }
@@ -123,25 +124,29 @@ func TestEvaluateGGUFOnlyRefusesWithOllamaHint(t *testing.T) {
 	}
 }
 
-func TestEvaluateMissingQuantConfigWarns(t *testing.T) {
+func TestEvaluateMissingQuantConfigWarnsNotRefuses(t *testing.T) {
 	cases := map[string]struct {
 		hasCfg  bool
 		wantSub string
 	}{
 		"absent":        {false, "no quantization_config.json"},
-		"missing field": {true, "no quant_method"},
+		"missing field": {true, "has no quant_method"},
 	}
 	for name, tc := range cases {
 		in := baseInput()
 		in.QuantMethod = ""
 		in.HasQuantCfg = tc.hasCfg
 		r := Evaluate(in)
-		if r.Refused {
-			t.Errorf("%s: must warn, not refuse", name)
+		if r.Refused || !r.Warned {
+			t.Errorf("%s: missing quant config must warn, not refuse (FP16 ladder stays open); refused=%v", name, r.Refused)
 			continue
 		}
-		if !strings.Contains(r.Checks[1].Detail, tc.wantSub) {
-			t.Errorf("%s: detail = %q", name, r.Checks[1].Detail)
+		detail := r.Checks[1].Detail
+		if !strings.Contains(detail, tc.wantSub) {
+			t.Errorf("%s: detail = %q", name, detail)
+		}
+		if !strings.Contains(detail, "look for '-exl3'") {
+			t.Errorf("%s: missing exl3 hint: %q", name, detail)
 		}
 	}
 }
@@ -153,8 +158,9 @@ func TestEvaluateNoWeightsRefuses(t *testing.T) {
 	in.RepoFiles = []string{"config.json"}
 	in.WeightsBytes = 0
 	r := Evaluate(in)
-	if !r.Refused || !strings.Contains(r.Checks[1].Detail, ".safetensors") {
-		t.Errorf("checks = %+v", r.Checks)
+	want := "no model weights found in org/model (only 1 non-weight files) — pick a repo that publishes .safetensors"
+	if !r.Refused || !strings.Contains(r.Checks[1].Detail, want) {
+		t.Errorf("checks = %+v, want %q", r.Checks, want)
 	}
 }
 
@@ -186,6 +192,9 @@ func TestEvaluateNoFitRefusesWithArithmetic(t *testing.T) {
 	if !strings.Contains(r.Verdict.Note, "largest ctx that would fit: none") {
 		t.Errorf("note misses largest ctx: %q", r.Verdict.Note)
 	}
+	if !strings.Contains(r.Verdict.Note, "reduce --ctx or pick a smaller quant") {
+		t.Errorf("refusal misses next action: %q", r.Verdict.Note)
+	}
 }
 
 func TestEvaluateFormatContinuationLines(t *testing.T) {
@@ -196,5 +205,39 @@ func TestEvaluateFormatContinuationLines(t *testing.T) {
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "gate: fit") || !strings.Contains(joined, "      largest ctx") {
 		t.Errorf("Format = \n%s", joined)
+	}
+}
+
+func TestOOMAdviceReduceCtxAndCacheModeLines(t *testing.T) {
+	res := autofit.Result{
+		Ctx:         65536,
+		Mode:        "FP16",
+		Fits:        true,
+		Warning:     "only 100 MiB margin above the headroom",
+		ElemsPerTok: 36864,
+	}
+	got := OOMAdvice(res)
+	for _, sub := range []string{
+		"CUDA out of memory before the first token (prefill workspace)",
+		"reduce --ctx",
+		"--cache-mode Q4",
+		"frees ~",
+	} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("OOMAdvice missing %q:\n%s", sub, got)
+		}
+	}
+}
+
+func TestOOMAdviceLargestCtxLine(t *testing.T) {
+	res := autofit.Result{Fits: false, LargestCtx: 32768, ElemsPerTok: 36864}
+	got := OOMAdvice(res)
+	for _, sub := range []string{
+		"largest ctx that would fit now: 32768",
+		"retry with --ctx 32768",
+	} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("OOMAdvice missing %q:\n%s", sub, got)
+		}
 	}
 }

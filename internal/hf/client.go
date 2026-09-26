@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +22,23 @@ const DefaultBaseURL = "https://huggingface.co"
 // maxMetaFile caps FetchFile — config/tokenizer JSONs are KBs; anything
 // megabyte-scale here means we're pointed at a weight file.
 const maxMetaFile = 8 << 20
+
+// requestTimeout bounds dial+response for every metadata call.
+const requestTimeout = 60 * time.Second
+
+// Bounded retry: maxAttempts total, only on 5xx/429/timeouts.
+const (
+	maxAttempts = 3
+	backoffBase = 250 * time.Millisecond
+)
+
+// Injectable so retry tests run instantly.
+var (
+	sleepFn  = time.Sleep
+	jitterFn = func(d time.Duration) time.Duration {
+		return d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
+	}
+)
 
 var (
 	ErrNotFound = errors.New("repository not found on HuggingFace")
@@ -39,7 +58,7 @@ func NewClient(baseURL, token string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		Token:   token,
-		HTTP:    &http.Client{Timeout: 60 * time.Second},
+		HTTP:    &http.Client{Timeout: requestTimeout},
 	}
 }
 
@@ -117,40 +136,103 @@ func ValidRepoID(id string) bool {
 	return true
 }
 
+// isTimeout reports whether err is a network timeout (client timeout,
+// dial timeout, deadline).
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// wrapGet shapes a transport error as op+URL+timeout so callers can see
+// which URL failed and how long they waited.
+func wrapGet(rawurl string, err error) error {
+	if isTimeout(err) {
+		return fmt.Errorf("hf: GET %s: timeout after %s: %w", rawurl, requestTimeout, err)
+	}
+	return fmt.Errorf("hf: GET %s: %w", rawurl, err)
+}
+
+// get GETs rawurl with bounded retries: maxAttempts total on 5xx, 429
+// and timeouts only — 401/403/404/other 4xx return immediately for the
+// caller to judge.
 func (c *Client) get(rawurl string) (*http.Response, error) {
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			sleepFn(jitterFn(backoffBase << (attempt - 2)))
+		}
+		var resp *http.Response
+		resp, err = c.do(rawurl)
+		if err == nil {
+			if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+				return resp, nil
+			}
+			resp.Body.Close()
+			err = fmt.Errorf("hf: GET %s: HTTP %d", rawurl, resp.StatusCode)
+			if attempt == maxAttempts {
+				return nil, fmt.Errorf("%s after %d attempts", err, maxAttempts)
+			}
+			continue
+		}
+		if !isTimeout(err) || attempt == maxAttempts {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
+func (c *Client) do(rawurl string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, rawurl, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("hf: GET %s: %w", rawurl, err)
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
-	return c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, wrapGet(rawurl, err)
+	}
+	return resp, nil
 }
 
-func (c *Client) statusErr(repoID string, code int) error {
+// statusErr maps a non-retryable HTTP status to an actionable error
+// keyed by the request URL; auth failures say what to do next.
+func statusErr(rawurl string, code int) error {
 	switch code {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%s: %w", repoID, ErrGated)
+	case http.StatusUnauthorized:
+		return fmt.Errorf("hf: 401 unauthorized for %s — token invalid; run 'stone-llama login': %w", rawurl, ErrGated)
+	case http.StatusForbidden:
+		return fmt.Errorf("hf: 403 forbidden for %s — token lacks access or the repo is gated; run 'stone-llama login' with a token that can read it: %w", rawurl, ErrGated)
 	case http.StatusNotFound:
-		return fmt.Errorf("%s: %w", repoID, ErrNotFound)
+		return fmt.Errorf("hf: 404 for %s: %w", rawurl, ErrNotFound)
 	default:
-		return fmt.Errorf("huggingface: HTTP %d for %s", code, repoID)
+		return fmt.Errorf("hf: GET %s: HTTP %d", rawurl, code)
 	}
 }
 
 // RepoMeta fetches repo tree + sizes + LFS hashes (?blobs=true). KB-scale.
 func (c *Client) RepoMeta(repoID string) (Repo, error) {
+	return c.RepoMetaRev(repoID, "")
+}
+
+// RepoMetaRev is RepoMeta for an explicit branch or tag; revision ""
+// means the repo's default ref.
+func (c *Client) RepoMetaRev(repoID, revision string) (Repo, error) {
 	if !ValidRepoID(repoID) {
 		return Repo{}, fmt.Errorf("invalid repository id %q", repoID)
 	}
-	resp, err := c.get(c.BaseURL + "/api/models/" + repoID + "?blobs=true")
+	rawurl := c.BaseURL + "/api/models/" + repoID + "?blobs=true"
+	if revision != "" {
+		rawurl += "&revision=" + url.QueryEscape(revision)
+	}
+	resp, err := c.get(rawurl)
 	if err != nil {
 		return Repo{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Repo{}, c.statusErr(repoID, resp.StatusCode)
+		return Repo{}, statusErr(rawurl, resp.StatusCode)
 	}
 
 	var body struct {
@@ -197,15 +279,34 @@ func (c *Client) RepoMeta(repoID string) (Repo, error) {
 	return repo, nil
 }
 
+// GetJSON GETs an API path against BaseURL and decodes it into dst;
+// token, bounded retry and timeout surfacing come from the shared get().
+func (c *Client) GetJSON(path string, dst any) error {
+	rawurl := c.BaseURL + path
+	resp, err := c.get(rawurl)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return statusErr(rawurl, resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+		return fmt.Errorf("decode %s: %w", rawurl, err)
+	}
+	return nil
+}
+
 // Search returns candidate repo ids for a bare model name (KB-scale).
 func (c *Client) Search(query string) ([]string, error) {
-	resp, err := c.get(c.BaseURL + "/api/models?search=" + url.QueryEscape(query) + "&limit=20")
+	rawurl := c.BaseURL + "/api/models?search=" + url.QueryEscape(query) + "&limit=20"
+	resp, err := c.get(rawurl)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("huggingface search: HTTP %d", resp.StatusCode)
+		return nil, statusErr(rawurl, resp.StatusCode)
 	}
 	var body []struct {
 		ID string `json:"id"`
@@ -236,13 +337,14 @@ func (c *Client) FetchFile(repoID, rev, file string) ([]byte, error) {
 	if strings.ContainsAny(file, " \t") {
 		return nil, fmt.Errorf("invalid file path %q", file)
 	}
-	resp, err := c.get(c.ResolveURL(repoID, rev, file))
+	rawurl := c.ResolveURL(repoID, rev, file)
+	resp, err := c.get(rawurl)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.statusErr(repoID+"/"+file, resp.StatusCode)
+		return nil, statusErr(rawurl, resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMetaFile+1))
 	if err != nil {
@@ -259,7 +361,7 @@ func (c *Client) FetchFile(repoID, rev, file string) ([]byte, error) {
 func (c *Client) FetchRange(rawurl string, offset int64) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodGet, rawurl, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("hf: GET %s: %w", rawurl, err)
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
@@ -267,5 +369,9 @@ func (c *Client) FetchRange(rawurl string, offset int64) (*http.Response, error)
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	return c.HTTP.Do(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, wrapGet(rawurl, err)
+	}
+	return resp, nil
 }

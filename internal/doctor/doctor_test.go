@@ -122,3 +122,63 @@ func TestProbeSkipsGarbageLines(t *testing.T) {
 		t.Fatalf("GPUs/Ready = %d/%v, want 1/true", len(r.GPUs), r.Ready())
 	}
 }
+
+func TestContendersParsesRows(t *testing.T) {
+	fakeSMI(t,
+		`echo "1234, python, 3812"`,
+		`echo "5678, my,agent, 100"`,
+		`echo "9999, /usr/bin/ollama serve, N/A"`)
+	cs, err := Contenders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 {
+		t.Fatalf("contenders = %+v, want 2 rows (N/A skipped)", cs)
+	}
+	if c := cs[0]; c.PID != 1234 || c.Name != "python" || c.MiB != 3812 {
+		t.Errorf("first = %+v", c)
+	}
+	if c := cs[1]; c.PID != 5678 || c.Name != "my,agent" || c.MiB != 100 {
+		t.Errorf("second = %+v", c)
+	}
+}
+
+func TestContendersEmptyOutputIsEmptyNotError(t *testing.T) {
+	fakeSMI(t, `true`)
+	cs, err := Contenders()
+	if err != nil || len(cs) != 0 {
+		t.Errorf("Contenders = %v, %v; want empty, nil", cs, err)
+	}
+}
+
+func TestContendersMissingBinary(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := Contenders()
+	if err == nil || !strings.Contains(err.Error(),
+		"nvidia-smi not found — is the NVIDIA driver installed? run 'stone-llama doctor'") {
+		t.Fatalf("err = %v, want missing-binary guidance", err)
+	}
+}
+
+func TestContentionError(t *testing.T) {
+	if err := ContentionError(nil); err != nil {
+		t.Errorf("empty contenders → %v, want nil", err)
+	}
+	err := ContentionError([]Contender{{PID: 1234, Name: "python", MiB: 3812}})
+	want := "another process appears to hold the GPU: PID 1234 (python) using 3812 MiB — stop it, wait, " +
+		"or use the free VRAM (evidence: nvidia-smi --query-compute-apps)"
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+	many := []Contender{
+		{PID: 1, Name: "a", MiB: 10}, {PID: 2, Name: "b", MiB: 20},
+		{PID: 3, Name: "c", MiB: 30}, {PID: 4, Name: "d", MiB: 40},
+	}
+	err = ContentionError(many)
+	if err == nil || !strings.Contains(err.Error(), "and 1 more") {
+		t.Errorf("4 contenders → %v, want 'and 1 more'", err)
+	}
+	if strings.Contains(err.Error(), "PID 4") {
+		t.Errorf("beyond 3 must not be listed: %v", err)
+	}
+}

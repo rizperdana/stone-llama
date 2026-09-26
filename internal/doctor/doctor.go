@@ -4,6 +4,7 @@
 package doctor
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -114,4 +115,79 @@ func (r Report) Format() string {
 		fmt.Fprintf(&b, "✗ %s\n", r.Note)
 	}
 	return b.String()
+}
+
+// Contender is one process nvidia-smi reports holding GPU compute memory.
+type Contender struct {
+	PID  int
+	Name string
+	MiB  int64
+}
+
+// Contenders lists processes currently using GPU memory — evidence for a
+// confusingly failed spawn. Unlike Probe, a missing nvidia-smi is an
+// error here: the caller is explaining a failure, not judging readiness.
+func Contenders() ([]Contender, error) {
+	path, err := exec.LookPath("nvidia-smi")
+	if err != nil {
+		return nil, errors.New("nvidia-smi not found — is the NVIDIA driver installed? run 'stone-llama doctor'")
+	}
+	out, err := exec.Command(path,
+		"--query-compute-apps=pid,process_name,used_gpu_memory",
+		"--format=csv,noheader,nounits").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("nvidia-smi --query-compute-apps failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var cs []Contender
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if c, ok := parseContender(line); ok {
+			cs = append(cs, c)
+		}
+	}
+	return cs, nil
+}
+
+// parseContender parses one `pid, process_name, used_gpu_memory` CSV row;
+// process_name may contain commas, so fields split at the edges. Unusable
+// rows (e.g. "N/A" memory) are skipped like Probe skips garbage lines.
+func parseContender(line string) (Contender, bool) {
+	parts := strings.Split(line, ",")
+	if len(parts) < 3 {
+		return Contender{}, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return Contender{}, false
+	}
+	mib, err := strconv.ParseInt(strings.TrimSpace(parts[len(parts)-1]), 10, 64)
+	if err != nil {
+		return Contender{}, false
+	}
+	name := strings.TrimSpace(strings.Join(parts[1:len(parts)-1], ","))
+	return Contender{PID: pid, Name: name, MiB: mib}, true
+}
+
+// ContentionError names up to three processes holding the GPU when a
+// spawn failed; nil when nothing holds it.
+func ContentionError(cs []Contender) error {
+	if len(cs) == 0 {
+		return nil
+	}
+	shown := cs
+	var more string
+	if len(cs) > 3 {
+		shown = cs[:3]
+		more = fmt.Sprintf(" and %d more", len(cs)-3)
+	}
+	var b strings.Builder
+	for i, c := range shown {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "PID %d (%s) using %d MiB", c.PID, c.Name, c.MiB)
+	}
+	b.WriteString(more)
+	return fmt.Errorf(
+		"another process appears to hold the GPU: %s — stop it, wait, or use the free VRAM (evidence: nvidia-smi --query-compute-apps)",
+		b.String())
 }

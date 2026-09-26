@@ -44,6 +44,10 @@ type Manifest struct {
 
 const manifestName = "manifest.json"
 
+// renameFile is the final atomic step; a test seam for the crash window
+// between temp write and rename.
+var renameFile = os.Rename
+
 // LoadManifest reads dir/manifest.json. Missing → (nil, nil);
 // corrupt → error (silent data loss is worse than a loud failure).
 func LoadManifest(dir string) (*Manifest, error) {
@@ -77,7 +81,12 @@ func SaveManifest(dir string, m *Manifest) error {
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return err
+		return fmt.Errorf("write manifest %s: %w", tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("sync manifest %s: %w", tmpName, err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
@@ -87,9 +96,9 @@ func SaveManifest(dir string, m *Manifest) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, filepath.Join(dir, manifestName)); err != nil {
+	if err := renameFile(tmpName, filepath.Join(dir, manifestName)); err != nil {
 		os.Remove(tmpName)
-		return err
+		return fmt.Errorf("commit manifest %s: %w", tmpName, err)
 	}
 	return nil
 }

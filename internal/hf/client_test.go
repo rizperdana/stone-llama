@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidRepoID(t *testing.T) {
@@ -186,5 +187,109 @@ func TestLoadTokenEnvWinsOverFile(t *testing.T) {
 	}
 	if got := LoadToken("hf_env", file); got != "hf_env" {
 		t.Errorf("env must win = %q", got)
+	}
+}
+
+// noRetrySleep neutralizes backoff so retry tests run instantly.
+func noRetrySleep(t *testing.T) {
+	t.Helper()
+	origSleep, origJitter := sleepFn, jitterFn
+	sleepFn = func(time.Duration) {}
+	jitterFn = func(d time.Duration) time.Duration { return d }
+	t.Cleanup(func() { sleepFn, jitterFn = origSleep, origJitter })
+}
+
+func TestRetryFiveXXThenSucceedsInThreeAttempts(t *testing.T) {
+	noRetrySleep(t)
+	var hits int
+	_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		switch hits {
+		case 1, 2:
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.Write([]byte(metaJSON))
+		}
+	}))
+	repo, err := c.RepoMeta("org/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 3 {
+		t.Errorf("attempts = %d, want exactly 3", hits)
+	}
+	if repo.SHA != "abc123" {
+		t.Errorf("SHA = %q, want abc123", repo.SHA)
+	}
+}
+
+func TestNoRetryOn404(t *testing.T) {
+	var hits int
+	_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	_, err := c.RepoMeta("org/repo")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if hits != 1 {
+		t.Errorf("attempts = %d, want 1 (no retry on 4xx)", hits)
+	}
+}
+
+func TestAuthErrorsDistinctAndUnretried(t *testing.T) {
+	for _, tc := range []struct {
+		code int
+		want []string
+	}{
+		{http.StatusUnauthorized, []string{
+			"hf: 401 unauthorized for ",
+			"token invalid; run 'stone-llama login'",
+		}},
+		{http.StatusForbidden, []string{
+			"hf: 403 forbidden for ",
+			"token lacks access or the repo is gated",
+			"run 'stone-llama login' with a token that can read it",
+		}},
+	} {
+		var hits int
+		_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits++
+			w.WriteHeader(tc.code)
+		}))
+		_, err := c.RepoMeta("org/repo")
+		if err == nil {
+			t.Errorf("HTTP %d: want error", tc.code)
+			continue
+		}
+		for _, sub := range tc.want {
+			if !strings.Contains(err.Error(), sub) {
+				t.Errorf("HTTP %d: err %q missing %q", tc.code, err, sub)
+			}
+		}
+		if hits != 1 {
+			t.Errorf("HTTP %d: attempts = %d, want 1 (4xx never retried)", tc.code, hits)
+		}
+	}
+}
+
+func TestTimeoutSurfacesTimeoutAfter(t *testing.T) {
+	noRetrySleep(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		w.Write([]byte(metaJSON))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(srv.URL, "")
+	c.HTTP.Timeout = 10 * time.Millisecond
+	_, err := c.RepoMeta("org/repo")
+	if err == nil {
+		t.Fatal("want timeout error")
+	}
+	for _, sub := range []string{"timeout after", "hf: GET "} {
+		if !strings.Contains(err.Error(), sub) {
+			t.Errorf("err %q missing %q", err, sub)
+		}
 	}
 }
