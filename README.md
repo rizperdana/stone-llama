@@ -243,6 +243,15 @@ that *would* fit — before anything is downloaded.
 no weights on disk needed. That's why you can rank candidates (`rank`) and decide before
 committing bandwidth.
 
+A predicted tok/s is **relative to the chosen context** — larger ctx streams more
+KV bytes per token, which lowers decode speed; two configs or models quoted at
+different contexts are not directly comparable.
+
+The estimator's decode constant is ≈83.6 GB/s effective bandwidth on this GPU —
+decodeEfficiency (0.373) × the RTX 3050 Laptop's 224 GB/s spec — calibrated to the
+measured 42.7 tok/s SmolLM3-3B 3.5bpw anchor; that figure was derived two independent
+ways, so it's the defensible baseline until calibration data lands.
+
 The verdict is saved to the model's `manifest.json` and shown by `stone-llama list`.
 Cost of a caught mistake: ~2 KB of metadata instead of a wasted multi-GB download —
 which is exactly why a 2 GB pull never starts for a model that doesn't fit.
