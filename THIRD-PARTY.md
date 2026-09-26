@@ -41,7 +41,6 @@ obligations.**
 | uv | `setup` downloads release binary tarball, SHA-256 verified | **Apache-2.0 OR MIT** (dual-licensed) | Pinned as v0.11.6 in `internal/setup/runtime.lock.json` (URL `https://github.com/astral-sh/uv/releases/download/0.11.6/uv-x86_64-unknown-linux-gnu.tar.gz`). Upstream `LICENSE-APACHE`: `https://raw.githubusercontent.com/astral-sh/uv/main/LICENSE-APACHE` — full Apache-2.0 text. Upstream `LICENSE-MIT`: `https://raw.githubusercontent.com/astral-sh/uv/main/LICENSE-MIT` — full MIT text. |
 | CPython 3.12 | `uv python install` (python-build-standalone) | **PSF-2.0** | Locally-provisioned interpreter at `~/.local/share/uv/python/cpython-3.12.*/lib/python3.12/LICENSE.txt` — states "Python software and documentation are licensed under the Python Software Foundation License Version 2." Matches upstream `https://raw.githubusercontent.com/python/cpython/v3.12.0/LICENSE`. |
 | TabbyAPI | `setup`: `git clone` + pinned checkout | **AGPL-3.0** | Local TabbyAPI checkout license file `$HOME/ai/tabbyapi/tabbyAPI/LICENSE` — full text of "GNU Affero General Public License Version 3, 19 November 2007." Pinned commit `f07131cd8fe34e449fe87cdd3a066b52b96d3cac` in `runtime.lock.json`. |
-
 | PyTorch 2.11.0+cu130 | `uv pip install -r requirements-cu13.lock` | **BSD-3-Clause** | Installed `torch-2.11.0+cu130.dist-info/METADATA`, `License: BSD-3-Clause`. Also ships `LICENSE` and `NOTICE` files per `License-File:` metadata field. |
 | exllamav3 1.5.1+cu132 | `uv pip install -r requirements-cu13.lock` | **MIT** | Installed `exllamav3-1.5.1+cu132.torch2.11.0.dist-info/METADATA`, `License-Expression: MIT`, `License-File: LICENSE`. |
 | Triton 3.6.0 | `uv pip install -r requirements-cu13.lock` | **MIT** | Installed `triton-3.6.0.dist-info/METADATA`, `Classifier: License :: OSI Approved :: MIT License`, `License-File: LICENSE`. |
@@ -109,6 +108,4 @@ sources. The A6/M7 gate is cleared.
 
 ## README alignment
 
-The README's third-party table (README.md lines 279-288) was expanded in
-`bbfbc16` to list all eight setup-fetched component families, matching the
-enumeration in this document.
+The README's third-party table was expanded in `bbfbc16` to list all eight setup-fetched component families, matching the enumeration in this document.
