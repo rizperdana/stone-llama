@@ -210,15 +210,18 @@ func collectionIDs(baseURL, token, id string) ([]string, error) {
 		return nil, fmt.Errorf("invalid collection id %q (want owner/name)", id)
 	}
 	client := hf.NewClient(baseURL, token)
+	type collItem struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		Item *struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"item"`
+	}
 	type page struct {
-		Items []struct {
-			Item struct {
-				ID   string `json:"id"`
-				Type string `json:"type"`
-			} `json:"item"`
-		} `json:"items"`
-		Next         string `json:"next"`
-		Continuation string `json:"continuation"`
+		Items        []collItem `json:"items"`
+		Next         string     `json:"next"`
+		Continuation string     `json:"continuation"`
 	}
 	var ids []string
 	seen := map[string]bool{}
@@ -229,15 +232,22 @@ func collectionIDs(baseURL, token, id string) ([]string, error) {
 			return nil, fmt.Errorf("fetch collection %s: %w", id, err)
 		}
 		for _, it := range p.Items {
+			// The live API returns flat items {"id": …, "type": …};
+			// older payloads nested them under "item". Accept both —
+			// assume neither.
+			itemID, itemType := it.ID, it.Type
+			if it.Item != nil && it.Item.ID != "" {
+				itemID, itemType = it.Item.ID, it.Item.Type
+			}
 			switch {
-			case it.Item.ID == "":
+			case itemID == "":
 				continue
-			case it.Item.Type != "" && it.Item.Type != "model":
+			case itemType != "" && itemType != "model":
 				continue
 			}
-			if !seen[it.Item.ID] {
-				seen[it.Item.ID] = true
-				ids = append(ids, it.Item.ID)
+			if !seen[itemID] {
+				seen[itemID] = true
+				ids = append(ids, itemID)
 			}
 		}
 		switch {
