@@ -87,7 +87,7 @@ verdict — with your actual GPU and driver numbers — before anything gets ins
 | `rm <model>` | remove a model (import symlinks: link only, target untouched) |
 | `login` | HuggingFace token for gated repos (stored 0600) |
 | `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; extra picked from the driver unless overridden) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
-| `serve [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream) |
+| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream; the model positional is ignored in attach mode) |
 | `ps` / `stop` | loaded model + live VRAM / stop the daemon |
 | `run <model>` | streaming CLI chat |
 | `version` | version |

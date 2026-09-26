@@ -148,7 +148,7 @@ Two caveats:
 ## 6. `serve` + `curl` — OpenAI-compatible API
 
 ```bash
-stone-llama serve                                  # loads the model, listens on 127.0.0.1:5111
+stone-llama serve [model]                         # optional model to load, then listens on 127.0.0.1:5111
 stone-llama serve --attach 127.0.0.1:5002          # attach mode: proxy to a TabbyAPI you already run
 ```
 
