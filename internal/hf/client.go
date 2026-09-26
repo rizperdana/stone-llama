@@ -196,12 +196,49 @@ func (c *Client) do(rawurl string) (*http.Response, error) {
 	return resp, nil
 }
 
+// authKind classifies an HTTP 401 from the HF API. HF answers 401 to
+// anonymous callers for BOTH gated and absent repos, so only the body
+// tells them apart (gated repos carry "gated": true/auto or "access to
+// model … is restricted" wording).
+type authKind int
+
+const (
+	authAbsent authKind = iota // repo does not exist
+	authGated                  // gated repo — needs login/HF_TOKEN
+	authToken                  // caller presented a token HF rejects
+)
+
+func classify401(body []byte) authKind {
+	b := strings.ToLower(string(body))
+	// Any non-false "gated" field marks a gated repo; HF renders it
+	// true/auto/manual with or without JSON whitespace.
+	gatedField := strings.Contains(b, `"gated":`) &&
+		!strings.Contains(b, `"gated": false`) && !strings.Contains(b, `"gated":false`)
+	switch {
+	case gatedField, strings.Contains(b, "is restricted"), strings.Contains(b, "gatedrepoerror"):
+		return authGated
+	case strings.Contains(b, "invalid_token"), strings.Contains(b, "invalid token"),
+		strings.Contains(b, "token is invalid"):
+		return authToken
+	default:
+		return authAbsent
+	}
+}
+
 // statusErr maps a non-retryable HTTP status to an actionable error
-// keyed by the request URL; auth failures say what to do next.
-func statusErr(rawurl string, code int) error {
+// keyed by the request URL; auth failures say what to do next. body is
+// the (bounded) response body used to classify 401.
+func statusErr(rawurl string, code int, body []byte) error {
 	switch code {
 	case http.StatusUnauthorized:
-		return fmt.Errorf("hf: 401 unauthorized for %s — token invalid; run 'stone-llama login': %w", rawurl, ErrGated)
+		switch classify401(body) {
+		case authGated:
+			return fmt.Errorf("hf: 401 for %s — repository is gated; run 'stone-llama login' or set HF_TOKEN: %w", rawurl, ErrGated)
+		case authToken:
+			return fmt.Errorf("hf: 401 unauthorized for %s — token invalid; run 'stone-llama login'", rawurl)
+		default:
+			return fmt.Errorf("hf: 401 for %s — repository not found; check the id (owner/repo) for a typo: %w", rawurl, ErrNotFound)
+		}
 	case http.StatusForbidden:
 		return fmt.Errorf("hf: 403 forbidden for %s — token lacks access or the repo is gated; run 'stone-llama login' with a token that can read it: %w", rawurl, ErrGated)
 	case http.StatusNotFound:
@@ -232,7 +269,8 @@ func (c *Client) RepoMetaRev(repoID, revision string) (Repo, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Repo{}, statusErr(rawurl, resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return Repo{}, statusErr(rawurl, resp.StatusCode, b)
 	}
 
 	var body struct {
@@ -289,7 +327,8 @@ func (c *Client) GetJSON(path string, dst any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return statusErr(rawurl, resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return statusErr(rawurl, resp.StatusCode, b)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
 		return fmt.Errorf("decode %s: %w", rawurl, err)
@@ -306,7 +345,8 @@ func (c *Client) Search(query string) ([]string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, statusErr(rawurl, resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, statusErr(rawurl, resp.StatusCode, b)
 	}
 	var body []struct {
 		ID string `json:"id"`
@@ -344,7 +384,8 @@ func (c *Client) FetchFile(repoID, rev, file string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, statusErr(rawurl, resp.StatusCode)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, statusErr(rawurl, resp.StatusCode, b)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMetaFile+1))
 	if err != nil {

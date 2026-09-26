@@ -123,6 +123,12 @@ func checkQuant(in Input) Check {
 	safetensors := hasSuffix(in.RepoFiles, ".safetensors")
 
 	switch {
+	// Real ExLlamaV2 repos ship their quant data in measurement.json and
+	// omit quantization_config.json — without this check they slipped
+	// through as "maybe FP16" and were only refused by VRAM later.
+	case hasSuffix(in.RepoFiles, "measurement.json"):
+		return Check{Name: "quant", Status: StatusRefuse,
+			Detail: "EXL2 quant (ExLlamaV2 format, measurement.json) — exllamav3 cannot load it; " + hint}
 	case !gguf && !safetensors:
 		return Check{Name: "quant", Status: StatusRefuse,
 			Detail: fmt.Sprintf("no model weights found in %s (only %d non-weight files) — pick a repo that publishes .safetensors",

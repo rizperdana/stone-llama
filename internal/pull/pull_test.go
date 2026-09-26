@@ -531,6 +531,32 @@ func TestPullExl2RefusedBeforeWeightBytes(t *testing.T) {
 	}
 }
 
+// A real ExLlamaV2 repo has NO quantization_config.json — only
+// measurement.json. It must be refused as EXL2 before any weight byte
+// moves, not warned as "maybe FP16" and caught later by VRAM.
+func TestPullExl2MeasurementJSONRefusedBeforeWeightBytes(t *testing.T) {
+	f, srv := newFakeHF(t)
+	f.files["org/pygmalion-exl2/config.json"] = []byte(testConfigJSON)
+	f.files["org/pygmalion-exl2/measurement.json"] = []byte(`{"layers":[{"name":"model.layers.0"}]}`)
+	w := bytes.Repeat([]byte("w"), 4096)
+	f.files["org/pygmalion-exl2/model-00001-of-00002.safetensors"] = w
+	f.files["org/pygmalion-exl2/model-00002-of-00002.safetensors"] = w
+
+	opts := baseOpts(srv, t.TempDir())
+	opts.Ref = "org/pygmalion-exl2"
+	_, err := Run(opts)
+	if err == nil || !strings.Contains(err.Error(), "gate") {
+		t.Fatalf("err = %v, want gate refusal", err)
+	}
+	if !strings.Contains(out(opts), "ExLlamaV2") || !strings.Contains(out(opts), "measurement.json") {
+		t.Errorf("no exl2 detail:\n%s", out(opts))
+	}
+	for hit := range f.resolveHits {
+		if strings.Contains(hit, "safetensors") && f.resolveHits[hit] != 0 {
+			t.Errorf("EXL2 bytes must never download: %s hit %d", hit, f.resolveHits[hit])
+		}
+	}
+}
 func TestPullDiskPreflightBlocksDownload(t *testing.T) {
 	f, srv := newFakeHF(t)
 	seedTiny(f)

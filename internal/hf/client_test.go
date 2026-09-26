@@ -84,18 +84,24 @@ func TestRepoMetaParsesBlobsAndDetectsAuthHeader(t *testing.T) {
 func TestRepoMetaStatusMapping(t *testing.T) {
 	for _, tc := range []struct {
 		code int
+		body string
 		want error
 	}{
-		{404, ErrNotFound},
-		{401, ErrGated},
-		{403, ErrGated},
+		{404, "", ErrNotFound},
+		{401, "", ErrNotFound}, // anonymous 401, no gated marker → absent
+		{401, `{"gated":"auto"}`, ErrGated},
+		{401, `{"error":"Access to model org/repo is restricted by its publisher"}`, ErrGated},
+		{403, "", ErrGated},
 	} {
 		_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.code)
+			if tc.body != "" {
+				w.Write([]byte(tc.body))
+			}
 		}))
 		_, err := c.RepoMeta("org/repo")
 		if !errors.Is(err, tc.want) {
-			t.Errorf("HTTP %d → %v, want %v", tc.code, err, tc.want)
+			t.Errorf("HTTP %d body %q → %v, want %v", tc.code, tc.body, err, tc.want)
 		}
 	}
 }
@@ -149,6 +155,9 @@ func TestFetchFile(t *testing.T) {
 			w.WriteHeader(404)
 		case strings.HasSuffix(r.URL.Path, "/gated.json"):
 			w.WriteHeader(401)
+			w.Write([]byte(`{"gated":"manual"}`))
+		case strings.HasSuffix(r.URL.Path, "/absent.json"):
+			w.WriteHeader(401) // anonymous 401, no marker → not found
 		}
 	}))
 	data, err := c.FetchFile("org/repo", "abc123", "config.json")
@@ -160,6 +169,9 @@ func TestFetchFile(t *testing.T) {
 	}
 	if _, err := c.FetchFile("org/repo", "abc123", "gated.json"); !errors.Is(err, ErrGated) {
 		t.Errorf("gated → %v, want ErrGated", err)
+	}
+	if _, err := c.FetchFile("org/repo", "abc123", "absent.json"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("absent → %v, want ErrNotFound", err)
 	}
 	if _, err := c.FetchFile("org/repo", "abc123", "bad path.json"); err == nil {
 		t.Error("path with space must fail")
@@ -241,13 +253,22 @@ func TestNoRetryOn404(t *testing.T) {
 func TestAuthErrorsDistinctAndUnretried(t *testing.T) {
 	for _, tc := range []struct {
 		code int
+		body string
 		want []string
 	}{
-		{http.StatusUnauthorized, []string{
-			"hf: 401 unauthorized for ",
+		{http.StatusUnauthorized, "", []string{
+			"hf: 401 for ",
+			"repository not found",
+			"check the id (owner/repo) for a typo",
+		}},
+		{http.StatusUnauthorized, `{"gated":"auto"}`, []string{
+			"repository is gated",
+			"run 'stone-llama login' or set HF_TOKEN",
+		}},
+		{http.StatusUnauthorized, `{"error":"invalid token"}`, []string{
 			"token invalid; run 'stone-llama login'",
 		}},
-		{http.StatusForbidden, []string{
+		{http.StatusForbidden, "", []string{
 			"hf: 403 forbidden for ",
 			"token lacks access or the repo is gated",
 			"run 'stone-llama login' with a token that can read it",
@@ -257,6 +278,9 @@ func TestAuthErrorsDistinctAndUnretried(t *testing.T) {
 		_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			hits++
 			w.WriteHeader(tc.code)
+			if tc.body != "" {
+				w.Write([]byte(tc.body))
+			}
 		}))
 		_, err := c.RepoMeta("org/repo")
 		if err == nil {

@@ -100,6 +100,33 @@ func TestEvaluateExl2Refuses(t *testing.T) {
 	}
 }
 
+// Real ExLlamaV2 repos (Royallab-style) ship measurement.json and no
+// quantization_config.json — the gate must refuse them as EXL2, never
+// warn "may be unquantized FP16".
+func TestEvaluateExl2MeasurementJSONRefuses(t *testing.T) {
+	for _, files := range [][]string{
+		{"config.json", "tokenizer.json", "model-00001-of-00002.safetensors",
+			"model-00002-of-00002.safetensors", "measurement.json"},
+		{"config.json", "tokenizer.json", "exl2-3.0bpw/model.safetensors",
+			"exl2-3.0bpw/measurement.json"}, // scoped layout
+	} {
+		in := baseInput()
+		in.QuantMethod = ""
+		in.HasQuantCfg = false
+		in.RepoFiles = files
+		in.WeightsBytes = 4_000_000_000
+		r := Evaluate(in)
+		if !r.Refused {
+			t.Errorf("%v: measurement.json repo must refuse, got %+v", files, r)
+			continue
+		}
+		q := r.Checks[1]
+		if q.Status != StatusRefuse || !strings.Contains(q.Detail, "ExLlamaV2") ||
+			!strings.Contains(q.Detail, "measurement.json") {
+			t.Errorf("quant check = %+v", q)
+		}
+	}
+}
 func TestEvaluateOtherQuantMethodsRefuse(t *testing.T) {
 	in := baseInput()
 	in.QuantMethod = "gptq"
