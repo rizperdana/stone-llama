@@ -3,6 +3,7 @@ package pull
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"github.com/rizperdana/stone-llama/internal/store"
@@ -123,11 +124,14 @@ func (f *fakeHF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 			return
 		}
-		f.resolveHits[key]++
-
 		rangeHdr := r.Header.Get("Range")
 		if rangeHdr != "" {
+			// Ranged reads are metadata (the gate's header probe); the
+			// assertions below guard weight downloads, which are full
+			// fetches without a Range header.
 			f.ranges = append(f.ranges, rangeHdr+" "+key)
+		} else {
+			f.resolveHits[key]++
 		}
 		offset := int64(0)
 		if rangeHdr != "" && !f.ignoreRange {
@@ -175,9 +179,24 @@ const testConfigJSON = `{
 	"max_position_embeddings": 65536
 }`
 
+// exl3Weights returns bytes that parse as a safetensors header carrying
+// the engine's EXL3-storage tensor group (linear.py is_exl3_storage:
+// trellis + suh + svh) followed by padding — the gate's header probe
+// reads only the 8-byte length + JSON, and fixtures must look like a
+// real conversion to pass it.
+func exl3Weights() []byte {
+	j := []byte(`{"model.layers.0.self_attn.q_proj.trellis":{"dtype":"I16"},` +
+		`"model.layers.0.self_attn.q_proj.suh":{"dtype":"F16"},` +
+		`"model.layers.0.self_attn.q_proj.svh":{"dtype":"F16"}}`)
+	buf := make([]byte, 8+len(j))
+	binary.LittleEndian.PutUint64(buf, uint64(len(j)))
+	copy(buf[8:], j)
+	return append(buf, bytes.Repeat([]byte("x"), 4096)...)
+}
+
 func seedTiny(f *fakeHF) {
 	cfg := []byte(testConfigJSON)
-	weights := bytes.Repeat([]byte("EXL3WEIGHTS!"), 4096) // 48 KiB
+	weights := exl3Weights() // EXL3-storage header + 4 KiB padding
 	f.files["org/tiny-exl3/config.json"] = cfg
 	f.files["org/tiny-exl3/quantization_config.json"] = []byte(`{"quant_method":"exl3","bits":3.5}`)
 	f.files["org/tiny-exl3/model.safetensors"] = weights
@@ -454,11 +473,13 @@ func TestPullExistingModelAndForce(t *testing.T) {
 func TestPullMultipleQuantsRequireTag(t *testing.T) {
 	f, srv := newFakeHF(t)
 	cfg := []byte(testConfigJSON)
-	w1 := bytes.Repeat([]byte("Q35"), 4096)
-	w2 := bytes.Repeat([]byte("Q40"), 4096)
+	w1 := exl3Weights()
+	w2 := exl3Weights()
 	f.files["org/multi-exl3/3.5bpw/config.json"] = cfg
+	f.files["org/multi-exl3/3.5bpw/quantization_config.json"] = []byte(`{"quant_method":"exl3","bits":3.5}`)
 	f.files["org/multi-exl3/3.5bpw/model.safetensors"] = w1
 	f.files["org/multi-exl3/4bpw/config.json"] = cfg
+	f.files["org/multi-exl3/4bpw/quantization_config.json"] = []byte(`{"quant_method":"exl3","bits":4.0}`)
 	f.files["org/multi-exl3/4bpw/model.safetensors"] = w2
 	f.lfs["org/multi-exl3/3.5bpw/model.safetensors"] = shaHex(w1)
 	f.lfs["org/multi-exl3/4bpw/model.safetensors"] = shaHex(w2)

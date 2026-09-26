@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,6 +76,33 @@ func (o *Options) defaults() {
 	}
 }
 
+// headerFetch opens one bounded ranged read (bytes=0-<cap>) of a repo
+// file for the gate's safetensors header probe: a single request per
+// file, capped at preflight.HeaderReadBytes, closed by the gate as soon
+// as the header is consumed — no tensor data moves. Errors surface as
+// gate warnings ("unverified"), never as fetch crashes.
+func headerFetch(client *hf.Client, repoID, rev string) func(string) (io.ReadCloser, error) {
+	return func(path string) (io.ReadCloser, error) {
+		req, err := http.NewRequest(http.MethodGet, client.ResolveURL(repoID, rev, path), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", preflight.HeaderReadBytes-1))
+		if client.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+client.Token)
+		}
+		resp, err := client.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+			resp.Body.Close()
+			return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+		return resp.Body, nil
+	}
+}
+
 // Run executes the full pull. It returns an error for every negative
 // path; staging is left in place on interruption so the next run resumes.
 func Run(opts Options) (Result, error) {
@@ -96,7 +124,6 @@ func Run(opts Options) (Result, error) {
 		}
 		defer lock.Release()
 	}
-
 	client := hf.NewClient(opts.BaseURL, opts.Token)
 	repo, err := resolveRepo(client, opts, in)
 	if err != nil {
@@ -148,6 +175,9 @@ func Run(opts Options) (Result, error) {
 		QuantMethod:   quantMethod,
 		HasQuantCfg:   hasQuantCfg,
 		RepoFiles:     paths,
+		Repo:          repo.ID,
+		RepoSHA:       repo.SHA,
+		FetchHeader:   headerFetch(client, repo.ID, repo.SHA),
 		Spec:          spec,
 		WeightsBytes:  weights,
 		VRAMMiB:       opts.VRAMMiB,
