@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -736,9 +737,10 @@ func runPs(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "stone-llama: running (pid %d)\n", st.PID)
-	fmt.Fprintf(stdout, "  address:  %s\n", strings.TrimPrefix(st.Upstream, "http://"))
+	fmt.Fprintf(stdout, "  address:  %s\n", net.JoinHostPort(st.Host, strconv.Itoa(st.Port)))
 	if st.Mode == "attach" {
 		fmt.Fprintf(stdout, "  mode:     attach (%s)\n", st.Attach)
+		fmt.Fprintln(stdout, "            stone-llama does not own this process — it proxies only; load/unload is the upstream's")
 	} else {
 		fmt.Fprintf(stdout, "  mode:     supervised (child pid %d)\n", st.ChildPID)
 	}
