@@ -40,6 +40,16 @@ var lockJSON []byte
 //go:embed requirements-cu13.lock requirements-cu12.lock
 var lockFS embed.FS
 
+// TabbyPin returns the pinned TabbyAPI commit from the embedded lock
+// (startup banners; "" when unreadable).
+func TabbyPin() string {
+	var l runtimeLock
+	if err := json.Unmarshal(lockJSON, &l); err != nil || l.TabbyAPI.Commit == "" {
+		return ""
+	}
+	return l.TabbyAPI.Commit
+}
+
 // Step is one stage of the runtime bootstrap.
 type Step struct {
 	ID, Desc string
@@ -181,14 +191,14 @@ func defaultHeadSize(u string) (int64, error) {
 }
 
 // defaultFreeBytes reports free bytes for the path, walking up to the
-// nearest existing ancestor (statfs on a nonexistent dir fails).
+// nearest existing ancestor (the per-platform disk probe fails on a
+// nonexistent dir).
 func defaultFreeBytes(p string) (int64, error) {
 	cur := p
 	var lastErr error
-	var st syscall.Statfs_t
 	for {
-		if err := syscall.Statfs(cur, &st); err == nil {
-			return int64(st.Bavail) * int64(st.Bsize), nil
+		if n, err := diskFree(cur); err == nil {
+			return n, nil
 		} else {
 			lastErr = err
 		}

@@ -46,6 +46,26 @@ func uvURL(t *testing.T) string {
 	return lock.UV.URL
 }
 
+// TestDefaultFreeBytes pins the platform disk probe: free bytes > 0 on
+// an existing dir, and the walk-up finds an ancestor when the path
+// doesn't exist yet. The Windows GetDiskFreeSpaceExW twin compiles via
+// GOOS=windows but is proven only by that compile check (v1 does not
+// claim Windows runtime support).
+func TestDefaultFreeBytes(t *testing.T) {
+	dir := t.TempDir()
+	free, err := defaultFreeBytes(dir)
+	if err != nil {
+		t.Fatalf("free bytes on %s: %v", dir, err)
+	}
+	if free <= 0 {
+		t.Errorf("free bytes = %d, want > 0", free)
+	}
+	deep := filepath.Join(dir, "not", "created", "yet")
+	if _, err := defaultFreeBytes(deep); err != nil {
+		t.Errorf("walk-up from %s: %v", deep, err)
+	}
+}
+
 type recorder struct {
 	calls    []call
 	fetches  []string

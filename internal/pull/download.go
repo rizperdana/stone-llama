@@ -9,20 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/rizperdana/stone-llama/internal/hf"
 )
-
-// defaultFreeBytes reports filesystem free space for the models dir.
-func defaultFreeBytes(path string) (int64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(path, &st); err != nil {
-		return 0, err
-	}
-	return int64(st.Bavail) * int64(st.Bsize), nil
-}
 
 var errChecksum = errors.New("sha256 does not match the published LFS hash")
 
