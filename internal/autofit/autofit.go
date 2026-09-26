@@ -228,7 +228,7 @@ func (o Options) headroomFor(ctx int) int {
 
 // Fit runs the ladder (or the forced override) against real numbers.
 // The ladder maximizes ctx first (ctx tiers from target down to the
-// floor), preferring cache quality within a tier: FP16 → Q8 → Q4.
+// floor), preferring cache quality within a tier: FP16 → Q8 → Q4 → "4,2".
 func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result, error) {
 	if spec.Layers <= 0 || spec.KVHeads <= 0 || spec.HeadDim <= 0 || spec.MaxCtx <= 0 {
 		return Result{}, fmt.Errorf("incomplete model spec: %+v", spec)
@@ -301,10 +301,27 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 		return res, nil
 	}
 
-	ladderModes := []struct {
+	// Cache-quality ladder within a ctx tier, best quality first:
+	// FP16 → Q8 → Q4 → "4,2" (asymmetric K4V2, ~1008 MiB @65536 vs 1296
+	// for Q4 incl. scales — pays for a full trained ctx when Q4 busts).
+	// Q6 is skipped deliberately: Q4 is ~lossless for KV and Q6 @65536
+	// has been measured to OOM on this 4 GB card, so the band is empty.
+	// Q2 stays manual-only (--cache-mode Q2): documented 2-bit cliff
+	// (KIVI AIME 51.88 → 64.79), never auto-picked.
+	// Every bpe comes from BytesPerElement so the fit math and the
+	// reported arithmetic can never drift apart.
+	type rung struct {
 		name string
 		bpe  float64
-	}{{"FP16", 2}, {"Q8", 1}, {"Q4", 0.5}}
+	}
+	var ladder []rung
+	for _, name := range []string{"FP16", "Q8", "Q4", "4,2"} {
+		bpe, err := BytesPerElement(name)
+		if err != nil {
+			return Result{}, err // ladder names are valid by construction
+		}
+		ladder = append(ladder, rung{name, bpe})
+	}
 
 	floor := opts.MinCtx
 	if target < floor {
@@ -312,7 +329,7 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 	}
 
 	for ctx := target; ; {
-		for _, m := range ladderModes {
+		for _, m := range ladder {
 			if fits(ctx, m.bpe) {
 				res.Ctx, res.Mode = ctx, m.name
 				setKV(ctx, m.bpe)
