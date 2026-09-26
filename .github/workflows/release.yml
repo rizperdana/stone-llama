@@ -46,11 +46,18 @@ jobs:
         id: version
         run: |
           if [ -n "${GITHUB_EVENT_INPUT_VERSION:-}" ]; then
-            echo "VERSION=${GITHUB_EVENT_INPUT_VERSION}" >> "$GITHUB_ENV"
+            VERSION="${GITHUB_EVENT_INPUT_VERSION}"
           else
-            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            VERSION="${GITHUB_REF_NAME}"
           fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version
+        run: |
+          v=${VERSION#v}
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+            || { echo "::error::invalid version '$VERSION'"; exit 1; }
 
       - name: Build
         run: |
@@ -103,11 +110,11 @@ jobs:
         id: version
         run: |
           if [ -n "${GITHUB_EVENT_INPUT_VERSION:-}" ]; then
-            echo "VERSION=${GITHUB_EVENT_INPUT_VERSION}" >> "$GITHUB_ENV"
+            VERSION="${GITHUB_EVENT_INPUT_VERSION}"
           else
-            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            VERSION="${GITHUB_REF_NAME}"
           fi
-          # Validate semver-ish: strip leading 'v', check format
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           v=${VERSION#v}
           echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
             || { echo "::error::invalid version '$VERSION'"; exit 1; }
@@ -122,7 +129,6 @@ jobs:
         run: |
           set -e
           mkdir -p release
-          # Collect all archives (flatten artifact subdirs)
           find artifacts -type f \( -name 'stone-llama-*.tgz' -o -name 'stone-llama-*.zip' \) \
             | while IFS= read -r f; do cp "$f" release/; done
 
@@ -130,11 +136,13 @@ jobs:
           echo "=== Release files ==="
           ls -la
 
-          # Combined checksums.txt (like ollama's sha256sum.txt — no per-file sidecars)
           for f in stone-llama-*.tgz stone-llama-*.zip; do
-            [ -f "$f" ] && sha256sum "$f"
-          done > checksums.txt
+            sz=$(wc -c < "$f" | tr -d ' ')
+            echo "  $f ($sz bytes)"
+            [ "$sz" -gt 1000000 ] || { echo "::error::artifact $f too small ($sz bytes)"; exit 1; }
+          done
 
+          sha256sum stone-llama-*.tgz stone-llama-*.zip > checksums.txt
           echo "=== checksums.txt ==="
           cat checksums.txt
 
@@ -142,72 +150,83 @@ jobs:
         run: |
           cd release
 
-          # Build notes template with quoted heredoc (prevents backtick expansion)
-          cat > notes.txt <<'TEMPLATE'
-          ## stone-llama — Release
+          # Build notes with printf (avoids YAML heredoc indentation issues).
+          # __VERSION__ is a literal placeholder replaced by sed below.
+          printf '%s\n' \
+            '# stone-llama — Pre-release' \
+            '' \
+            '> **PRE-RELEASE** — This is an rc build to test the release pipeline.' \
+            '> Not for production use. See [docs/RELEASE.md](docs/RELEASE.md).' \
+            '' \
+            '## Platform Support' \
+            '' \
+            '| Platform | Status | Notes |' \
+            '|----------|--------|-------|' \
+            '| linux/amd64 | Supported | Full runtime smoke-tested in CI |' \
+            '| linux/arm64 | Builds | Cross-compiled, untested (no arm64 machine in CI) |' \
+            '| darwin/amd64 | Builds | Cross-compiled, untested |' \
+            '| darwin/arm64 | Builds | Cross-compiled, untested |' \
+            '| windows/amd64 | Builds | Cross-compiled, untested |' \
+            '' \
+            '> stone-llama is CUDA-only (ExLlamaV3). No CPU/AMD/Metal backend.' \
+            '> For non-NVIDIA hardware, use [ollama with GGUF models](https://ollama.com).' \
+            '' \
+            '---' \
+            '' \
+            '## Quick Install' \
+            '' \
+            '```sh' \
+            'curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/__VERSION__/scripts/install.sh | sh -s -- --version __VERSION__' \
+            '```' \
+            '' \
+            'Or install a specific version:' \
+            '' \
+            '```sh' \
+            'sh scripts/install.sh --version __VERSION__' \
+            '```' \
+            '' \
+            'Windows users: download the .zip manually — install.sh supports linux/darwin only.' \
+            '' \
+            '---' \
+            '' \
+            '## SHA-256 Checksums' \
+            '' \
+            '```' \
+            > release_notes.md
 
-          ### Platform support
+          cat checksums.txt >> release_notes.md
+          printf '%s\n' '```' >> release_notes.md
 
-          | Platform | Status | Notes |
-          |----------|--------|-------|
-          | linux/amd64 | ✅ Supported | Full runtime smoke-tested in CI |
-          | linux/arm64 | ⚠️ Builds | Cross-compiled, untested (no arm64 machine) |
-          | darwin/amd64 | ⚠️ Builds | Cross-compiled, untested |
-          | darwin/arm64 | ⚠️ Builds | Cross-compiled, untested |
-          | windows/amd64 | ⚠️ Builds | Cross-compiled, untested |
-
-          > stone-llama is CUDA-only (ExLlamaV3). A CPU-only fallback is not available —
-          > use [ollama with GGUF models](https://ollama.com) on non-NVIDIA hardware.
-
-          ### Quick install
-
-          ```sh
-          curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/__VERSION__/scripts/install.sh | sh
-          ```
-
-          Or install a specific version:
-
-          ```sh
-          sh scripts/install.sh --version __VERSION__
-          ```
-
-          ### Checksums
-
-          ```
-          TEMPLATE
-
-          # Replace version placeholder (quoted heredoc prevents shell expansion)
-          sed -i "s/__VERSION__/${VERSION}/g" notes.txt
-
-          # Append actual checksums
-          cat checksums.txt >> notes.txt
-          echo '```' >> notes.txt
+          sed -i "s/__VERSION__/${VERSION}/g" release_notes.md
 
           echo "=== Release notes ==="
-          cat notes.txt
+          cat release_notes.md
 
       - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
           cd release
 
-          # Idempotency: create if missing, otherwise update notes + re-upload assets
+          is_prerelease=""
+          case "${VERSION}" in
+            *rc* | *beta* | *alpha* | *dev*) is_prerelease="--prerelease" ;;
+          esac
+
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "Release ${VERSION} already exists — updating assets (idempotent)"
-            gh release edit "${VERSION}" --notes-file notes.txt
+            echo "Release ${VERSION} already exists — updating assets (idempotent re-run)"
+            gh release edit "${VERSION}" --notes-file release_notes.md
+            gh release upload "${VERSION}" --clobber \
+              stone-llama-*.tgz stone-llama-*.zip checksums.txt
           else
-            echo "Creating release ${VERSION}"
-            is_prerelease=""
-            case "${VERSION}" in
-              *-rc* | *-beta* | *-alpha* | *-dev*) is_prerelease="--prerelease" ;;
-            esac
+            echo "Creating release ${VERSION} (pre-release=${is_prerelease:-(none)})"
             gh release create "${VERSION}" \
               --title "Release ${VERSION}" \
-              --notes-file notes.txt \
-              $is_prerelease
+              --notes-file release_notes.md \
+              ${is_prerelease}
+            gh release upload "${VERSION}" \
+              stone-llama-*.tgz stone-llama-*.zip checksums.txt
+            echo "=== Release created ==="
+            gh release view "${VERSION}" --json htmlUrl --jq .htmlUrl
           fi
-
-          # Upload/replace all artifacts (clobber on re-runs)
-          gh release upload "${VERSION}" --clobber \
-            stone-llama-*.tgz stone-llama-*.zip checksums.txt
