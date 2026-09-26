@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -316,6 +318,7 @@ func TestIsTerminalNotFooledByCharDevice(t *testing.T) {
 // they arrive, and must not unload (attach leaves lifecycle upstream).
 func TestRunOneShotStreams(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, `{"object":"list","data":[]}`)
@@ -323,11 +326,26 @@ func TestRunOneShotStreams(t *testing.T) {
 	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, `{"id":"fake-model"}`)
 	})
-	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, _ *http.Request) {
+	var mu sync.Mutex
+	var lastBody []byte
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		lastBody = append(lastBody[:0], b...)
+		mu.Unlock()
+		if !strings.Contains(string(b), `"messages"`) || strings.Contains(string(b), `"prompt"`) {
+			t.Errorf("run must speak the chat dialect (messages, not raw prompt): %s", b)
+		}
+		finish := `"stop"`
+		if strings.Contains(string(b), "long") {
+			finish = `"length"`
+		}
 		fl := w.(http.Flusher)
-		io.WriteString(w, "data: {\"choices\":[{\"text\":\"Hi \"}]}\n\n")
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi \"}}]}\n\n")
 		fl.Flush()
-		io.WriteString(w, "data: {\"choices\":[{\"text\":\"there\"}]}\n\n")
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"there\"}}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":"+finish+"}]}\n\n")
 		fl.Flush()
 		io.WriteString(w, "data: [DONE]\n\n")
 		fl.Flush()
@@ -363,6 +381,31 @@ func TestRunOneShotStreams(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
+	body := func() []byte {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]byte(nil), lastBody...)
+	}
+	type chatReq struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Temperature    *float64 `json:"temperature"`
+		TopP           *float64 `json:"top_p"`
+		EnableThinking *bool    `json:"enable_thinking"`
+		MaxTokens      *int     `json:"max_tokens"`
+	}
+	parse := func() chatReq {
+		var c chatReq
+		if err := json.Unmarshal(body(), &c); err != nil {
+			t.Fatalf("bad request body %s: %v", body(), err)
+		}
+		return c
+	}
+
+	// 1) default: terse system message, bounded, thinking untouched, and
+	// no sampling fields until metadata exists (backend defaults apply).
 	code := runRun([]string{"fake-model", "-p", "hello"}, bytes.NewReader(nil), &out, &errb)
 	if code != 0 {
 		t.Fatalf("run -p: code=%d err=%q", code, errb.String())
@@ -372,6 +415,88 @@ func TestRunOneShotStreams(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "unloaded.") {
 		t.Errorf("attach mode must not unload the upstream model")
+	}
+	if strings.Contains(errb.String(), "truncated") {
+		t.Errorf("clean run must not warn about truncation: %q", errb.String())
+	}
+	c := parse()
+	if len(c.Messages) != 2 || c.Messages[0].Role != "system" || c.Messages[0].Content != defaultSystemMsg {
+		t.Errorf("default system message missing: %+v", c.Messages)
+	}
+	if c.Temperature != nil || c.TopP != nil || c.EnableThinking != nil {
+		t.Errorf("no generation_config.json on disk → no tuned fields, got temp=%v top_p=%v thinking=%v", c.Temperature, c.TopP, c.EnableThinking)
+	}
+	if c.MaxTokens == nil || *c.MaxTokens != 2048 {
+		t.Errorf("max_tokens = %v, want 2048", c.MaxTokens)
+	}
+
+	// 2) the model's own generation_config.json auto-tunes sampling.
+	gc := filepath.Join(dataDir, "models", "fake-model", "generation_config.json")
+	if err := os.MkdirAll(filepath.Dir(gc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gc, []byte(`{"temperature":0.6,"top_p":0.95,"do_sample":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	if code := runRun([]string{"fake-model", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+		t.Fatalf("run -p profiled: code=%d err=%q", code, errb.String())
+	}
+	c = parse()
+	if c.Temperature == nil || *c.Temperature != 0.6 || c.TopP == nil || *c.TopP != 0.95 {
+		t.Errorf("generation_config.json not applied: temp=%v top_p=%v", c.Temperature, c.TopP)
+	}
+
+	// 3) explicit flags beat the profile; --no-system drops the system
+	// message; --thinking sets the template toggle.
+	out.Reset()
+	errb.Reset()
+	if code := runRun([]string{"fake-model", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+		t.Fatalf("run -p flags: code=%d err=%q", code, errb.String())
+	}
+	c = parse()
+	if c.Temperature == nil || *c.Temperature != 0.3 || c.TopP == nil || *c.TopP != 0.5 {
+		t.Errorf("explicit flags ignored: temp=%v top_p=%v", c.Temperature, c.TopP)
+	}
+	if len(c.Messages) != 1 || c.Messages[0].Role != "user" {
+		t.Errorf("--no-system must send no system message: %+v", c.Messages)
+	}
+	if c.EnableThinking == nil || !*c.EnableThinking {
+		t.Errorf("--thinking must set enable_thinking=true: %v", c.EnableThinking)
+	}
+
+	// 4) a caller-supplied system message replaces the default.
+	out.Reset()
+	errb.Reset()
+	if code := runRun([]string{"fake-model", "--system", "Be brief.", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+		t.Fatalf("run -p custom system: code=%d err=%q", code, errb.String())
+	}
+	c = parse()
+	if len(c.Messages) < 1 || c.Messages[0].Role != "system" || c.Messages[0].Content != "Be brief." {
+		t.Errorf("--system must replace the default: %+v", c.Messages)
+	}
+
+	// 5) the REPL prints exactly one profile line before the first prompt.
+	out.Reset()
+	errb.Reset()
+	if code := runRun([]string{"fake-model"}, strings.NewReader("/bye\n"), &out, &errb); code != 0 {
+		t.Fatalf("repl: code=%d err=%q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "profile: max_tokens 2048") ||
+		!strings.Contains(out.String(), "temperature 0.6 (generation_config.json)") ||
+		!strings.Contains(out.String(), defaultSystemMsg) {
+		t.Errorf("REPL profile line missing: %q", out.String())
+	}
+
+	// 6) A length-capped generation must say so instead of ending silently.
+	out.Reset()
+	errb.Reset()
+	if code := runRun([]string{"fake-model", "--max-tokens", "8", "-p", "long story"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+		t.Fatalf("run -p bounded: code=%d err=%q", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "truncated at --max-tokens 8") {
+		t.Errorf("truncation notice missing: %q", errb.String())
 	}
 	cancel()
 	<-errCh

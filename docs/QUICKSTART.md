@@ -111,13 +111,37 @@ runtime
 stone-llama.lock
 ```
 
-Two caveats, both observed at that revision:
+`run` auto-tunes one profile line in the REPL (nothing extra in `-p` output):
 
-- The `run -p` one-shot is currently **unbounded**: 285 s / 2206 lines on one
-  short prompt, because the completions body omits `max_tokens` and the only
-  fix so far is an uncommitted local change sending `"max_tokens": 0`
-  (= generate to EOS, no cap). Prefer piped input such as `/bye` above until
-  that lands — do not read an unbounded `-p` run as normal behaviour.
+```console
+$ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3
+profile: max_tokens 2048, temperature 0.6 (generation_config.json), top_p 0.95 (generation_config.json), thinking model default, system "Answer directly and concisely."
+>>>
+```
+
+What is auto-tuned, and how to turn each knob:
+
+- **Chat dialect** — `run` posts to `/v1/chat/completions`, so the model's own chat
+  template and generation prompt apply, and replies stop at EOS on their own.
+- **Bound** — `--max-tokens` (default 2048); hitting it prints
+  `stone-llama: output truncated at --max-tokens N (use --max-tokens 0 for unbounded)`.
+  `--max-tokens 0` opts back into generate-to-EOS with no cap.
+- **Sampling** — `temperature`/`top_p` come from the model's own
+  `generation_config.json` in the models dir (pulled models ship it); when it is
+  absent, the backend's fallback defaults apply. `--temperature F` / `--top-p F`
+  always win.
+- **System message** — default `Answer directly and concisely.`. A default system
+  prompt does influence model behaviour — that is the intent, so it is documented
+  here, replaced with `--system TEXT`, and removed with `--no-system`.
+- **Thinking** — follows the model template's own default (SmolLM3's TabbyAPI
+  template defaults to off); `--thinking` / `--no-thinking` override it per run.
+
+In attach mode the profile line reports `sampling backend defaults` unless the model
+also sits in your own models dir — the upstream's model directory is not exposed
+over the API.
+
+Two caveats:
+
 - Loading is the upstream's job in attach mode: `/-/load` answers 409
   `attach_mode`, and a mismatched model name exits 1 with the same message.
 

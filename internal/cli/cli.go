@@ -84,14 +84,28 @@ func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Write
 	return 2
 }
 
+// defaultSystemMsg is run's terse default system instruction: one short
+// sentence asking for direct answers. Overridable with --system and
+// removable with --no-system (documented in docs/QUICKSTART.md): a default
+// system prompt influences output by design, so it is never silent.
+const defaultSystemMsg = "Answer directly and concisely."
+
 // runRun runs the interactive/one-shot REPL (M6): ensure the daemon,
 // load the model through /-/load (autofit prints), stream completions.
 // /bye unloads — supervised mode only; attach leaves the upstream's
 // model alone (its lifecycle is not ours).
 func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]`
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [-p "prompt"]`
 	model, cacheMode, oneShot := "", "", ""
 	ctxN, noAutofit := 0, false
+	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
+	// Terse default system message: documented and overridable, never
+	// silent — a default system prompt does influence model behaviour,
+	// which is the point; --system replaces it, --no-system removes it.
+	systemMsg, noSystem := defaultSystemMsg, false
+	var temperature, topP *float64 // nil → auto-tune from generation_config.json
+	tempSrc, topSrc := "", ""      // where each value came from (profile line)
+	var thinking *bool             // nil → the model template's own default
 	// the loop reassigns i when consuming flag values (explicit classic loop)
 	need := func(i *int, flag string) (string, bool) {
 		if *i+1 >= len(args) {
@@ -127,6 +141,54 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			cacheMode = val
 		case a == "--no-autofit":
 			noAutofit = true
+		case a == "--max-tokens" || strings.HasPrefix(a, "--max-tokens="):
+			if strings.HasPrefix(a, "--max-tokens=") {
+				val = strings.TrimPrefix(a, "--max-tokens=")
+			} else if val, ok = need(&i, "--max-tokens"); !ok {
+				return 2
+			}
+			n, terr := strconv.Atoi(val)
+			if terr != nil || n < 0 {
+				fmt.Fprintf(stderr, "stone-llama run: bad --max-tokens %q (want >= 0; 0 = unbounded)\n", val)
+				return 2
+			}
+			maxTokens = n
+		case a == "--temperature" || strings.HasPrefix(a, "--temperature="):
+			if strings.HasPrefix(a, "--temperature=") {
+				val = strings.TrimPrefix(a, "--temperature=")
+			} else if val, ok = need(&i, "--temperature"); !ok {
+				return 2
+			}
+			f, ferr := strconv.ParseFloat(val, 64)
+			if ferr != nil || f < 0 {
+				fmt.Fprintf(stderr, "stone-llama run: bad --temperature %q (want >= 0)\n", val)
+				return 2
+			}
+			temperature, tempSrc = &f, "flag"
+		case a == "--top-p" || strings.HasPrefix(a, "--top-p="):
+			if strings.HasPrefix(a, "--top-p=") {
+				val = strings.TrimPrefix(a, "--top-p=")
+			} else if val, ok = need(&i, "--top-p"); !ok {
+				return 2
+			}
+			f, ferr := strconv.ParseFloat(val, 64)
+			if ferr != nil || f < 0 || f > 1 {
+				fmt.Fprintf(stderr, "stone-llama run: bad --top-p %q (want 0..1)\n", val)
+				return 2
+			}
+			topP, topSrc = &f, "flag"
+		case a == "--system" || strings.HasPrefix(a, "--system="):
+			if strings.HasPrefix(a, "--system=") {
+				val = strings.TrimPrefix(a, "--system=")
+			} else if val, ok = need(&i, "--system"); !ok {
+				return 2
+			}
+			systemMsg, noSystem = val, false
+		case a == "--no-system":
+			noSystem = true
+		case a == "--thinking", a == "--no-thinking":
+			thinking = new(bool)
+			*thinking = a == "--thinking"
 		case a == "-p" || a == "--prompt" || strings.HasPrefix(a, "--prompt="):
 			if strings.HasPrefix(a, "--prompt=") {
 				val = strings.TrimPrefix(a, "--prompt=")
@@ -151,6 +213,22 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if model == "" {
 		fmt.Fprintln(stderr, usageLine)
 		return 2
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+		return 1
+	}
+	// Auto-tune sampling from the model's own generation_config.json —
+	// local KB-scale metadata, the same source the pre-download gate
+	// reads. Explicit --temperature/--top-p flags always win.
+	pt, pp := profileSampling(cfg.ModelsDir, model)
+	if temperature == nil && pt != nil {
+		temperature, tempSrc = pt, "generation_config.json"
+	}
+	if topP == nil && pp != nil {
+		topP, topSrc = pp, "generation_config.json"
 	}
 
 	dataDir := config.DataDir()
@@ -201,13 +279,34 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// one streamed completion; tokens are printed as they arrive.
+	// one streamed chat completion; tokens are printed as they arrive.
 	ask := func(prompt string) error {
+		// Chat completions, not raw completions: only this endpoint applies
+		// the model's chat template with add_generation_prompt. Raw
+		// /v1/completions sends the prompt verbatim, so the model continues
+		// a document instead of answering — garbage that never reaches EOS
+		// (live-verified 2026-09-26; see the quality report).
 		// max_tokens is required by the pinned backend: omitting it
 		// aborts every completion ("Completion aborted", live-verified
-		// 2026-09-26). 0 = generate to EOS, no cap.
-		body, _ := json.Marshal(map[string]any{"model": st.Model, "prompt": prompt, "stream": true, "max_tokens": 0})
-		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/completions", bytes.NewReader(body))
+		// 2026-09-26). The default is bounded so a confused prompt
+		// cannot run away; --max-tokens 0 = generate to EOS, no cap.
+		msgs := make([]map[string]string, 0, 2)
+		if !noSystem && systemMsg != "" {
+			msgs = append(msgs, map[string]string{"role": "system", "content": systemMsg})
+		}
+		msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
+		bodyMap := map[string]any{"model": st.Model, "messages": msgs, "stream": true, "max_tokens": maxTokens}
+		if temperature != nil {
+			bodyMap["temperature"] = *temperature
+		}
+		if topP != nil {
+			bodyMap["top_p"] = *topP
+		}
+		if thinking != nil {
+			bodyMap["enable_thinking"] = *thinking
+		}
+		body, _ := json.Marshal(bodyMap)
+		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
 		}
@@ -225,6 +324,7 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return errors.New(serveEnvelope(b, resp.StatusCode))
 		}
 		br := bufio.NewReader(resp.Body)
+		finish := ""
 		for {
 			line, rerr := br.ReadString('\n')
 			trimmed := strings.TrimSpace(line)
@@ -232,11 +332,17 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 				if payload == "[DONE]" {
 					fmt.Fprintln(stdout)
+					if finish == "length" {
+						fmt.Fprintf(stderr, "stone-llama: output truncated at --max-tokens %d (use --max-tokens 0 for unbounded)\n", maxTokens)
+					}
 					return nil
 				}
 				var chunk struct {
 					Choices []struct {
-						Text string `json:"text"`
+						Delta struct {
+							Content string `json:"content"`
+						} `json:"delta"`
+						FinishReason string `json:"finish_reason"`
 					} `json:"choices"`
 					Error *struct {
 						Message string `json:"message"`
@@ -247,7 +353,10 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 						return errors.New(chunk.Error.Message)
 					}
 					if len(chunk.Choices) > 0 {
-						io.WriteString(stdout, chunk.Choices[0].Text)
+						if fr := chunk.Choices[0].FinishReason; fr != "" {
+							finish = fr
+						}
+						io.WriteString(stdout, chunk.Choices[0].Delta.Content)
 					}
 				}
 			}
@@ -260,6 +369,37 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// One line about what was auto-tuned — REPL only, so -p output
+	// stays clean for scripting.
+	if oneShot == "" {
+		capN := strconv.Itoa(maxTokens)
+		if maxTokens == 0 {
+			capN = "unbounded"
+		}
+		samp := "sampling backend defaults"
+		var parts []string
+		if temperature != nil {
+			parts = append(parts, fmt.Sprintf("temperature %g (%s)", *temperature, tempSrc))
+		}
+		if topP != nil {
+			parts = append(parts, fmt.Sprintf("top_p %g (%s)", *topP, topSrc))
+		}
+		if len(parts) > 0 {
+			samp = strings.Join(parts, ", ")
+		}
+		th := "model default"
+		if thinking != nil {
+			th = "off (flag)"
+			if *thinking {
+				th = "on (flag)"
+			}
+		}
+		sysDesc := fmt.Sprintf("system %q", systemMsg)
+		if noSystem || systemMsg == "" {
+			sysDesc = "system none"
+		}
+		fmt.Fprintf(stdout, "profile: max_tokens %s, %s, thinking %s, %s\n", capN, samp, th, sysDesc)
+	}
 	if oneShot != "" {
 		if err := ask(oneShot); err != nil {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
@@ -298,6 +438,30 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+// profileSampling reads a model's generation_config.json from the local
+// models dir — the same KB-scale metadata the pre-download gate reads, no
+// network — and returns the sampling defaults the vendor declared. Absent
+// file, absent fields, or do_sample: false → nil pointers (the backend's
+// own defaults apply).
+func profileSampling(modelsDir, model string) (temp, topP *float64) {
+	b, err := os.ReadFile(filepath.Join(modelsDir, model, "generation_config.json"))
+	if err != nil {
+		return nil, nil
+	}
+	var g struct {
+		Temperature *float64 `json:"temperature"`
+		TopP        *float64 `json:"top_p"`
+		DoSample    *bool    `json:"do_sample"`
+	}
+	if json.Unmarshal(b, &g) != nil {
+		return nil, nil
+	}
+	if g.DoSample != nil && !*g.DoSample {
+		return nil, nil // greedy by design: no sampling to tune
+	}
+	return g.Temperature, g.TopP
 }
 
 // serveEnvelope pulls the {"error":{"message"}} envelope out of a
@@ -983,7 +1147,7 @@ Commands:
   serve       start the OpenAI-compatible API [--attach host:port] [--port n]
   ps          show the running daemon + loaded model
   stop        stop the daemon
-  run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p prompt]   chat (streams)
+  run <model> [--ctx N] [--max-tokens N] [--temperature F] [--system TEXT] [-p prompt]   chat (streams, auto-tuned)
   update      self-update to the latest release [--check] [--version tag] [--force] [--yes]
   uninstall   remove the binary + its data completely [--dry-run] [--keep-models] [--yes]
 `

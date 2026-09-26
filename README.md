@@ -10,13 +10,17 @@ OpenAI-compatible API.
 
 **[Website](https://rizperdana.github.io/stone-llama/) · [Install](#install) · [Quickstart](docs/QUICKSTART.md)**
 
-Two things it does that a stock config cannot:
+Three things it does that a stock config cannot:
 
 - **VRAM-aware autofit** — computes a safe context window and cache mode from your GPU
   and the model's own `config.json`, prints the arithmetic, warns when the margin is thin.
 - **Pre-download fit gate** — `fit` and `pull` check architecture, EXL3 format and VRAM fit
   from metadata (KB of config, plus at most ~16 MiB of safetensors headers) *before any
   gigabyte moves*, and refuse with the numbers.
+- **Auto-tuned, terse chat** — `run` builds a template-correct, bounded profile from the
+  model's own metadata (sampling, thinking, one-line default system message). Every
+  default is a flag: `--max-tokens` (0 = unbounded), `--temperature`, `--top-p`,
+  `--system` / `--no-system`, `--thinking` / `--no-thinking`.
 
 **Not a better ollama.** exllamav3 — the engine stone-llama wraps — has no CPU, AMD/ROCm
 or Apple path. On CPU/AMD/Apple, use ollama with GGUF; see [Platform support](#platform-support).
