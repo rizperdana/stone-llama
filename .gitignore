@@ -18,3 +18,17 @@
 # editor/OS noise
 *.swp
 .DS_Store
+
+# go test binaries, coverage and editor byproducts
+*.test
+*.out
+*.tmp
+*.bak
+*.orig
+
+# python bytecode (scripts/ helpers)
+__pycache__/
+*.pyc
+
+# local env
+.env
