@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest an improvement or new capability for stone-llama.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        stone-llama is deliberately small: one static binary, an ollama-like CLI and a
+        local OpenAI-compatible server for ExLlamaV3 via TabbyAPI, aimed at low-spec
+        NVIDIA machines. Requests that keep that shape get the warmest welcome.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case, not the implementation. What are you trying to do today?
+      placeholder: I run several small models and need ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you would want it to look like (CLI flag, command, API shape...).
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds, other tools, or why the current behaviour falls short.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Which platform does this mainly affect?
+      options:
+        - Linux/amd64 (supported)
+        - Linux/arm64 (builds, untested)
+        - Windows/amd64 (builds, untested)
+        - macOS (can never serve — no CUDA)
+        - All platforms / not platform-specific
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a pull request for this.

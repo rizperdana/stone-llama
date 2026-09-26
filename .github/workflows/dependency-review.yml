@@ -1,0 +1,43 @@
+name: Dependency review
+
+# Fails a PR that introduces a dependency with a known vulnerability or an
+# incompatible license. Requires the dependency graph, which is currently
+# DISABLED on this repository — the first step probes for it, warns loudly and
+# skips until the owner turns it on (Settings → Code security and analysis →
+# Dependency graph). At that point this job becomes a real gate with no changes.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check dependency graph is enabled
+        id: graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/dependency-graph/sbom" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Dependency graph is disabled on this repository — dependency review skipped. Enable it in Settings → Code security and analysis → Dependency graph."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.graph.outputs.enabled == 'true'
+
+      - uses: actions/dependency-review-action@v4.9.0
+        if: steps.graph.outputs.enabled == 'true'
+        with:
+          # Summaries land in the job summary; avoids needing comment write
+          # access, which fork PRs never grant.
+          comment-summary-in-pr: never

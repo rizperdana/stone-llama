@@ -20,7 +20,7 @@ else
 	SHA256 := shasum -a 256
 endif
 
-.PHONY: help build test fmt clean dist
+.PHONY: help build test check fmt clean dist
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -32,6 +32,13 @@ build: ## Static binary for the current platform
 test: ## Run go vet and go test
 	go vet ./...
 	go test ./...
+
+check: ## Pre-verify against CI: gofmt, vet, test, actionlint
+	@bad=$$(gofmt -l .); if [ -n "$$bad" ]; then echo "gofmt needed:"; echo "$$bad"; exit 1; fi
+	go vet ./...
+	go test ./...
+	@if command -v actionlint >/dev/null 2>&1; then actionlint; \
+	else echo "skip: actionlint not installed — CI runs it (.github/workflows/actionlint.yml)"; fi
 
 fmt: ## Format source with gofmt
 	gofmt -s -w .

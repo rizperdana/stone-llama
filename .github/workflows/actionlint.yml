@@ -1,0 +1,30 @@
+name: Actionlint
+
+# Lint the workflow files themselves. Cheap, deterministic, and it gates the
+# same thing that gates everything else: a typo'd workflow breaks CI silently.
+# Local parity: `make check` runs the same actionlint binary if installed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # actionlint's go.mod requires Go >= 1.25 to build, so this job uses the
+      # stable toolchain instead of the project's build Go (1.24).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      # Pinned: same version as the local dev toolchain (v1.7.12).
+      - name: Lint workflow files
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12

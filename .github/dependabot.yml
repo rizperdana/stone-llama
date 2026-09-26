@@ -1,0 +1,41 @@
+# Keeps Actions and Go modules current.
+#
+# Dependabot over Renovate: native to GitHub, free, no app install or extra
+# service to run — proportionate for a repo with two ecosystems and one
+# maintainer. Minor/patch updates are grouped into one PR per ecosystem to
+# avoid PR spam; majors stay ungrouped so each gets its own review.
+#
+# commit-message prefix: `chore` + scope, so Dependabot titles land as
+# `chore(deps): bump ...` and pass the required PR-title convention
+# (feat/fix/perf/docs/chore — release notes group on these prefixes).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions-minor:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      go-minor:
+        update-types:
+          - minor
+          - patch

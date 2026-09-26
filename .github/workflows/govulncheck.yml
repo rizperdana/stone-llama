@@ -1,0 +1,33 @@
+name: govulncheck
+
+# Vulnerability scan of the module + standard library (the project has zero
+# third-party Go dependencies, so stdlib is the whole attack surface govulncheck
+# can see). Run on every PR (gate) and weekly (catches new advisories between
+# changes). Verified locally 2026-09-26: "No vulnerabilities found".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # govulncheck v1.8.0 needs Go >= 1.26 to build, and stdlib findings are
+      # filtered against the running toolchain — `stable` is both buildable and
+      # the posture users get when they build with a current toolchain.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

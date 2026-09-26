@@ -1,0 +1,4 @@
+# Default owner for everything: pull requests automatically request a review
+# from the maintainer. Review *requests* only — enforcement comes from branch
+# protection on main (PR-only, CODEOWNERS review can be made required later).
+*       @rizperdana

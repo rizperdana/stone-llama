@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation (website)
+    url: https://rizperdana.github.io/stone-llama/
+    about: Install, quickstart, model compatibility and architecture docs — check before filing.
+  - name: Docs in the repository
+    url: https://github.com/rizperdana/stone-llama/tree/main/docs
+    about: INSTALLATION, QUICKSTART, AGENT-SETUP, ARCHITECTURE and RELEASE docs.
