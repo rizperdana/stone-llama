@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CGO_ENABLED: 0
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::go files need formatting"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # Compile-check for every release target.
+      # We do NOT run the binary here: exllamav3 needs an NVIDIA GPU
+      # and TabbyAPI, neither of which exist in CI.
+      - name: Build check — linux/amd64
+        run: GOOS=linux   GOARCH=amd64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+
+      - name: Build check — windows/amd64
+        run: GOOS=windows GOARCH=amd64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+
+      - name: Build check — darwin/amd64
+        run: GOOS=darwin  GOARCH=amd64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+
+      - name: Build check — darwin/arm64
+        run: GOOS=darwin  GOARCH=arm64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama

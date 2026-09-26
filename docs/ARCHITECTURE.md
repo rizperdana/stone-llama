@@ -82,7 +82,7 @@ The "low potato" constraint targets **memory and startup**; inference speed is P
 
 **Decision: (a) supervise TabbyAPI as a child and proxy — not (b) a from-scratch exllamav3 server.** TabbyAPI owns every hard server problem (SSE, chat-template application, sampling, quant loading, gpu_split/autosplit, MoE offload keys, token auth); option (b) re-implements all of it against an exllamav3 API at 1.5.1 and moving. Upstream churn lands on TabbyAPI; we pin a commit. Cost of (a): one supervisor + ~150 lines of reverse proxy — which buys stable public port, independent downstream auth, SSE passthrough, and a runtime-swap seam.
 
-**Ports:** public **5111** (avoids 11434/ollama, 5000–5002/TabbyAPI, 20128/9Router). Occupied → health-probe: stone-llama answers → reuse (idempotent auto-start); foreign process → fatal with `--port` hint. TabbyAPI's internal port: **always bind `:0`**, write into generated config — never conflicts. Proxy hides it.
+**Ports:** public **5111** (avoids well-known local-AI ports: 11434/ollama, 5000–5002/TabbyAPI). Occupied → health-probe: stone-llama answers → reuse (idempotent auto-start); foreign process → fatal with `--port` hint. TabbyAPI's internal port: **always bind `:0`**, write into generated config — never conflicts. Proxy hides it.
 
 **Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; contract test (§10) against the pin gates any pin bump. Never fork (Q11).
 
@@ -220,14 +220,16 @@ Emitted `runtime/tabby-config.yml` sets `model.max_seq_len`, `model.cache_size` 
 ## 7. CLI surface
 
 ```
-stone-llama setup [--force] [--yes]      # provision runtime (consent-gated; blocked step per Q6)
 stone-llama doctor                       # environment verdict, no changes made
-stone-llama pull <model>[:tag] [--force] [--quiet] [--yes]   # A5 gate runs first
-stone-llama list
+stone-llama setup [--yes] [--cu12|--cu13]  # consent-gated pinned runtime bootstrap (multi-GB)
+stone-llama pull <repo[@branch][:quant]> [--force] [--quiet] [--yes]   # A5 gate runs first
+stone-llama list [--estimate]            # --estimate adds fit verdict + tok/s [est] columns
+stone-llama fit <repo[@branch][:quant]>  # gate + verdict + tok/s [est] — HF metadata only, no download
+stone-llama rank --collection <id> | --file <path> [--ratings <file>]  # fit-ordered candidate table
 stone-llama rm <model>
-stone-llama import <dir> --name <model>  # symlink (zero-copy)
-stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]
-stone-llama serve [--host H] [--port P]
+stone-llama import <path> [--name N]     # symlink (zero-copy); name defaults to base dir
+stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]   # M6
+stone-llama serve [--attach <url>]       # OpenAI-compatible API (M5)
 stone-llama ps
 stone-llama stop
 stone-llama login
@@ -288,6 +290,8 @@ stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
 **Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
 
 **Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log); downstream Bearer optional on loopback, **required** when `host != 127.0.0.1`.
+
+**Tool calling:** a server concern. stone-llama sets the format automatically and reports it; the OpenAI-compatible surface exposes whatever the loaded model advertises, unchanged, to any client or gateway.
 
 ## 8. Platform reality + hard limits (approved Q5/Q8)
 

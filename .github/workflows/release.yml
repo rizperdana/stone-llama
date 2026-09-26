@@ -1,0 +1,122 @@
+name: Release
+
+# Only trigger on version tags (v*).  Pushes to main are covered by CI.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CGO_ENABLED: 0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive_ext: tar.gz
+            binary: stone-llama
+          - goos: windows
+            goarch: amd64
+            archive_ext: zip
+            binary: stone-llama.exe
+          - goos: darwin
+            goarch: amd64
+            archive_ext: tar.gz
+            binary: stone-llama
+          - goos: darwin
+            goarch: arm64
+            archive_ext: tar.gz
+            binary: stone-llama
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o ./${{ matrix.binary }} ./cmd/stone-llama
+
+      - name: Package
+        run: |
+          name="stone-llama_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "$name"
+          mv ${{ matrix.binary }} "$name/"
+          [ -f README.md ]  && cp README.md  "$name/"
+          [ -f LICENSE ]    && cp LICENSE    "$name/"
+          if [ -f assets/stone-llama.png ]; then cp assets/stone-llama.png "$name/"; fi
+
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            (cd "$name" && zip -qr "../${name}.zip" .)
+          else
+            tar czf "${name}.tar.gz" "$name"
+          fi
+
+          sha256sum "${name}.${{ matrix.archive_ext }}" > "${name}.${{ matrix.archive_ext }}.sha256"
+          echo "ARTIFACT_NAME=${name}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            *.tar.gz
+            *.zip
+            *.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download all artifacts
+        uses: actions/download-artifacts@v4
+        with:
+          path: artifacts
+
+      - name: Flatten, verify, and generate combined checksums
+        run: |
+          set -e
+          mkdir -p release
+          # Flatten all artifact subdirs into release/
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) \
+            | while IFS= read -r f; do cp "$f" release/; done
+
+          cd release
+          # Verify each per-artifact .sha256
+          for f in *.sha256; do
+            sha256sum -c "$f"
+          done
+          # Combined checksums for all archives
+          ls stone-llama_*.tar.gz stone-llama_*.zip 2>/dev/null \
+            | xargs sha256sum > checksums.txt
+
+          echo "=== Release files ==="
+          ls -la
+
+      - name: Create GitHub Release
+        run: |
+          cd release
+          gh release create "${{ github.ref_name }}" ./* \
+            --title "Release ${{ github.ref_name }}" \
+            --generate-notes
