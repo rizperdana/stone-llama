@@ -8,6 +8,8 @@
 binary that pulls EXL3 models, auto-fits context to your VRAM, and serves an
 OpenAI-compatible API that any client or gateway can point at.
 
+**[Website](https://rizperdana.github.io/stone-llama/) · [Install](#install) · [Quickstart](docs/QUICKSTART.md)**
+
 **Positioning, honestly:** EXL3 inference speed and VRAM efficiency on NVIDIA GPUs, plus
 **VRAM-aware auto-fit context** — stone-llama computes a safe context window and cache mode
 from your GPU and the model's own `config.json`, instead of shipping conservative defaults
@@ -298,6 +300,7 @@ it is a deliberate non-goal of this project.**
 
 | Doc | What's in it |
 |---|---|
+| [Website](https://rizperdana.github.io/stone-llama/) | project homepage — rendered site with a model compatibility table (fits + predicted tok/s per model for a 4 GB card) |
 | [docs/INSTALLATION.md](docs/INSTALLATION.md) | prerequisites, install paths, `setup` provisioning, uninstall |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | first-run walkthrough with real output |
 | [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) | copy-paste prompt for a coding agent |
