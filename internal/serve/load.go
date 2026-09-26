@@ -141,7 +141,9 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.opts.Attach != "" {
 		writeJSON(w, http.StatusConflict,
-			"attach mode: model loading is owned by the upstream server — restart serve without --attach to load models here",
+			"attach mode: model loading is owned by the upstream server — "+
+				"stream completions directly (the loaded upstream model is reused, nothing downloads), "+
+				"or start a supervised backend with `stone-llama serve` (no --attach) and run `stone-llama run --local` to load here",
 			"attach_mode")
 		return
 	}

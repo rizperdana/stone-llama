@@ -540,12 +540,17 @@ func TestRunHonoursNoAutostart(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	// zero-config: run now probes the configured upstream before the
+	// (suppressed) supervised start, so isolate it from any live daemon —
+	// otherwise the real process on 5002 would be auto-attached instead of
+	// hitting the no-daemon error this test exercises.
+	t.Setenv("STONE_LLAMA_UPSTREAM", "http://127.0.0.1:1")
 	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
 	code, _, errb := run("run", "somemodel", "-p", "hi")
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1 (no daemon, autostart off)", code)
 	}
-	if !strings.Contains(errb, "no stone-llama daemon is running") {
+	if !strings.Contains(errb, "no daemon is running") {
 		t.Errorf("STONE_LLAMA_NO_AUTOSTART ignored by run: %q", errb)
 	}
 	if _, err := os.Stat(filepath.Join(config.DataDir(), "logs", "daemon.log")); err == nil {

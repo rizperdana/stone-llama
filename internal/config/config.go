@@ -28,7 +28,8 @@ type Config struct {
 	Port            int     `json:"port"`
 	Autofit         Autofit `json:"autofit"`
 	RuntimeDir      string  `json:"runtime_dir"`
-	UpstreamKeyFile string  `json:"upstream_key_file"` // attach-mode upstream Bearer source (file only)
+	UpstreamKeyFile string  `json:"upstream_key_file"` // attach-mode upstream Bearer source (file path only; secrets are not stored in config.json)
+	Upstream        string  `json:"upstream"`          // auto-attach probe address (default http://127.0.0.1:5002)
 }
 
 // Default returns the built-in configuration. Missing file fields keep
@@ -46,7 +47,9 @@ func Default() Config {
 			OverheadMiB:    128,
 			MinCtx:         4096,
 		},
+		Upstream: "http://127.0.0.1:5002",
 	}
+
 }
 
 // DataDir is XDG_DATA_HOME/stone-llama, falling back to ~/.local/share/stone-llama.
@@ -101,7 +104,17 @@ func Load() (Config, error) {
 		}
 		cfg.Port = n
 	}
-
+	if v := os.Getenv("STONE_LLAMA_UPSTREAM"); v != "" {
+		cfg.Upstream = v
+	}
+	if v := os.Getenv("STONE_LLAMA_UPSTREAM_KEY_FILE"); v != "" {
+		cfg.UpstreamKeyFile = v
+	}
+	// schemeless upstream address (the documented attach form) wins a
+	// default scheme here so the rest of the code can treat Upstream as a URL
+	if cfg.Upstream != "" && !strings.Contains(cfg.Upstream, "://") {
+		cfg.Upstream = "http://" + cfg.Upstream
+	}
 	if c := cfg.Autofit.ChunkSize; c != 0 && (c < 512 || c > 4096) {
 		return Config{}, fmt.Errorf("autofit.chunk_size must be 0 (auto) or 512-4096 (got %d) — remove it to let the fit decide", c)
 	}

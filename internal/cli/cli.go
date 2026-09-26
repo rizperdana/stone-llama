@@ -85,23 +85,64 @@ func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Write
 }
 
 // defaultSystemMsg is run's terse default system instruction: one short
-// sentence asking for direct answers. Overridable with --system and
-// removable with --no-system (documented in docs/QUICKSTART.md): a default
-// system prompt influences output by design, so it is never silent.
+// sentence asking for direct answers. It is auto-tuned onto the chat request
+// (run posts to /v1/chat/completions, not raw /v1/completions) and overridable
+// with --system / --no-system: a default system prompt influences output by
+// design, so it is never silent.
 const defaultSystemMsg = "Answer directly and concisely."
 
-// runRun runs the interactive/one-shot REPL (M6): ensure the daemon,
-// load the model through /-/load (autofit prints), stream completions.
-// /bye unloads — supervised mode only; attach leaves the upstream's
-// model alone (its lifecycle is not ours).
+// runProfile is the auto-tuned request profile threaded from runRun's flag
+// parsing and the model's generation_config.json into the streaming helpers,
+// so the chat request body is built in one place.
+type runProfile struct {
+	MaxTokens   int
+	System      string // "" → no system message (--no-system)
+	Temperature *float64
+	TopP        *float64
+	Thinking    *bool
+}
+
+// chatBody builds the bounded, template-driven chat request: messages
+// [{system?},{user}], bounded max_tokens, and the auto-tuned sampling knobs.
+// /v1/chat/completions applies the model's chat template; raw /v1/completions
+// would send the prompt verbatim and never reach EOS — 189 KB of garbage for
+// `1+1` (live-verified 2026-09-26; quality report).
+func chatBody(model, prompt string, p runProfile) []byte {
+	msgs := make([]map[string]string, 0, 2)
+	if p.System != "" {
+		msgs = append(msgs, map[string]string{"role": "system", "content": p.System})
+	}
+	msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
+	body := map[string]any{"model": model, "messages": msgs, "stream": true, "max_tokens": p.MaxTokens}
+	if p.Temperature != nil {
+		body["temperature"] = *p.Temperature
+	}
+	if p.TopP != nil {
+		body["top_p"] = *p.TopP
+	}
+	if p.Thinking != nil {
+		body["enable_thinking"] = *p.Thinking
+	}
+	b, _ := json.Marshal(body)
+	return b
+}
+
+// runRun runs the interactive/one-shot REPL (M6): resolve a backend with
+// zero-config resolution order (our daemon -> live upstream ->
+// provisioned/adopted runtime -> one remedy message), then stream chat
+// completions with a bounded, template-driven profile.
+//
+// Attach mode (ours-daemon-attached or direct-to-upstream) never calls
+// /-/load: the upstream owns its model. A name mismatch is reported with one
+// short note and the upstream's loaded model is used; "/bye" exits without
+// unloading (the upstream's lifecycle is not ours).
 func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [-p "prompt"]`
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--attach host:port] [--key-file path] [--local] [-p "prompt"]`
 	model, cacheMode, oneShot := "", "", ""
-	ctxN, noAutofit := 0, false
+	attach, keyFile := "", ""
+	ctxN, noAutofit, localForce := 0, false, false
 	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
-	// Terse default system message: documented and overridable, never
-	// silent — a default system prompt does influence model behaviour,
-	// which is the point; --system replaces it, --no-system removes it.
+	// defaultSystemMsg is overridable via --system, removed via --no-system.
 	systemMsg, noSystem := defaultSystemMsg, false
 	var temperature, topP *float64 // nil → auto-tune from generation_config.json
 	tempSrc, topSrc := "", ""      // where each value came from (profile line)
@@ -189,6 +230,28 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		case a == "--thinking", a == "--no-thinking":
 			thinking = new(bool)
 			*thinking = a == "--thinking"
+		case a == "--attach" || strings.HasPrefix(a, "--attach="):
+			// --attach still accepted (documented); if omitted it is
+			// auto-discovered from the configured/default upstream.
+			if a == "--attach" {
+				if val, ok = need(&i, "--attach"); !ok {
+					return 2
+				}
+			} else {
+				val = strings.TrimPrefix(a, "--attach=")
+			}
+			attach = val
+		case a == "--key-file" || strings.HasPrefix(a, "--key-file="):
+			if a == "--key-file" {
+				if val, ok = need(&i, "--key-file"); !ok {
+					return 2
+				}
+			} else {
+				val = strings.TrimPrefix(a, "--key-file=")
+			}
+			keyFile = val
+		case a == "--local":
+			localForce = true
 		case a == "-p" || a == "--prompt" || strings.HasPrefix(a, "--prompt="):
 			if strings.HasPrefix(a, "--prompt=") {
 				val = strings.TrimPrefix(a, "--prompt=")
@@ -220,9 +283,9 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 		return 1
 	}
-	// Auto-tune sampling from the model's own generation_config.json —
-	// local KB-scale metadata, the same source the pre-download gate
-	// reads. Explicit --temperature/--top-p flags always win.
+	// Auto-tune sampling from the model's generation_config.json — local
+	// KB-scale metadata, the same source the pre-download gate reads.
+	// Explicit --temperature/--top-p flags always win.
 	pt, pp := profileSampling(cfg.ModelsDir, model)
 	if temperature == nil && pt != nil {
 		temperature, tempSrc = pt, "generation_config.json"
@@ -230,147 +293,12 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if topP == nil && pp != nil {
 		topP, topSrc = pp, "generation_config.json"
 	}
-
-	dataDir := config.DataDir()
-	_, prevErr := serve.ReadState(dataDir)
-	started := errors.Is(prevErr, serve.ErrNoDaemon)
-	if _, err := serve.EnsureDaemon(dataDir, !noAutostart(), 30*time.Second); err != nil {
-		fmt.Fprintf(stderr, "stone-llama run: %v%s\n", err, backendStartHelp(err.Error()))
-		return 1
+	prof := runProfile{MaxTokens: maxTokens, Temperature: temperature, TopP: topP, Thinking: thinking}
+	if !noSystem && systemMsg != "" {
+		prof.System = systemMsg
 	}
-	if started {
-		fmt.Fprintln(stdout, "starting runtime…")
-	}
-	ctx := context.Background()
-	st, err := serve.Query(dataDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
-		return 1
-	}
-	token := ""
-	if state, serr := serve.ReadState(dataDir); serr == nil ||
-		(errors.Is(serr, serve.ErrCorruptState) && state.Token != "") {
-		token = state.Token
-	}
-	if st.Model != model {
-		st, err = serve.Load(ctx, dataDir, serve.LoadRequest{
-			Model:     model,
-			Ctx:       ctxN,
-			CacheMode: cacheMode,
-			NoAutofit: noAutofit,
-		})
-		if err != nil {
-			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
-			return 1
-		}
-		if !noAutofit && st.CacheMode != "" {
-			fmt.Fprintf(stdout, "autofit: cache %s, max_seq_len %d\n", st.CacheMode, st.Ctx)
-		}
-		if s := st.FitSummary; s != "" {
-			if strings.Contains(s, "warning") {
-				fmt.Fprintf(stdout, "  %s\n", s)
-			} else {
-				fmt.Fprintf(stdout, "  %s ✓\n", s)
-			}
-		}
-	}
-	if st.Model == "" {
-		fmt.Fprintln(stderr, "stone-llama run: no model is loaded")
-		return 1
-	}
-
-	// one streamed chat completion; tokens are printed as they arrive.
-	ask := func(prompt string) error {
-		// Chat completions, not raw completions: only this endpoint applies
-		// the model's chat template with add_generation_prompt. Raw
-		// /v1/completions sends the prompt verbatim, so the model continues
-		// a document instead of answering — garbage that never reaches EOS
-		// (live-verified 2026-09-26; see the quality report).
-		// max_tokens is required by the pinned backend: omitting it
-		// aborts every completion ("Completion aborted", live-verified
-		// 2026-09-26). The default is bounded so a confused prompt
-		// cannot run away; --max-tokens 0 = generate to EOS, no cap.
-		msgs := make([]map[string]string, 0, 2)
-		if !noSystem && systemMsg != "" {
-			msgs = append(msgs, map[string]string{"role": "system", "content": systemMsg})
-		}
-		msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
-		bodyMap := map[string]any{"model": st.Model, "messages": msgs, "stream": true, "max_tokens": maxTokens}
-		if temperature != nil {
-			bodyMap["temperature"] = *temperature
-		}
-		if topP != nil {
-			bodyMap["top_p"] = *topP
-		}
-		if thinking != nil {
-			bodyMap["enable_thinking"] = *thinking
-		}
-		body, _ := json.Marshal(bodyMap)
-		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/chat/completions", bytes.NewReader(body))
-		if rerr != nil {
-			return rerr
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		resp, derr := http.DefaultClient.Do(req)
-		if derr != nil {
-			return derr
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-			return errors.New(serveEnvelope(b, resp.StatusCode))
-		}
-		br := bufio.NewReader(resp.Body)
-		finish := ""
-		for {
-			line, rerr := br.ReadString('\n')
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "data:") {
-				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-				if payload == "[DONE]" {
-					fmt.Fprintln(stdout)
-					if finish == "length" {
-						fmt.Fprintf(stderr, "stone-llama: output truncated at --max-tokens %d (use --max-tokens 0 for unbounded)\n", maxTokens)
-					}
-					return nil
-				}
-				var chunk struct {
-					Choices []struct {
-						Delta struct {
-							Content string `json:"content"`
-						} `json:"delta"`
-						FinishReason string `json:"finish_reason"`
-					} `json:"choices"`
-					Error *struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				if json.Unmarshal([]byte(payload), &chunk) == nil {
-					if chunk.Error != nil && chunk.Error.Message != "" {
-						return errors.New(chunk.Error.Message)
-					}
-					if len(chunk.Choices) > 0 {
-						if fr := chunk.Choices[0].FinishReason; fr != "" {
-							finish = fr
-						}
-						io.WriteString(stdout, chunk.Choices[0].Delta.Content)
-					}
-				}
-			}
-			if rerr != nil {
-				if rerr == io.EOF {
-					return nil
-				}
-				return rerr
-			}
-		}
-	}
-
-	// One line about what was auto-tuned — REPL only, so -p output
-	// stays clean for scripting.
+	// One line about what was auto-tuned — REPL only, so -p output stays
+	// clean for scripting.
 	if oneShot == "" {
 		capN := strconv.Itoa(maxTokens)
 		if maxTokens == 0 {
@@ -400,41 +328,205 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "profile: max_tokens %s, %s, thinking %s, %s\n", capN, samp, th, sysDesc)
 	}
+
+	dataDir := config.DataDir()
+	dec, err := ResolveBackend(context.Background(), stdout, stderr, dataDir, cfg, attach, keyFile, localForce)
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+		return 1
+	}
+	if dec.Kind == "direct" {
+		// direct-to-upstream: the upstream owns its model. A name mismatch is
+		// a local alias; reuse the upstream's loaded model, never call /-/load.
+		if dec.Model == "" {
+			fmt.Fprintln(stderr, "stone-llama run: the upstream has no model loaded — load one at the upstream server, or run `stone-llama serve` to start a supervised runtime here")
+			return 1
+		}
+		if dec.Model != model {
+			fmt.Fprintf(stdout, "note: using %q (loaded upstream) — %q is a local alias\n", dec.Model, model)
+		}
+		return streamDirect(dec, prof, oneShot, stdin, stdout, stderr)
+	}
+
+	// daemon path (ours or supervised)
+	st := dec.Status
+	if st.Mode == "attach" {
+		// never load in attach mode; reuse the upstream's model. A known
+		// mismatch is reported with one short note.
+		if st.Model != "" && st.Model != model {
+			fmt.Fprintf(stdout, "note: using %q (loaded upstream) — %q is a local alias\n", st.Model, model)
+		}
+	} else if st.Model != model {
+		// supervised: load through our daemon (autofit prints).
+		loaded, lerr := serve.Load(context.Background(), dataDir, serve.LoadRequest{
+			Model:     model,
+			Ctx:       ctxN,
+			CacheMode: cacheMode,
+			NoAutofit: noAutofit,
+		})
+		if lerr != nil {
+			fmt.Fprintf(stderr, "stone-llama run: %v\n", lerr)
+			return 1
+		}
+		st = loaded
+		if !noAutofit && st.CacheMode != "" {
+			fmt.Fprintf(stdout, "autofit: cache %s, max_seq_len %d\n", st.CacheMode, st.Ctx)
+		}
+		if s := st.FitSummary; s != "" {
+			if strings.Contains(s, "warning") {
+				fmt.Fprintf(stdout, "  %s\n", s)
+			} else {
+				fmt.Fprintf(stdout, "  %s ✓\n", s)
+			}
+		}
+	}
+	if st.Mode != "attach" && st.Model == "" {
+		fmt.Fprintln(stderr, "stone-llama run: no model is loaded")
+		return 1
+	}
+	token := ""
+	if state, serr := serve.ReadState(dataDir); serr == nil ||
+		(errors.Is(serr, serve.ErrCorruptState) && state.Token != "") {
+		token = state.Token
+	}
+	return streamDaemon(st, token, prof, oneShot, stdin, stdout, stderr)
+}
+
+// streamDirect posts a one-shot or REPL straight to a live upstream (the
+// zero-config auto-attach path, no daemon spawned). Chat completions with
+// the bounded profile; the discovered bearer is forwarded; /bye exits.
+func streamDirect(dec Decision, prof runProfile, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+	ask := func(prompt string) error {
+		body := chatBody(dec.Model, prompt, prof)
+		req, rerr := http.NewRequest(http.MethodPost, dec.Base+"/v1/chat/completions", bytes.NewReader(body))
+		if rerr != nil {
+			return rerr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if dec.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+dec.Token)
+		}
+		return streamSSE(req, prof.MaxTokens, stdout, stderr)
+	}
+	return repl(ask, oneShot, stdin, stdout, stderr)
+}
+
+// streamDaemon posts a one-shot or REPL through our daemon's proxy
+// (supervised path). Unloads after /bye; attach mode leaves the upstream
+// model alone.
+func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+	ask := func(prompt string) error {
+		body := chatBody(st.Model, prompt, prof)
+		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/chat/completions", bytes.NewReader(body))
+		if rerr != nil {
+			return rerr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return streamSSE(req, prof.MaxTokens, stdout, stderr)
+	}
+	loadUnload := st.Mode != "attach"
+	code := repl(ask, oneShot, stdin, stdout, stderr)
+	if loadUnload {
+		if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
+			fmt.Fprintln(stdout, "unloaded.")
+		}
+	}
+	return code
+}
+
+// streamSSE consumes the zero-buffer SSE stream, writing chat deltas as they
+// arrive; a length finish prints the truncation notice once.
+func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) error {
+	resp, derr := http.DefaultClient.Do(req)
+	if derr != nil {
+		return derr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return errors.New(serveEnvelope(b, resp.StatusCode))
+	}
+	br := bufio.NewReader(resp.Body)
+	finish := ""
+	for {
+		line, rerr := br.ReadString('\n')
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if payload == "[DONE]" {
+				fmt.Fprintln(stdout)
+				if finish == "length" {
+					fmt.Fprintf(stderr, "stone-llama: output truncated at --max-tokens %d (use --max-tokens 0 for unbounded)\n", maxTokens)
+				}
+				return nil
+			}
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+					FinishReason string `json:"finish_reason"`
+				} `json:"choices"`
+				Error *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal([]byte(payload), &chunk) == nil {
+				if chunk.Error != nil && chunk.Error.Message != "" {
+					return errors.New(chunk.Error.Message)
+				}
+				if len(chunk.Choices) > 0 {
+					if fr := chunk.Choices[0].FinishReason; fr != "" {
+						finish = fr
+					}
+					io.WriteString(stdout, chunk.Choices[0].Delta.Content)
+				}
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				return nil
+			}
+			return rerr
+		}
+	}
+}
+
+// repl runs one-shot or interactive, flushing tokens live. /bye ends it.
+func repl(ask func(string) error, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if oneShot != "" {
 		if err := ask(oneShot); err != nil {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 			return 1
 		}
-	} else {
-		in := bufio.NewReader(stdin)
-		for {
-			fmt.Fprint(stdout, ">>> ")
-			line, rerr := in.ReadString('\n')
-			text := strings.TrimSpace(line)
-			if text == "" {
-				if rerr != nil {
-					break
-				}
-				continue
-			}
-			if text == "/bye" {
-				break
-			}
-			if strings.HasPrefix(text, "/") {
-				fmt.Fprintln(stdout, "unknown command (try /bye to quit)")
-				continue
-			}
-			if err := ask(text); err != nil {
-				fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
-			}
+		return 0
+	}
+	in := bufio.NewReader(stdin)
+	for {
+		fmt.Fprint(stdout, ">>> ")
+		line, rerr := in.ReadString('\n')
+		text := strings.TrimSpace(line)
+		if text == "" {
 			if rerr != nil {
 				break
 			}
+			continue
 		}
-	}
-	if st.Mode != "attach" {
-		if err := serve.Unload(ctx, dataDir); err == nil {
-			fmt.Fprintln(stdout, "unloaded.")
+		if text == "/bye" {
+			break
+		}
+		if strings.HasPrefix(text, "/") {
+			fmt.Fprintln(stdout, "unknown command (try /bye to quit)")
+			continue
+		}
+		if err := ask(text); err != nil {
+			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+		}
+		if rerr != nil {
+			break
 		}
 	}
 	return 0

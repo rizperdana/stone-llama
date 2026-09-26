@@ -379,7 +379,7 @@ func TestEnsureDaemonNotRunning(t *testing.T) {
 // TestStartDetachedMissingExe: detached start seam reports failure
 // instead of hanging.
 func TestStartDetachedMissingExe(t *testing.T) {
-	if _, err := StartDetached(filepath.Join(t.TempDir(), "nonexistent"), t.TempDir()); err == nil {
+	if _, err := StartDetached(filepath.Join(t.TempDir(), "nonexistent"), t.TempDir(), nil); err == nil {
 		t.Fatal("StartDetached missing exe = nil, want error")
 	}
 }

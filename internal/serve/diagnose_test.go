@@ -30,7 +30,7 @@ func TestAutoStartFailureScopedToThisAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := startDetached
-	startDetached = func(string, string) (<-chan struct{}, error) {
+	startDetached = func(string, string, []string) (<-chan struct{}, error) {
 		done := make(chan struct{})
 		if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 			io.WriteString(f, "stone-llama serve: NEW-FAILURE\n")
@@ -67,7 +67,7 @@ func TestAutoStartFailureNamesCompetingDaemon(t *testing.T) {
 	t.Setenv("STONE_LLAMA_PORT", fmt.Sprintf("%d", serverPort(t, ts)))
 	dataDir := t.TempDir()
 	old := startDetached
-	startDetached = func(string, string) (<-chan struct{}, error) {
+	startDetached = func(string, string, []string) (<-chan struct{}, error) {
 		done := make(chan struct{})
 		close(done)
 		return done, nil

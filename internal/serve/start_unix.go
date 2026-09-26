@@ -13,8 +13,10 @@ import (
 // StartDetached re-executes this binary as `stone-llama serve`, setsid'd
 // with output appended to logs/daemon.log (0600). The returned channel
 // closes when the starter exits — the auto-starter selects on it to
-// surface failures instead of hanging.
-func StartDetached(exe, dataDir string) (<-chan struct{}, error) {
+// surface failures instead of hanging. Extra argv (args) carry attach mode:
+// `--attach <base> --key-file <file>` for the zero-config path, or nil for
+// the default supervised re-exec.
+func StartDetached(exe, dataDir string, args []string) (<-chan struct{}, error) {
 	logs := filepath.Join(dataDir, "logs")
 	if err := os.MkdirAll(logs, 0o700); err != nil {
 		return nil, err
@@ -23,7 +25,7 @@ func StartDetached(exe, dataDir string) (<-chan struct{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(exe, "serve")
+	cmd := exec.Command(exe, append([]string{"serve"}, args...)...)
 	cmd.Stdout, cmd.Stderr = lf, lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

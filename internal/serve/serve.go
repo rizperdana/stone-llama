@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -243,19 +244,84 @@ func (d *daemon) modelLoaded() bool {
 // probeAttach checks contract item 2 against an arbitrary base URL:
 // GET {base}/v1/models; any HTTP answer within the bound = serving.
 func probeAttach(ctx context.Context, base string, timeout time.Duration) error {
+	pr := ProbeAttach(ctx, base, timeout)
+	if pr.Err != nil {
+		return pr.Err
+	}
+	if !pr.Ok {
+		return errors.New("upstream not reachable")
+	}
+	return nil
+}
+
+// ProbeAttach reports whether base answers within timeout (any HTTP status
+// counts as serving, per the seam contract item 2). NeedsKey is true when the
+// server answered 401/403 to the unauthenticated probe — i.e. it requires a
+// bearer the caller must supply. A transport/timeout failure yields Err!=nil
+// with Ok=false.
+func ProbeAttach(ctx context.Context, base string, timeout time.Duration) ProbeResult {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, base+"/v1/models", nil)
 	if err != nil {
-		return err
+		return ProbeResult{Err: err}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return ProbeResult{Err: err}
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	return nil
+	return ProbeResult{Ok: resp.StatusCode > 0, NeedsKey: resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden, Code: resp.StatusCode}
+}
+
+// ProbeResult is the outcome of ProbeAttach.
+type ProbeResult struct {
+	Ok       bool
+	NeedsKey bool
+	Code     int
+	Err      error
+}
+
+// DaemonLive reports whether our daemon (healthz marker / -/status token)
+// answers from the recorded state; used by run/serve to short-circuit the
+// resolution order at step 1.
+func DaemonLive(dataDir string) (State, bool) {
+	st, rerr := ReadState(dataDir)
+	if rerr != nil && !(errors.Is(rerr, ErrCorruptState) && st.usable()) {
+		return State{}, false
+	}
+	return st, classifyListener(context.Background(), st) == probeLive
+}
+
+// UpstreamModel returns the model the attach upstream reports as loaded
+// (GET /v1/model, best-effort, display-only) or "" when unknown. Token is
+// the upstream Bearer when the upstream requires auth.
+func UpstreamModel(ctx context.Context, base, token string) string {
+	mctx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(mctx, http.MethodGet, base+"/v1/model", nil)
+	if err != nil {
+		return ""
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var m struct {
+		ID string `json:"id"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m) != nil {
+		return ""
+	}
+	return m.ID
 }
 
 // classifyCrash turns a child exit into the error a user should act on:
@@ -958,9 +1024,28 @@ func LoadedModel(dataDir string) (string, bool) {
 // failed probe is not proof of death; state is only removed by the
 // daemon's own shutdown or `stone-llama stop`.
 func EnsureDaemon(dataDir string, start bool, timeout time.Duration) (State, error) {
-	// A live listener returns here — including corrupt-but-salvaged
-	// state, so ps/stop reach a running daemon instead of hiding it
-	// behind the parse error (H3).
+	return ensureDaemon(dataDir, start, timeout, nil)
+}
+
+// EnsureAttached auto-starts a detached daemon already wired to an existing
+// upstream (re-exec of `serve --attach <base> --key-file <file>`). It is the
+// zero-config attach path: rule 2 of the resolution order — a live upstream
+// must be auto-attached (not supervised-started) to avoid double-loading the
+// GPU. attach is a schemeless host:port or http(s) URL; keyFile is the file
+// whose contents become the upstream Bearer (omit for keyless upstreams).
+func EnsureAttached(dataDir, attach, keyFile string, timeout time.Duration) (State, error) {
+	args := []string{"--attach", attach}
+	if keyFile != "" {
+		args = append(args, "--key-file", keyFile)
+	}
+	return ensureDaemon(dataDir, true, timeout, args)
+}
+
+// ensureDaemon is the shared auto-start path: supervised (args==nil, re-exec
+// `serve`) or attach-mode (args carry --attach/--key-file). The early live-
+// listener return and the start=false (NO_AUTOSTART) reporting are identical
+// for both; only the re-exec argv differs.
+func ensureDaemon(dataDir string, start bool, timeout time.Duration, args []string) (State, error) {
 	st, rerr := ReadState(dataDir)
 	switch {
 	case rerr == nil, errors.Is(rerr, ErrCorruptState) && st.usable():
@@ -1001,7 +1086,7 @@ func EnsureDaemon(dataDir string, start bool, timeout time.Duration) (State, err
 	if fi, serr := os.Stat(logPath); serr == nil {
 		logStart = fi.Size()
 	}
-	done, err := startDetached(exe, dataDir)
+	done, err := startDetached(exe, dataDir, args)
 	if err != nil {
 		return State{}, err
 	}
