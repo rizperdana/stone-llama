@@ -329,6 +329,10 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprint(stdout, rep.Format())
+	// adoption reuse: the record is re-validated here (never trusted as-is)
+	if line := setup.ReuseStatus(filepath.Join(config.DataDir(), "runtime")); line != "" {
+		fmt.Fprint(stdout, line)
+	}
 	if !rep.Ready() {
 		return 1
 	}

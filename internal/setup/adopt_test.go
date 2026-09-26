@@ -777,3 +777,41 @@ func TestDetectPrecedenceAndSources(t *testing.T) {
 		t.Error("nonexistent path normalized")
 	}
 }
+
+// TestReuseStatusReValidates: doctor's reuse line re-runs the gate against
+// the recorded candidate — a healthy record reports reuse with fresh numbers;
+// a broken candidate yields the failed check and the record is invalidated
+// atomically (never left green).
+func TestReuseStatusReValidates(t *testing.T) {
+	rt := filepath.Join(t.TempDir(), "runtime")
+	if line := ReuseStatus(rt); line != "" {
+		t.Errorf("no record → line %q, want empty", line)
+	}
+	if err := os.MkdirAll(rt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	venv := mkFakeVenv(t, passIdentity(t), passImport(t))
+	if err := saveAdoption(adoptPath(rt), adoptionRecord{Venv: venv, Extra: "cu13"}); err != nil {
+		t.Fatal(err)
+	}
+	pins := len(lockPins(t))
+	line := ReuseStatus(rt)
+	for _, want := range []string{"Reuse      adopted " + venv, "re-validated: python 3.12.13", itoa(pins) + "/" + itoa(pins) + " locked pins exact"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("reuse line missing %q: %q", want, line)
+		}
+	}
+
+	// break the candidate → re-validation fails and the record goes stale-red
+	if err := os.RemoveAll(filepath.Join(venv, "bin")); err != nil {
+		t.Fatal(err)
+	}
+	line = ReuseStatus(rt)
+	if !strings.Contains(line, "failed V1") || !strings.Contains(line, "record invalidated") {
+		t.Errorf("stale line: %q", line)
+	}
+	ad, err := loadAdoption(adoptPath(rt))
+	if err != nil || ad.Invalid == nil || ad.Invalid.Check != "V1" {
+		t.Errorf("record not invalidated: %+v err=%v", ad, err)
+	}
+}

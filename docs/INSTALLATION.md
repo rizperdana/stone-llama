@@ -144,7 +144,8 @@ If stone-llama finds a *running* TabbyAPI, the cheapest option is attaching to
 it — zero downloads, zero disk: `stone-llama serve --attach 127.0.0.1:5002`.
 
 Adoption is recorded in `runtime/adoption.json` and **re-validated on every
-later `setup`/`doctor` run** (≈1 s): if you upgrade or delete the venv, you get
+later `setup`/`doctor` run** (the full gate re-runs — a record read is never
+enough): if you upgrade or delete the venv, you get
 the exact failed check, never a stale "reuse is safe" claim.
 
 Real preflight on this machine (sizes are HTTP HEAD requests; without consent

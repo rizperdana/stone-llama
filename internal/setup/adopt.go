@@ -831,6 +831,40 @@ func adoptionSummary(rep Report, lockText, extra string) adoptionRecord {
 	}
 }
 
+// ReuseStatus re-validates the recorded adoption and renders doctor's reuse
+// line. The record is only a pointer: V1-V5 re-run every time (never a record
+// read), so a stale record never reads green — a failed re-run invalidates it
+// atomically, a passing one clears a stale invalid marker. "" when nothing
+// is adopted (doctor then prints nothing extra).
+func ReuseStatus(runtimeDir string) string {
+	rec, err := loadAdoption(adoptPath(runtimeDir))
+	if err != nil || rec.Venv == "" {
+		return ""
+	}
+	lockText, err := requirementsLockText(rec.Extra)
+	if err != nil {
+		return ""
+	}
+	rep, verr := Validate(Candidate{Venv: rec.Venv, Checkout: rec.Checkout, Source: "journal"}, lockText, rec.Extra)
+	if verr != nil {
+		_ = invalidateAdoption(adoptPath(runtimeDir), rep.Failed, rep.Reason)
+		check, reason := rep.Failed, rep.Reason
+		if check == "" {
+			check = "?"
+		}
+		if reason == "" {
+			reason = verr.Error()
+		}
+		return fmt.Sprintf("Reuse      ✗ adopted %s — failed %s: %s (record invalidated; run stone-llama setup)\n", rec.Venv, check, reason)
+	}
+	if rec.Invalid != nil {
+		rec.Invalid = nil // fixed: the gate passes again — clear the marker
+		_ = saveAdoption(adoptPath(runtimeDir), rec)
+	}
+	return fmt.Sprintf("Reuse      adopted %s — re-validated: python %s · %d/%d locked pins exact · torch %s (CUDA %s) · exllamav3 %s\n",
+		rec.Venv, rep.Python, rep.PinsMatched, rep.PinsNeeded, rep.Torch, rep.TorchCUDA, rep.Exllamav3)
+}
+
 // FormatFound renders message (a): a verified, adoptable runtime.
 // downloadBytes/disk describe the fresh-provision counterfactual (design §5
 // verbatim; sizes omitted when a probe failed).
