@@ -28,7 +28,9 @@ Repo: https://github.com/rizperdana/stone-llama (Go 1.24, MIT)
 3. Platform: `uname -m` must be `x86_64`. v1 supports Linux/amd64 only.
    (A Windows binary may exist but is untested at runtime; macOS can run
    doctor/list/fit but can never serve — no CUDA.)
-4. Disk: at least ~10 GB free (`df -h ~`) for the Python runtime plus models.
+4. Disk: enough for ≈ 1 GB of runtime downloads plus your models (`df -h ~`).
+   `setup` measures free space itself and refuses if short, so this check is
+   advisory — but a nearly-full disk will fail Step 4.
 5. Go toolchain: `go version` must be >= 1.24 (needed only to build from source).
 
 ## Step 1 — build the binary
