@@ -1,6 +1,7 @@
 # built binaries
 /stone-llama
 /stone-llama.exe
+*.exe
 /bin/
 /dist/
 
