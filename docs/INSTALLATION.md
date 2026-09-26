@@ -33,12 +33,19 @@ Releases are tagged `vX.Y.Z` and publish, per platform:
 Each has a `.sha256` sidecar (plus a combined `checksums.txt`).
 
 One-line install (resolves the latest release, verifies sha256, installs to
-`~/.local/bin`) — once `scripts/install.sh` is published on `main` (packaging
-milestone); until then use Option B:
+`~/.local/bin`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh
 ```
+
+`scripts/install.sh` lives on `main` and supports `--help` (prints usage, exits
+0). It resolves the latest tagged release, verifies the `.sha256` sidecar, then
+installs — so it needs at least one tag on `main` to download from. **This
+download path isn't exercised until a release is tagged**: a `v0.1.0-rc1`
+pre-release is currently being cut to prove the pipeline end-to-end, after
+which `curl … | sh` works as shown. Until then, **Option B (build from source)**
+is the path that needs no release.
 
 Or from a checkout: `scripts/install.sh --version 0.1.0` pins a tag.
 

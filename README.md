@@ -124,7 +124,7 @@ SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported
 ```
 
 ```console
-$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # download declined
+$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # declined: non-interactive, --yes required, 'n' never read
 gate: arch  ✓ Qwen3ForCausalLM
 gate: quant ✓ exl3
 gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
@@ -158,8 +158,9 @@ async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
 ~ values are estimates [est] from metadata + GPU spec — not measured (calibration pending)
 ```
 
-The gate runs **before** any weight byte moves — the `pull` run above stopped at
-the consent prompt, so nothing was fetched beyond KB of metadata. `list` shows a
+The gate runs **before** any weight byte moves — the `pull` run above was refused
+(non-interactive stdin without `--yes`; no consent prompt is shown, only the
+*requires --yes* line), so nothing was fetched beyond KB of metadata. `list` shows a
 model linked in with `import` from a directory already on this machine — also no
 download. A rendering of these captures: [docs/screenshots/cli.svg](docs/screenshots/cli.svg).
 Model-download steps are deliberately omitted from these captures.
