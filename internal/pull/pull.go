@@ -41,13 +41,19 @@ type Options struct {
 	Now         func() time.Time
 	FreeBytes   func(path string) (int64, error)
 	RetryDelay  func(attempt int) time.Duration
+	DryRun      bool // fit/rank: stop after the A5 gate; never fetch weight bytes
 }
 
 type Result struct {
-	Name    string
-	Verdict store.Verdict
-	Files   int
-	Bytes   int64
+	Name         string
+	RepoID       string
+	Verdict      store.Verdict
+	Files        int
+	Bytes        int64
+	Refused      bool         // gate refused; DryRun returns this instead of erroring
+	WeightsBytes int64        // scoped weight bytes (estimator input)
+	Spec         autofit.Spec // parsed config.json (estimator input)
+	QuantLabel   string       // e.g. "3.5bpw"
 }
 
 func (o *Options) defaults() {
@@ -73,19 +79,22 @@ func (o *Options) defaults() {
 func Run(opts Options) (Result, error) {
 	opts.defaults()
 	if opts.Ref == "" {
-		return Result{}, errors.New("no model specified (usage: stone-llama pull <model>[:quant])")
+		return Result{}, errors.New("no model specified (usage: stone-llama pull <repo[@branch][:quant]>)")
 	}
-	_, explicitTag, _ := strings.Cut(opts.Ref, ":")
+	_, _, explicitTag := splitRef(opts.Ref)
 	in := bufio.NewReader(opts.Stdin)
 
-	if err := os.MkdirAll(opts.ModelsDir, 0o700); err != nil {
-		return Result{}, err
+	if !opts.DryRun {
+		// fit/rank are read-only: no models-dir creation, no lock held.
+		if err := os.MkdirAll(opts.ModelsDir, 0o700); err != nil {
+			return Result{}, err
+		}
+		lock, err := fslock.TryAcquire(filepath.Join(opts.ModelsDir, ".pull.lock"))
+		if err != nil {
+			return Result{}, fmt.Errorf("another stone-llama process holds the models lock: %w", err)
+		}
+		defer lock.Release()
 	}
-	lock, err := fslock.TryAcquire(filepath.Join(opts.ModelsDir, ".pull.lock"))
-	if err != nil {
-		return Result{}, fmt.Errorf("another stone-llama process holds the models lock: %w", err)
-	}
-	defer lock.Release()
 
 	client := hf.NewClient(opts.BaseURL, opts.Token)
 	repo, err := resolveRepo(client, opts, in)
@@ -149,14 +158,28 @@ func Run(opts Options) (Result, error) {
 			fmt.Fprintln(opts.Out, l)
 		}
 	}
-	if report.Refused {
-		return Result{}, errors.New("model refused by pre-download gate — see the report above")
-	}
 
 	files := includedFiles(repo, scope)
 	var total int64
 	for _, f := range files {
 		total += f.Size
+	}
+
+	if opts.DryRun {
+		return Result{
+			Name:         modelName(repo.ID, explicitTag, scope),
+			RepoID:       repo.ID,
+			Verdict:      report.Verdict,
+			Files:        len(files),
+			Bytes:        total,
+			Refused:      report.Refused,
+			WeightsBytes: weights,
+			Spec:         spec,
+			QuantLabel:   quantLabel,
+		}, nil
+	}
+	if report.Refused {
+		return Result{}, errors.New("model refused by pre-download gate — see the report above")
 	}
 
 	free, err := opts.FreeBytes(opts.ModelsDir)
@@ -253,7 +276,7 @@ func Run(opts Options) (Result, error) {
 // bare-name search filtered to EXL3 candidates (interactive picker when
 // several match).
 func resolveRepo(client *hf.Client, opts Options, in *bufio.Reader) (hf.Repo, error) {
-	id, _, _ := strings.Cut(opts.Ref, ":")
+	id, branch, _ := splitRef(opts.Ref)
 	if !strings.Contains(id, "/") {
 		ids, err := client.Search(id)
 		if err != nil {
@@ -293,12 +316,15 @@ func resolveRepo(client *hf.Client, opts Options, in *bufio.Reader) (hf.Repo, er
 		}
 	}
 
-	repo, err := client.RepoMeta(id)
+	repo, err := client.RepoMetaRev(id, branch)
 	if err != nil {
 		switch {
 		case errors.Is(err, hf.ErrGated):
 			return hf.Repo{}, fmt.Errorf("%s is gated — run 'stone-llama login' or set HF_TOKEN", id)
 		case errors.Is(err, hf.ErrNotFound):
+			if branch != "" {
+				return hf.Repo{}, fmt.Errorf("branch %q not found in repo %q — check the branch name", branch, id)
+			}
 			return hf.Repo{}, fmt.Errorf("repo %q not found on HuggingFace — check the id (owner/repo)", id)
 		default:
 			return hf.Repo{}, err
@@ -308,6 +334,14 @@ func resolveRepo(client *hf.Client, opts Options, in *bufio.Reader) (hf.Repo, er
 		return hf.Repo{}, fmt.Errorf("%s is gated — run 'stone-llama login' or set HF_TOKEN", id)
 	}
 	return repo, nil
+}
+
+// splitRef parses "<repo>[@branch][:quant]" into its parts. The optional
+// quant tag follows the optional branch: repo@branch:3.5bpw.
+func splitRef(ref string) (id, branch, quant string) {
+	id, quant, _ = strings.Cut(ref, ":")
+	id, branch, _ = strings.Cut(id, "@")
+	return id, branch, quant
 }
 
 // pickScope selects the weight directory: explicit tag must match one;

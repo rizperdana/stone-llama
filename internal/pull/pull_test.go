@@ -250,6 +250,34 @@ func TestPullHappyPath(t *testing.T) {
 	}
 }
 
+func TestDryRunFetchesNoWeightBytes(t *testing.T) {
+	f, srv := newFakeHF(t)
+	seedTiny(f)
+	models := t.TempDir()
+	opts := baseOpts(srv, models)
+	opts.DryRun = true
+
+	res, err := Run(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Refused {
+		t.Fatalf("tiny model must fit: %+v", res.Verdict)
+	}
+	if res.WeightsBytes <= 0 || res.Spec.Layers == 0 || res.QuantLabel == "" {
+		t.Errorf("estimate inputs missing: weights=%d spec=%+v quant=%q",
+			res.WeightsBytes, res.Spec, res.QuantLabel)
+	}
+	if got := f.resolveHits["org/tiny-exl3/model.safetensors"]; got != 0 {
+		t.Errorf("dry-run fetched weight bytes: %d", got)
+	}
+	for _, p := range []string{res.Name, "." + res.Name + ".staging"} {
+		if _, err := os.Stat(filepath.Join(models, p)); err == nil {
+			t.Errorf("dry-run must not create %s", p)
+		}
+	}
+}
+
 func TestPullConsentDeclinedDownloadsNothing(t *testing.T) {
 	f, srv := newFakeHF(t)
 	seedTiny(f)

@@ -31,9 +31,43 @@ func TestBareAndHelpPrintUsage(t *testing.T) {
 }
 
 func TestPlannedCommandNamesMilestone(t *testing.T) {
-	code, _, errOut := run("setup")
-	if code != 2 || !strings.Contains(errOut, "M4") {
-		t.Errorf("code/err = %d/%q, want 2/mentions M4", code, errOut)
+	code, _, errOut := run("serve")
+	if code != 2 || !strings.Contains(errOut, "M5") {
+		t.Errorf("code/err = %d/%q, want 2/mentions M5", code, errOut)
+	}
+}
+
+func TestSetupRejectsUnknownFlag(t *testing.T) {
+	// Usage path only — consent/download paths are covered offline in
+	// internal/setup (seams injected); this must never touch the network.
+	code, _, errOut := run("setup", "--bogus")
+	if code != 2 || !strings.Contains(errOut, "usage: stone-llama setup") {
+		t.Errorf("code/err = %d/%q", code, errOut)
+	}
+}
+
+func TestUsageListsFrozenSurface(t *testing.T) {
+	_, out, _ := run("help")
+	for _, want := range []string{"fit ", "rank ", "--estimate", "--collection", "consent-gated"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage missing %q", want)
+		}
+	}
+}
+
+func TestFitUsageWithoutRepo(t *testing.T) {
+	code, _, errOut := run("fit")
+	if code != 2 || !strings.Contains(errOut, "usage: stone-llama fit") {
+		t.Errorf("code/err = %d/%q", code, errOut)
+	}
+}
+
+func TestRankRequiresExactlyOneSource(t *testing.T) {
+	for _, args := range [][]string{{"rank"}, {"rank", "--collection", "a/b", "--file", "f"}} {
+		code, _, errOut := run(args...)
+		if code != 2 || !strings.Contains(errOut, "usage: stone-llama rank") {
+			t.Errorf("%v: code/err = %d/%q", args, code, errOut)
+		}
 	}
 }
 
@@ -149,14 +183,16 @@ func TestRmMissingModelFails(t *testing.T) {
 	}
 }
 
-func TestImportRequiresName(t *testing.T) {
+func TestImportNameDefaultsToBasename(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("STONE_LLAMA_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("STONE_LLAMA_MODELS_DIR", filepath.Join(t.TempDir(), "models"))
 
+	// no --name: defaults to the dir basename, then fails on the missing
+	// source — a real attempt, not a usage error ([--name N] is optional).
 	code, _, errOut := run("import", "/tmp/whatever")
-	if code != 2 || !strings.Contains(errOut, "--name") {
+	if code != 1 || !strings.Contains(errOut, "whatever") {
 		t.Errorf("code/err = %d/%q", code, errOut)
 	}
 }

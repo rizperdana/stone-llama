@@ -13,17 +13,18 @@ import (
 	"text/tabwriter"
 
 	"github.com/rizperdana/stone-llama/internal/autofit"
+	"github.com/rizperdana/stone-llama/internal/brand"
 	"github.com/rizperdana/stone-llama/internal/config"
 	"github.com/rizperdana/stone-llama/internal/doctor"
 	"github.com/rizperdana/stone-llama/internal/hf"
 	"github.com/rizperdana/stone-llama/internal/pull"
+	"github.com/rizperdana/stone-llama/internal/setup"
 	"github.com/rizperdana/stone-llama/internal/store"
 )
 
 // planned lists commands that exist in the product surface but are not
 // implemented yet, mapped to the milestone that ships them (ARCHITECTURE.md §11).
 var planned = map[string]string{
-	"setup": "M4",
 	"serve": "M5", "ps": "M5", "stop": "M5",
 	"run": "M6",
 }
@@ -40,18 +41,24 @@ func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Write
 		fmt.Fprint(stdout, usage())
 		return 0
 	case "version", "-v", "--version":
-		fmt.Fprintf(stdout, "stone-llama %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
+		fmt.Fprintln(stdout, brand.Banner(version, runtime.GOOS+"/"+runtime.GOARCH))
 		return 0
 	case "doctor":
 		return runDoctor(rest, stdout, stderr)
 	case "list":
-		return runList(stdout, stderr)
+		return runList(rest, stdout, stderr)
 	case "rm":
 		return runRm(rest, stdout, stderr)
 	case "import":
 		return runImport(rest, stdout, stderr)
 	case "pull":
 		return runPull(rest, stdin, stdout, stderr)
+	case "fit":
+		return runFit(rest, stdin, stdout, stderr)
+	case "rank":
+		return runRank(rest, stdout, stderr)
+	case "setup":
+		return runSetup(rest, stdin, stdout, stderr)
 	case "login":
 		return runLogin(rest, stdin, stdout, stderr)
 	}
@@ -85,7 +92,17 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runList(stdout, stderr io.Writer) int {
+func runList(args []string, stdout, stderr io.Writer) int {
+	wantEst := false
+	for _, a := range args {
+		switch a {
+		case "--estimate", "-estimate":
+			wantEst = true
+		default:
+			fmt.Fprintf(stderr, "stone-llama list: unknown argument %q (only --estimate)\n", a)
+			return 2
+		}
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(stderr, "stone-llama list: %v\n", err)
@@ -100,7 +117,32 @@ func runList(stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "no models — pull one with 'stone-llama pull <model>'")
 		return 0
 	}
+	estGPU, estVRAM := "", 0
+	if wantEst {
+		rep, err := doctor.Probe()
+		switch {
+		case err != nil:
+			fmt.Fprintf(stderr, "stone-llama list: estimates unavailable: %v\n", err)
+		case !rep.Ready():
+			fmt.Fprintln(stderr, "stone-llama list: estimates unavailable: no ready GPU — run 'stone-llama doctor'")
+		default:
+			estGPU, estVRAM = rep.GPUs[0].Name, rep.GPUs[0].VRAMMiB
+		}
+	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	if wantEst {
+		fmt.Fprintln(w, "NAME\tQUANT\tSIZE\tVERDICT\tEST T/S\tEST PRE T/S\tSOURCE")
+		for _, m := range models {
+			dec, pre := localEstimate(m, estGPU, estVRAM, cfg)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				m.Name, m.Quant, pull.HumanBytes(m.SizeBytes), formatVerdict(m.Verdict), dec, pre, m.Source)
+		}
+		w.Flush()
+		if estGPU != "" {
+			fmt.Fprintln(stdout, "~ values are estimates [est] from metadata — not measured (calibration pending)")
+		}
+		return 0
+	}
 	fmt.Fprintln(w, "NAME\tQUANT\tSIZE\tVERDICT\tSOURCE")
 	for _, m := range models {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", m.Name, m.Quant, pull.HumanBytes(m.SizeBytes), formatVerdict(m.Verdict), m.Source)
@@ -162,9 +204,12 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			pos = append(pos, a)
 		}
 	}
-	if len(pos) != 1 || name == "" {
-		fmt.Fprintln(stderr, "usage: stone-llama import <dir> --name <model>")
+	if len(pos) != 1 {
+		fmt.Fprintln(stderr, "usage: stone-llama import <dir> [--name <model>]")
 		return 2
+	}
+	if name == "" {
+		name = filepath.Base(filepath.Clean(pos[0]))
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -178,6 +223,27 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "imported %s → %s\n", name, link)
 	return 0
+}
+
+// gpuPreamble loads config and probes a ready GPU for model commands.
+// ok=false means a cmd-scoped error was already printed to stderr.
+func gpuPreamble(cmd string, stdout, stderr io.Writer) (*config.Config, doctor.Report, bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama %s: %v\n", cmd, err)
+		return nil, doctor.Report{}, false
+	}
+	rep, err := doctor.Probe()
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama %s: %v\n", cmd, err)
+		return nil, doctor.Report{}, false
+	}
+	if !rep.Ready() {
+		fmt.Fprint(stdout, rep.Format())
+		fmt.Fprintf(stderr, "stone-llama %s: needs a working NVIDIA GPU — run 'stone-llama doctor'\n", cmd)
+		return nil, doctor.Report{}, false
+	}
+	return &cfg, rep, true
 }
 
 func runPull(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -196,26 +262,15 @@ func runPull(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	if len(pos) != 1 {
-		fmt.Fprintln(stderr, "usage: stone-llama pull <model>[:quant] [--force] [--quiet] [--yes]")
+		fmt.Fprintln(stderr, "usage: stone-llama pull <repo[@branch][:quant]> [--force] [--quiet] [--yes]")
 		return 2
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(stderr, "stone-llama pull: %v\n", err)
+	cfg, rep, ok := gpuPreamble("pull", stdout, stderr)
+	if !ok {
 		return 1
 	}
-	rep, err := doctor.Probe()
-	if err != nil {
-		fmt.Fprintf(stderr, "stone-llama pull: %v\n", err)
-		return 1
-	}
-	if !rep.Ready() {
-		fmt.Fprint(stdout, rep.Format())
-		fmt.Fprintln(stderr, "stone-llama pull: needs a working NVIDIA GPU — run 'stone-llama doctor'")
-		return 1
-	}
-	token := hf.LoadToken(os.Getenv("HF_TOKEN"), filepath.Join(config.DataDir(), "hf_token"))
-	_, err = pull.Run(pull.Options{
+	token := hf.LoadToken(os.Getenv("HF_TOKEN"), tokenFilePath())
+	_, err := pull.Run(pull.Options{
 		ModelsDir:   cfg.ModelsDir,
 		Ref:         pos[0],
 		Force:       force,
@@ -228,6 +283,7 @@ func runPull(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Token:       token,
 		VRAMMiB:     rep.GPUs[0].VRAMMiB,
 		GPUName:     rep.GPUs[0].Name,
+		BaseURL:     hfBaseURL(),
 		Autofit: autofit.Options{
 			HeadroomMiB:    cfg.Autofit.HeadroomMiB,
 			WorkspaceMiB:   cfg.Autofit.WorkspaceMiB,
@@ -294,8 +350,52 @@ func isTerminal(x any) bool {
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
+// runSetup provisions the pinned Python runtime. Consent-gated (A7):
+// the plan prints first, then an explicit confirmation; --yes for
+// scripts. The plan covers multi-GB downloads — run it deliberately.
+func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	yes, extra := false, ""
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y", "-yes":
+			yes = true
+		case "--cu12":
+			extra = "cu12"
+		case "--cu13":
+			extra = "cu13"
+		default:
+			fmt.Fprintln(stderr, "usage: stone-llama setup [--yes] [--cu12|--cu13]")
+			return 2
+		}
+	}
+	opts := setup.Options{
+		RuntimeDir: filepath.Join(config.DataDir(), "runtime"),
+		Extra:      extra,
+		Yes:        yes,
+		Stdout:     stdout,
+		Confirm: func(setup.Plan) bool {
+			if !isTerminal(stdin) {
+				fmt.Fprintln(stderr, "stone-llama setup: non-interactive — pass --yes to confirm the plan")
+				return false
+			}
+			fmt.Fprint(stdout, "Proceed? [y/N] ")
+			line, err := bufio.NewReader(stdin).ReadString('\n')
+			if err != nil && line == "" {
+				return false
+			}
+			return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+		},
+	}
+	if err := setup.Run(opts); err != nil {
+		fmt.Fprintf(stderr, "stone-llama setup: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "runtime ready under %s\n", opts.RuntimeDir)
+	return 0
+}
+
 func usage() string {
-	return `stone-llama — ollama-like frontend for ExLlamaV3 + TabbyAPI
+	return `stone-llama — local model server + CLI (ExLlamaV3 + TabbyAPI), OpenAI-compatible API
 
 Usage:
   stone-llama <command>
@@ -303,12 +403,14 @@ Usage:
 Commands:
   version     print version
   doctor      check GPU, driver, and runtime readiness
-  list        list installed models
+  list        list installed models (--estimate: fit + tok/s columns)
   rm          remove a model
   import      symlink an existing model dir into the store
-  pull        download a model
+  pull        download a model <repo[@branch][:quant]>
+  fit         fit verdict + ctx/cache pick + tok/s estimate (no download)
+  rank        rank candidates by fit/speed (--collection|--file [--ratings])
   login       set a HuggingFace token
-  setup       provision the Python runtime     (M4)
+  setup       provision the pinned Python runtime (consent-gated)
   serve       start the OpenAI-compatible API  (M5)
   ps          show the loaded model            (M5)
   stop        stop the daemon                  (M5)
