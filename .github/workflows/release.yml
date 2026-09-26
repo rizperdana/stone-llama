@@ -212,18 +212,22 @@ jobs:
           esac
 
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "Release ${VERSION} already exists — updating assets (idempotent re-run)"
-            gh release edit "${VERSION}" --notes-file release_notes.md
+            echo "⚠️  Release ${VERSION} already exists — updating assets (idempotent re-run)"
             gh release upload "${VERSION}" --clobber \
               stone-llama-*.tgz stone-llama-*.zip checksums.txt
           else
             echo "Creating release ${VERSION} (pre-release=${is_prerelease:-(none)})"
             gh release create "${VERSION}" \
+              stone-llama-*.tgz stone-llama-*.zip checksums.txt \
               --title "Release ${VERSION}" \
-              --notes-file release_notes.md \
+              --generate-notes \
               ${is_prerelease}
-            gh release upload "${VERSION}" \
-              stone-llama-*.tgz stone-llama-*.zip checksums.txt
+
+            # Fetch GitHub's auto-generated changelog and prepend our template
+            body=$(gh release view "${VERSION}" --json body --jq '.body // ""')
+            { cat release_notes.md; echo "$body"; } > combined_notes.md
+            gh release edit "${VERSION}" --notes-file combined_notes.md
+
             echo "=== Release created ==="
-            gh release view "${VERSION}" --json htmlUrl --jq .htmlUrl
+            echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
           fi
