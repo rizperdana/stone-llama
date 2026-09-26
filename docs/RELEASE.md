@@ -1,198 +1,207 @@
-# Release Runbook
+# Release Engineering
 
-## Overview
+This document is the runbook for cutting a `stone-llama` release. It covers
+artifact naming, platform support, the CI/release workflow pipeline, local
+verification, and the pre-release checklist.
 
-`stone-llama` publishes static Go binaries via GitHub Actions on every version
-tag (`v*`).  The release pipeline lives in `.github/workflows/release.yml` and
-the CI gate lives in `.github/workflows/ci.yml`.
+---
 
-## Platform Matrix — Read This Before Claiming Anything Works
+## Artifact naming
 
-| Platform     | Status                                           |
-|--------------|--------------------------------------------------|
-| linux/amd64  | **Supported** — requires NVIDIA GPU + CUDA at runtime (driver ≥ 570 for cu12, ≥ 580 for cu13). |
-| windows/amd64| **Builds** (cross-compiled) but **UNTESTED at runtime** — the daemonization path differs from Linux and we have no Windows test machine. Use at your own risk. |
-| darwin/amd64 | Published for `doctor`/`list`/`fit` only. ExLlamaV3 has no Metal/CPU backend, so stone-llama **cannot serve** models on macOS. Compilation is a build-check, not support. |
-| darwin/arm64 | Same as darwin/amd64 — CLI utilities only, no serving. |
-
-> **Never claim a platform works because it compiles.** Compilation verifies the code builds for that target. Runtime support is a separate question documented above.
-> **Windows cross-compilation fixed** (commit `c4e1889` `fix(windows): build-tagged lock and disk-free probes`): `internal/fslock` and the disk-free probe were split into `fslock_unix.go` (flock) + `fslock_windows.go` (`LockFileEx` via `syscall.NewLazyDLL`). All four targets now compile cleanly from CI on Linux.
-
-## How to Cut a Tag
-
-```bash
-# 1. Ensure main is clean and CI passes
-git checkout main
-git pull
-make test   # go vet + go test ./...
-
-# 2. Create an annotated tag matching the v* pattern
-git tag -a v0.1.0 -m "v0.1.0"
-
-# 3. Push — this triggers .github/workflows/release.yml
-git push origin v0.1.0
-```
-> **Pre-release blockers** — do not cut `v0.1.0` until:
-> - `serve`, `ps`, `stop` (M5) and `run` (M6) are implemented (see ARCHITECTURE.md §11). A release whose CLI cannot serve models contradicts the documented feature surface.
-> - CI is green on all four targets (linux, windows, darwin/amd64, darwin/arm64).
-> - `install.sh` download+verify path is tested against a staging release.
-
-The workflow triggers on `push: tags: 'v*'`.  The tag name becomes:
-- The **GitHub Release tag** (`v0.1.0`)
-- The **artifact version** in filenames (`stone-llama_0.1.0_linux_amd64.tar.gz`)
-- The **injected version string** (`go build -ldflags "-X main.version=v0.1.0"`)
-
-## What Gets Built
-
-Each of the four targets is built in parallel by a matrix strategy:
-
-| Target          | GOOS     | GOARCH   | CGO | Archive format |
-|-----------------|----------|----------|-----|----------------|
-| linux/amd64     | linux    | amd64    | 0   | `.tar.gz`      |
-| windows/amd64   | windows  | amd64    | 0   | `.zip`         |
-| darwin/amd64    | darwin   | amd64    | 0   | `.tar.gz`      |
-| darwin/arm64    | darwin   | arm64    | 0   | `.tar.gz`      |
-
-### Artifact naming
+Releases use **ollama-style** naming: a plain per-platform name with no version
+embedded in the filename, plus a single combined `checksums.txt`.
 
 ```
-stone-llama_<version>_<os>_<arch>.tar.gz   # linux / darwin
-stone-llama_<version>_windows_amd64.zip     # windows
-stone-llama_<version>_<os>_<arch>.<ext>.sha256  # per-artifact checksum
-checksums.txt                            # combined checksums
+stone-llama-linux-amd64.tgz
+stone-llama-linux-arm64.tgz
+stone-llama-darwin-amd64.tgz
+stone-llama-darwin-arm64.tgz
+stone-llama-windows-amd64.zip
+checksums.txt
 ```
 
-`<version>` is the tag name **without** the leading `v` (e.g. `0.1.0`).
+**Rationale:** ollama publishes `ollama-linux-amd64.tar.zst`,
+`ollama-darwin.tgz`, `ollama-windows-amd64.zip`, and `sha256sum.txt` — no
+per-file sidecars, no version in the filename. We mirror that pattern so users
+and CI use consistent, predictable names regardless of the release tag. The
+binary itself carries the version via `main.version` ldflags
+(`-X main.version=vX.Y.Z`), so `stone-llama version` always reports the tag.
 
-### Archive contents
+**Why not per-file `.sha256` sidecars?** They duplicate `checksums.txt` and
+force `install.sh` to know the exact filename. With a single combined file,
+`install.sh` greps for its artifact line:
 
-Each archive contains:
-
-| File               | linux/darwin       | windows            |
-|--------------------|:------------------:|:------------------:|
-| `stone-llama`      | ✅                 | ✅ (`.exe`)        |
-| `README.md`        | ✅ if present      | ✅ if present      |
-| `LICENSE`          | ✅ if present      | ✅ if present      |
-| `stone-llama.png`  | ✅ if present      | ✅ if present      |
-
-Inclusion is guarded with `if [ -f ... ]` — a missing asset will **not** fail
-the build.
-
-## Local Verification
-
-### Cross-compilation
-
-```bash
-# From the repo root, verify every target builds:
-CGO_ENABLED=0 GOOS=linux   GOARCH=amd64   go build -trimpath -ldflags "-s -w" -o /tmp/sl-linux-amd64   ./cmd/stone-llama
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64   go build -trimpath -ldflags "-s -w" -o /tmp/sl-windows-amd64.exe ./cmd/stone-llama
-CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64   go build -trimpath -ldflags "-s -w" -o /tmp/sl-darwin-amd64  ./cmd/stone-llama
-CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64   go build -trimpath -ldflags "-s -w" -o /tmp/sl-darwin-arm64  ./cmd/stone-llama
-
-# Verify file types:
-file /tmp/sl-linux-amd64       # ELF 64-bit LSB executable
-file /tmp/sl-windows-amd64.exe # PE32+ executable
-file /tmp/sl-darwin-amd64      # Mach-O 64-bit x86_64
-file /tmp/sl-darwin-arm64      # Mach-O 64-bit arm64
+```sh
+grep -F "stone-llama-linux-amd64.tgz" checksums.txt | sha256sum -c -
 ```
 
-### Local dist build
+## Platform support matrix
 
-```bash
-make dist    # builds all four targets into dist/
-ls -lh dist/
-cat dist/checksums.txt
+| Platform          | Artifact                      | Status                         |
+| ----------------- | ----------------------------- | ------------------------------ |
+| linux/amd64       | `stone-llama-linux-amd64.tgz` | ✅ Builds + runs (CI smoke)    |
+| linux/arm64       | `stone-llama-linux-arm64.tgz` | ⚠️ Builds only (untested)      |
+| darwin/amd64      | `stone-llama-darwin-amd64.tgz`| ⚠️ Builds only (untested)      |
+| darwin/arm64      | `stone-llama-darwin-arm64.tgz`| ⚠️ Builds only (untested)      |
+| windows/amd64     | `stone-llama-windows-amd64.zip`| ⚠️ Builds only (untested)     |
 
-# Verify checksums independently:
-cd dist
-sha256sum -c stone-llama_*.tar.gz.sha256
-sha256sum -c stone-llama_*.zip.sha256
-```
+> **stone-llama is CUDA-only (ExLlamaV3).** A CPU-only fallback is not available —
+> use [ollama with GGUF models](https://ollama.com) on non-NVIDIA hardware.
+> `serve`/`ps`/`stop`/`run` (M5/M6) are still landing — do not cut `v0.1.0`
+> until those are implemented. The `version`, `--help`, and `doctor` commands
+> work on any platform; `serve`/`ps`/`stop`/`run` will fail at runtime.
 
-### Verify the Linux binary runs
+**Builds** (cross-compiled) but **UNTESTED at runtime** for all platforms
+except linux/amd64. linux/arm64 is compiled here but there is no arm64 machine
+in the development environment — it is expected to work but has not been
+executed.
 
-The binary does **not** require a GPU to print help or version:
+## CI pipeline
 
-```bash
-/tmp/sl-linux-amd64 version    # stone-llama v0.1.0 (linux/amd64)
-/tmp/sl-linux-amd64 --help     # prints usage
-/tmp/sl-linux-amd64 doctor     # checks GPU/driver/runtime readiness
-```
+**`.github/workflows/ci.yml`** triggers on `push` (main), `pull_request`, and
+`workflow_dispatch`. It runs:
 
-### Test install.sh locally
+1. `gofmt -l .` — formatting check (fails on unformatted files)
+2. `go vet ./...` — static analysis
+3. `go test ./...` — unit tests
+4. Compile-check for all 5 release targets (`-o /dev/null`, no workspace pollution)
+5. **Run-smoke** (linux/amd64 only — no GPU in CI):
+   - `./stone-llama-smoke version` → exit 0, prints `stone-llama`
+   - `./stone-llama-smoke --help` → exit 0
+   - `./stone-llama-smoke doctor` → no segfault; prints "needs an NVIDIA GPU" refusal
 
-```bash
-# Syntax check (no network):
+The compile-check matrix proves **compilation**, not that the artifact runs. The
+platform table above is the honest record of what has actually been executed.
+
+## Release pipeline
+
+**`.github/workflows/release.yml`** triggers on:
+- Tag push matching `v*`
+- `workflow_dispatch` with a `version` input
+
+The workflow has two jobs:
+
+1. **`build`** — matrix over 5 targets, builds + packages each artifact,
+   uploads to `actions/upload-artifact@v4`.
+2. **`release`** — downloads all artifacts via `actions/download-artifact@v4`
+   (note: singular, NOT `download-artifacts`), verifies checksums, creates the
+   GitHub release (or updates if it already exists — idempotent), uploads all
+   artifacts, and generates release notes with a platform table + install
+   command + checksum table.
+
+Pre-release is auto-detected: tags containing `-rc`, `-beta`, `-alpha`, or
+`-dev` are marked as pre-releases.
+
+## Local verification
+
+After any Makefile or workflow change, run:
+
+```sh
+# 1. Build all targets
+make dist
+
+# 2. Verify checksums
+cd dist && sha256sum -c checksums.txt
+
+# 3. Check archive contents
+tar tzf stone-llama-linux-amd64.tgz      # should list stone-llama-linux-amd64/{stone-llama,README.md,LICENSE,stone-llama.png}
+unzip -l stone-llama-windows-amd64.zip   # should list stone-llama-windows-amd64/{stone-llama.exe,...}
+
+# 4. Validate YAML
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); yaml.safe_load(open('.github/workflows/release.yml'))"
+
+# 5. Test install.sh syntax and basic behavior
 sh -n scripts/install.sh
-
-# Help (no network):
 sh scripts/install.sh --help
+sh scripts/install.sh --bad-option   # should exit 1
 
-# Against a real release (requires network):
-sh scripts/install.sh --version v0.1.0 --prefix /tmp/sl-install-test
+# 6. Smoke-test the linux binary
+cd dist && tar xzf stone-llama-linux-amd64.tgz && \
+  ./stone-llama-linux-amd64/stone-llama version && \
+  ./stone-llama-linux-amd64/stone-llama --help > /dev/null && \
+  ./stone-llama-linux-amd64/stone-llama doctor 2>&1 | grep "NVIDIA GPU"
+```
+
+## install.sh end-to-end test
+
+To test the full install path against a real release:
+
+```sh
+# Cut the pre-release tag first (see "Cutting a release" below), then:
+PREFIX=/tmp/sl-install-test sh scripts/install.sh --version v0.1.0-rc1
 /tmp/sl-install-test/stone-llama version
 ```
 
-## How to Verify Release Artifacts
+`install.sh` is POSIX `sh`, requires no root, and supports:
+- `--version <tag>` — install a specific version (defaults to latest)
+- `--prefix <path>` — install directory (default: `~/.local/bin`)
+- `--help` / `-h` — usage
 
-After a tag push succeeds, check the GitHub Release page
-(`https://github.com/rizperdana/stone-llama/releases/tag/v*`).
+It detects the host OS/arch (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64),
+downloads the matching archive + `checksums.txt`, verifies the SHA-256, extracts,
+and copies the binary to the prefix.
 
-1. **Four archives** are present: one per target in the matrix.
-2. **Four `.sha256` sidecars** — one per archive.
-3. **One `checksums.txt`** — combined checksums for all four archives.
+## Cutting a release
 
-Verify any downloaded archive:
+### Pre-release checklist (v0.1.0-rc1 is OK — v0.1.0 is NOT)
 
-```bash
-# Download manually, then:
-sha256sum -c stone-llama_0.1.0_linux_amd64.tar.gz.sha256
-tar xzf stone-llama_0.1.0_linux_amd64.tar.gz
-./stone-llama_0.1.0_linux_amd64/stone-llama version
+- [ ] **Serve/ps/stop (M5) implemented** — required before v0.1.0
+- [ ] **Run (M6) implemented** — required before v0.1.0
+- [ ] **CI green** on all 5 targets (compile + smoke test)
+- [ ] **install.sh proven** against a staging release (rc1 exercises this)
+
+> v0.1.0 must NOT be cut until serve/ps/stop (M5) and run (M6) are implemented.
+> The rc pre-release exists to test the release machinery (naming, checksums,
+> install.sh end-to-end). Cut rc1 first, verify install.sh, then cut v0.1.0
+> after M5/M6 land.
+
+### Tag-cutting steps
+
+```sh
+# 1. Commit release engineering changes with explicit paths only
+git add Makefile .github/ scripts/ docs/RELEASE.md
+git commit -m "feat(release): ollama-style artifacts, linux/arm64, workflow_dispatch
+
+- Rename artifacts: stone-llama-<os>-<arch>.tgz/.zip (no version in name)
+- Add linux/arm64 to build matrix (untested)
+- Add workflow_dispatch with version input
+- Make release job idempotent (gh release view check)
+- Auto-detect pre-release from rc/beta/alpha/dev tags
+- Single checksums.txt (no per-file .sha256 sidecars)
+- Add run-smoke CI step: version, --help, doctor (GPU-less refusal)
+- Verify download-artifact@v4 (not download-artifacts) action name"
+
+git push origin main
+
+# 2. Cut pre-release tag (annotated)
+git tag -a v0.1.0-rc1 -m "Pre-release: test ollama-style artifact pipeline"
+git push origin v0.1.0-rc1
+
+# 3. Verify the release workflow ran and all artifacts uploaded
+gh release view v0.1.0-rc1 --json assets --jq '.assets[].name'
+
+# 4. Test install.sh against the release
+PREFIX=/tmp/sl-install-test sh scripts/install.sh --version v0.1.0-rc1
+/tmp/sl-install-test/stone-llama version
 ```
 
-## Rollback Story
+### Rollback
 
-Releases are identified by **immutable** Git tags and GitHub Release assets.
-Rolling back is always:
+If a release is broken:
 
-1. **Reinstall an older version:**
+```sh
+gh release delete v0.1.0-rc1 --yes     # removes GitHub release (keeps tag)
+git tag -d v0.1.0-rc1                  # removes local tag
+git push origin --delete v0.1.0-rc1    # removes remote tag
+# Fix, re-tag, re-push
+```
 
-   ```bash
-   sh scripts/install.sh --version v0.0.9
-   ```
+### Action name audit
 
-2. **Or pin a specific tag** in your shell profile:
-
-   ```bash
-   export STONE_LLAMA_VERSION=v0.0.9
-   ```
-
-3. **Rollback a bad tag** (only if the tag was pushed by mistake and **nothing**
-   downstream has consumed it):
-
-   ```bash
-   git tag -d v0.1.0
-   git push origin :refs/tags/v0.1.0   # delete remote tag
-   # Fix, re-tag, re-push
-   ```
-
-   > **Never** move or delete a tag that anyone may have pulled.  Instead, cut a
-   > new patch release (`v0.1.1`) with the fix.
-
-4. **GitHub Release deletion** (same rule — only if no downstream consumer
-   pulled the assets):
-
-   ```bash
-   gh release delete v0.1.0 --yes
-   ```
-
-## Makefile Targets
-
-| Target | What it does                                  |
-|--------|-----------------------------------------------|
-| `build`| `CGO_ENABLED=0 go build` for the current platform |
-| `test` | `go vet ./...` + `go test ./...`              |
-| `fmt`  | `gofmt -s -w .`                               |
-| `clean`| `rm -rf dist/` + local binary                 |
-| `dist` | Cross-compile all four targets into `dist/`  |
+| Action                      | Status | Notes                          |
+| --------------------------- | ------ | ------------------------------ |
+| `actions/checkout@v4`       | ✅     | Official                       |
+| `actions/setup-go@v5`       | ✅     | Official                       |
+| `actions/upload-artifact@v4`| ✅     | Official (singular)            |
+| `actions/download-artifact@v4` | ✅  | Official (singular — NOT `download-artifacts`) |
+| `gh CLI`                    | ✅     | Pre-installed on ubuntu-latest |

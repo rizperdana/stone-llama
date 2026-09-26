@@ -1,10 +1,15 @@
 name: Release
 
-# Only trigger on version tags (v*).  Pushes to main are covered by CI.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0-rc1)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -21,20 +26,14 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            archive_ext: tar.gz
-            binary: stone-llama
+          - goos: linux
+            goarch: arm64
           - goos: windows
             goarch: amd64
-            archive_ext: zip
-            binary: stone-llama.exe
           - goos: darwin
             goarch: amd64
-            archive_ext: tar.gz
-            binary: stone-llama
           - goos: darwin
             goarch: arm64
-            archive_ext: tar.gz
-            binary: stone-llama
 
     steps:
       - uses: actions/checkout@v4
@@ -43,38 +42,52 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${GITHUB_EVENT_INPUT_VERSION:-}" ]; then
+            echo "VERSION=${GITHUB_EVENT_INPUT_VERSION}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Build
         run: |
+          case "${{ matrix.goos }}" in
+            windows) bin=stone-llama.exe ;;
+            *)       bin=stone-llama     ;;
+          esac
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath \
-            -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
-            -o ./${{ matrix.binary }} ./cmd/stone-llama
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o ./$bin ./cmd/stone-llama
 
       - name: Package
         run: |
-          name="stone-llama_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          case "${{ matrix.goos }}" in
+            windows) bin=stone-llama.exe; ext=zip ;;
+            *)       bin=stone-llama;      ext=tgz ;;
+          esac
+          name="stone-llama-${{ matrix.goos }}-${{ matrix.goarch }}"
           mkdir -p "$name"
-          mv ${{ matrix.binary }} "$name/"
+          mv $bin "$name/"
           [ -f README.md ]  && cp README.md  "$name/"
           [ -f LICENSE ]    && cp LICENSE    "$name/"
           if [ -f assets/stone-llama.png ]; then cp assets/stone-llama.png "$name/"; fi
-
-          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+          if [ "$ext" = "zip" ]; then
             (cd "$name" && zip -qr "../${name}.zip" .)
           else
-            tar czf "${name}.tar.gz" "$name"
+            tar czf "${name}.tgz" "$name"
           fi
-
-          sha256sum "${name}.${{ matrix.archive_ext }}" > "${name}.${{ matrix.archive_ext }}.sha256"
           echo "ARTIFACT_NAME=${name}" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
-            *.tar.gz
+            *.tgz
             *.zip
-            *.sha256
           if-no-files-found: error
 
   release:
@@ -85,38 +98,116 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${GITHUB_EVENT_INPUT_VERSION:-}" ]; then
+            echo "VERSION=${GITHUB_EVENT_INPUT_VERSION}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+          # Validate semver-ish: strip leading 'v', check format
+          v=${VERSION#v}
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
+            || { echo "::error::invalid version '$VERSION'"; exit 1; }
 
       - name: Download all artifacts
-        uses: actions/download-artifacts@v4
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - name: Flatten, verify, and generate combined checksums
         run: |
           set -e
           mkdir -p release
-          # Flatten all artifact subdirs into release/
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) \
+          # Collect all archives (flatten artifact subdirs)
+          find artifacts -type f \( -name 'stone-llama-*.tgz' -o -name 'stone-llama-*.zip' \) \
             | while IFS= read -r f; do cp "$f" release/; done
 
           cd release
-          # Verify each per-artifact .sha256
-          for f in *.sha256; do
-            sha256sum -c "$f"
-          done
-          # Combined checksums for all archives
-          ls stone-llama_*.tar.gz stone-llama_*.zip 2>/dev/null \
-            | xargs sha256sum > checksums.txt
-
           echo "=== Release files ==="
           ls -la
 
-      - name: Create GitHub Release
+          # Combined checksums.txt (like ollama's sha256sum.txt — no per-file sidecars)
+          for f in stone-llama-*.tgz stone-llama-*.zip; do
+            [ -f "$f" ] && sha256sum "$f"
+          done > checksums.txt
+
+          echo "=== checksums.txt ==="
+          cat checksums.txt
+
+      - name: Generate release notes
         run: |
           cd release
-          gh release create "${{ github.ref_name }}" ./* \
-            --title "Release ${{ github.ref_name }}" \
-            --generate-notes
+
+          # Build notes template with quoted heredoc (prevents backtick expansion)
+          cat > notes.txt <<'TEMPLATE'
+          ## stone-llama — Release
+
+          ### Platform support
+
+          | Platform | Status | Notes |
+          |----------|--------|-------|
+          | linux/amd64 | ✅ Supported | Full runtime smoke-tested in CI |
+          | linux/arm64 | ⚠️ Builds | Cross-compiled, untested (no arm64 machine) |
+          | darwin/amd64 | ⚠️ Builds | Cross-compiled, untested |
+          | darwin/arm64 | ⚠️ Builds | Cross-compiled, untested |
+          | windows/amd64 | ⚠️ Builds | Cross-compiled, untested |
+
+          > stone-llama is CUDA-only (ExLlamaV3). A CPU-only fallback is not available —
+          > use [ollama with GGUF models](https://ollama.com) on non-NVIDIA hardware.
+
+          ### Quick install
+
+          ```sh
+          curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/__VERSION__/scripts/install.sh | sh
+          ```
+
+          Or install a specific version:
+
+          ```sh
+          sh scripts/install.sh --version __VERSION__
+          ```
+
+          ### Checksums
+
+          ```
+          TEMPLATE
+
+          # Replace version placeholder (quoted heredoc prevents shell expansion)
+          sed -i "s/__VERSION__/${VERSION}/g" notes.txt
+
+          # Append actual checksums
+          cat checksums.txt >> notes.txt
+          echo '```' >> notes.txt
+
+          echo "=== Release notes ==="
+          cat notes.txt
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd release
+
+          # Idempotency: create if missing, otherwise update notes + re-upload assets
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "Release ${VERSION} already exists — updating assets (idempotent)"
+            gh release edit "${VERSION}" --notes-file notes.txt
+          else
+            echo "Creating release ${VERSION}"
+            is_prerelease=""
+            case "${VERSION}" in
+              *-rc* | *-beta* | *-alpha* | *-dev*) is_prerelease="--prerelease" ;;
+            esac
+            gh release create "${VERSION}" \
+              --title "Release ${VERSION}" \
+              --notes-file notes.txt \
+              $is_prerelease
+          fi
+
+          # Upload/replace all artifacts (clobber on re-runs)
+          gh release upload "${VERSION}" --clobber \
+            stone-llama-*.tgz stone-llama-*.zip checksums.txt

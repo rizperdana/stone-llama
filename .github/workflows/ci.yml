@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CGO_ENABLED: 0
@@ -34,17 +35,53 @@ jobs:
       - name: Test
         run: go test ./...
 
-      # Compile-check for every release target.
-      # We do NOT run the binary here: exllamav3 needs an NVIDIA GPU
-      # and TabbyAPI, neither of which exist in CI.
+      # Compile-check every release target.  We use -o /dev/null so the
+      # host workspace isn't polluted with cross-compiled binaries.
       - name: Build check — linux/amd64
-        run: GOOS=linux   GOARCH=amd64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+        run: GOOS=linux   GOARCH=amd64   go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/stone-llama
+
+      - name: Build check — linux/arm64
+        run: GOOS=linux   GOARCH=arm64   go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/stone-llama
 
       - name: Build check — windows/amd64
-        run: GOOS=windows GOARCH=amd64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+        run: GOOS=windows GOARCH=amd64   go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/stone-llama
 
       - name: Build check — darwin/amd64
-        run: GOOS=darwin  GOARCH=amd64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+        run: GOOS=darwin  GOARCH=amd64   go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/stone-llama
 
       - name: Build check — darwin/arm64
-        run: GOOS=darwin  GOARCH=arm64   go build -trimpath -ldflags "-s -w" ./cmd/stone-llama
+        run: GOOS=darwin  GOARCH=arm64   go build -trimpath -ldflags "-s -w" -o /dev/null ./cmd/stone-llama
+
+      # Build the linux/amd64 binary and run smoke tests.
+      # The CI runner has no NVIDIA GPU, so `doctor` will refuse — that's
+      # expected.  We assert it prints the refusal rather than segfaulting.
+      - name: Build linux/amd64 for smoke test
+        run: GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=ci" -o stone-llama-smoke ./cmd/stone-llama
+
+      - name: Run smoke tests
+        run: |
+          set -eu
+          bin=./stone-llama-smoke
+
+          # version: must exit 0 and print the brand line
+          $bin version | grep "stone-llama"
+
+          # --help: must exit 0
+          $bin --help > /dev/null
+
+          # doctor: GPU-less runner — must refuse gracefully (no segfault)
+          set +e
+          $bin doctor > doctor.out 2>&1
+          dc=$?
+          set -e
+          if [ "$dc" -eq 139 ]; then
+            echo "::error::doctor segfaulted (exit $dc)"
+            cat doctor.out
+            exit 1
+          fi
+          if ! grep -q "NVIDIA GPU" doctor.out; then
+            echo "::error::doctor did not print GPU refusal"
+            cat doctor.out
+            exit 1
+          fi
+          echo "--- smoke tests passed (doctor exited $dc, refused GPU) ---"
