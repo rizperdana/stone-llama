@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1556" height="328" viewBox="0 0 1556 328" font-family="DejaVu Sans Mono, monospace" font-size="12">
+<rect width="1556" height="328" rx="10" fill="#1e1e1e"/>
+<text x="16" y="30" fill="#9cdcfe">stone-llama — real terminal output (captured 2026-09-26, linux/amd64)</text>
+<text x="16" y="50" fill="#4ec9b0">$ stone-llama doctor</text>
+<text x="16" y="67" fill="#d4d4d4">GPU        NVIDIA GeForce RTX 3050 Laptop GPU</text>
+<text x="16" y="84" fill="#d4d4d4">VRAM       4096 MiB</text>
+<text x="16" y="101" fill="#d4d4d4">Driver     580.178.04</text>
+<text x="16" y="118" fill="#d4d4d4">Runtime    cu13 extra</text>
+<text x="16" y="135" fill="#4ec9b0">$ stone-llama list</text>
+<text x="16" y="152" fill="#d4d4d4">NAME                    QUANT  SIZE      VERDICT  SOURCE</text>
+<text x="16" y="169" fill="#d4d4d4">SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported</text>
+<text x="16" y="186" fill="#4ec9b0">$ printf &#x27;n\n&#x27; | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw</text>
+<text x="16" y="203" fill="#d4d4d4">gate: arch  ✓ Qwen3ForCausalLM</text>
+<text x="16" y="220" fill="#d4d4d4">gate: quant ✓ exl3</text>
+<text x="16" y="237" fill="#d4d4d4">gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)</text>
+<text x="16" y="254" fill="#d4d4d4">      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx</text>
+<text x="16" y="271" fill="#d4d4d4">warnings above — review them before continuing</text>
+<text x="16" y="288" fill="#d4d4d4">pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 83.06 GiB free</text>
+<text x="16" y="305" fill="#d4d4d4">stone-llama pull: non-interactive pull requires --yes to confirm the download</text>
+</svg>

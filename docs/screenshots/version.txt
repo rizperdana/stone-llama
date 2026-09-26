@@ -1,0 +1,2 @@
+$ stone-llama version
+stone-llama dev (linux/amd64)

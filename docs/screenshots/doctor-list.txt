@@ -1,0 +1,9 @@
+$ stone-llama doctor
+GPU        NVIDIA GeForce RTX 3050 Laptop GPU
+VRAM       4096 MiB
+Driver     580.178.04
+Runtime    cu13 extra
+
+$ stone-llama list
+NAME                    QUANT  SIZE      VERDICT  SOURCE
+SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported

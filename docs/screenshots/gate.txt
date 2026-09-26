@@ -1,0 +1,11 @@
+$ stone-llama pull ggml-org/SmolLM3-3B-GGUF
+stone-llama pull: repo ggml-org/SmolLM3-3B-GGUF has no config.json — not an EXL3 model layout
+
+$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # download declined
+gate: arch  ✓ Qwen3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
+      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
+warnings above — review them before continuing
+pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 83.05 GiB free
+stone-llama pull: non-interactive pull requires --yes to confirm the download
