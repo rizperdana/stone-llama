@@ -103,7 +103,10 @@ jobs:
       contents: write
 
     steps:
+      # Full history + tags: release notes group `git log` by commit type.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Determine version
         id: version
@@ -115,6 +118,13 @@ jobs:
           v=${VERSION#v}
           echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
             || { echo "::error::invalid version '$VERSION'"; exit 1; }
+
+          # Semver rule: a tag with a -suffix (v0.1.0-rc1) publishes as a
+          # PRE-release; a plain vX.Y.Z publishes as the Latest release.
+          case "$v" in
+            *-*) echo "IS_PRERELEASE=1" >> "$GITHUB_ENV" ;;
+            *)   echo "IS_PRERELEASE=0" >> "$GITHUB_ENV" ;;
+          esac
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -140,94 +150,116 @@ jobs:
           done
 
           sha256sum stone-llama-*.tgz stone-llama-*.zip > checksums.txt
-          echo "=== checksums.txt ==="
+
+          # checksums.txt must cover EVERY artifact — nothing missing, nothing extra.
+          n_art=0
+          for f in stone-llama-*.tgz stone-llama-*.zip; do
+            n_art=$((n_art + 1))
+            grep -qF "  $f" checksums.txt \
+              || { echo "::error::checksums.txt has no line for $f"; exit 1; }
+          done
+          n_sum=$(grep -c '' checksums.txt)
+          [ "$n_sum" -eq "$n_art" ] \
+            || { echo "::error::checksums.txt has $n_sum lines for $n_art artifacts"; exit 1; }
+
+          echo "=== checksums.txt ($n_sum/$n_art artifacts covered) ==="
           cat checksums.txt
 
-      - name: Generate release notes
+      - name: Generate release notes from template
         run: |
-          cd release
+          set -euo pipefail
 
-          # Build notes with printf (avoids YAML heredoc indentation issues).
-          # __VERSION__ is a literal placeholder replaced by sed below.
-          printf '%s\n' \
-            '# stone-llama — Pre-release' \
-            '' \
-            '> **PRE-RELEASE** — This is an rc build to test the release pipeline.' \
-            '> Not for production use. See [docs/RELEASE.md](docs/RELEASE.md).' \
-            '' \
-            '## Platform Support' \
-            '' \
-            '| Platform | Status | Notes |' \
-            '|----------|--------|-------|' \
-            '| linux/amd64 | Supported | Full runtime smoke-tested in CI |' \
-            '| linux/arm64 | Builds | Cross-compiled, untested (no arm64 machine in CI) |' \
-            '| darwin/amd64 | Builds | Cross-compiled, untested |' \
-            '| darwin/arm64 | Builds | Cross-compiled, untested |' \
-            '| windows/amd64 | Builds | Cross-compiled, untested |' \
-            '' \
-            '> stone-llama is CUDA-only (ExLlamaV3). No CPU/AMD/Metal backend.' \
-            '> For non-NVIDIA hardware, use [ollama with GGUF models](https://ollama.com).' \
-            '' \
-            '---' \
-            '' \
-            '## Quick Install' \
-            '' \
-            '```sh' \
-            'curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/__VERSION__/scripts/install.sh | sh -s -- --version __VERSION__' \
-            '```' \
-            '' \
-            'Or install a specific version:' \
-            '' \
-            '```sh' \
-            'sh scripts/install.sh --version __VERSION__' \
-            '```' \
-            '' \
-            'Windows users: download the .zip manually — install.sh supports linux/darwin only.' \
-            '' \
-            '---' \
-            '' \
-            '## SHA-256 Checksums' \
-            '' \
-            '```' \
-            > release_notes.md
+          # --- commits since the previous tag, grouped by commit type -------
+          # Repo convention is Conventional Commits (feat/fix/docs/chore/...);
+          # subjects are emitted verbatim from git log — nothing is reworded.
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            ref="refs/tags/${VERSION}"
+          else
+            ref="HEAD"   # workflow_dispatch without a pushed tag
+          fi
+          prev="$(git describe --tags --abbrev=0 "${ref}^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then range="${prev}..${ref}"; else range="${ref}"; fi
 
-          cat checksums.txt >> release_notes.md
-          printf '%s\n' '```' >> release_notes.md
+          git log --no-merges --pretty=%s "$range" > subjects.txt
+          [ -s subjects.txt ] || echo "(no commit subjects found for range ${range})" > subjects.txt
 
-          sed -i "s/__VERSION__/${VERSION}/g" release_notes.md
+          awk '
+            /^feat(\(|:)/    { feat = feat "- " $0 "\n"; next }
+            /^fix(\(|:)/     { fix  = fix  "- " $0 "\n"; next }
+            /^docs?(\(|:)/   { docs = docs "- " $0 "\n"; next }
+            /^(chore|ci|test|build|refactor|perf|style)(\(|:)/ { maint = maint "- " $0 "\n"; next }
+                             { other = other "- " $0 "\n" }
+            END {
+              if (feat  != "") printf "### Features\n\n%s\n", feat
+              if (fix   != "") printf "### Bug fixes\n\n%s\n", fix
+              if (docs  != "") printf "### Documentation\n\n%s\n", docs
+              if (maint != "") printf "### Maintenance\n\n%s\n", maint
+              if (other != "") printf "### Other changes\n\n%s\n", other
+            }
+          ' subjects.txt > changelog.md
+
+          # --- render the template (cwd = repo root) ------------------------
+          awk -v version="$VERSION" -v prerelease="$IS_PRERELEASE" \
+              -v prev="$prev" -v repo="$GITHUB_REPOSITORY" '
+            index($0, "__PRERELEASE_NOTICE__") {
+              if (prerelease == "1")
+                print "> **PRE-RELEASE** — pre-release build (rc/beta). Not marked Latest; install it by pinning --version " version " explicitly.";
+              next
+            }
+            index($0, "__FULL_CHANGELOG__") {
+              if (prev != "")
+                print "**Full changelog**: https://github.com/" repo "/compare/" prev "..." version;
+              next
+            }
+            index($0, "__CHANGELOG__") {
+              while ((getline l < "changelog.md") > 0) print l
+              next
+            }
+            index($0, "__CHECKSUMS__") {
+              while ((getline l < "release/checksums.txt") > 0) print l
+              next
+            }
+            { gsub(/__VERSION__/, version); print }
+          ' .github/release-notes-template.md > release/release_notes.md
+
+          # Fail loudly if any placeholder survived — by design, nothing in
+          # this workflow swallows a failure; every step must exit non-zero.
+          if grep -n '__[A-Z][A-Z_]*__' release/release_notes.md; then
+            echo "::error::unrendered placeholder in release notes"
+            exit 1
+          fi
 
           echo "=== Release notes ==="
-          cat release_notes.md
+          cat release/release_notes.md
 
       - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
+          set -euo pipefail
           cd release
 
-          is_prerelease=""
-          case "${VERSION}" in
-            *rc* | *beta* | *alpha* | *dev*) is_prerelease="--prerelease" ;;
-          esac
+          # Flags are derived from the tag alone: -suffix → pre-release,
+          # plain vX.Y.Z → latest. Both are documented gh flags.
+          if [ "$IS_PRERELEASE" = "1" ]; then
+            extra=(--prerelease)
+          else
+            extra=(--latest)
+          fi
 
           if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "⚠️  Release ${VERSION} already exists — updating assets (idempotent re-run)"
+            echo "Release ${VERSION} already exists — updating assets and notes (idempotent re-run)"
             gh release upload "${VERSION}" --clobber \
               stone-llama-*.tgz stone-llama-*.zip checksums.txt
+            gh release edit "${VERSION}" \
+              --notes-file release_notes.md "${extra[@]}"
           else
-            echo "Creating release ${VERSION} (pre-release=${is_prerelease:-(none)})"
+            echo "Creating release ${VERSION} (prerelease=${IS_PRERELEASE})"
             gh release create "${VERSION}" \
               stone-llama-*.tgz stone-llama-*.zip checksums.txt \
               --title "Release ${VERSION}" \
-              --generate-notes \
-              ${is_prerelease}
-
-            # Fetch GitHub's auto-generated changelog and prepend our template
-            body=$(gh release view "${VERSION}" --json body --jq '.body // ""')
-            { cat release_notes.md; echo "$body"; } > combined_notes.md
-            gh release edit "${VERSION}" --notes-file combined_notes.md
-
+              --notes-file release_notes.md \
+              "${extra[@]}"
             echo "=== Release created ==="
             echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
           fi
