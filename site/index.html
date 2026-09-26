@@ -61,25 +61,25 @@
         <p class="lede">Ollama-style CLI and local model server for ExLlamaV3&nbsp;+&nbsp;TabbyAPI — one
           Go binary that pulls EXL3 models, auto-fits context to your VRAM, and serves an
           OpenAI-compatible API.</p>
-        <p class="fine status">Commands in a source build today: <code>doctor</code>,
-          <code>setup</code>, <code>fit</code>, <code>pull</code>, <code>rank</code>,
-          <code>list</code>, <code>serve</code>, <code>ps</code>, <code>stop</code>,
-          <code>run</code>.</p>
+        <p class="fine status">Commands: <code>doctor</code>, <code>setup</code>,
+          <code>fit</code>, <code>pull</code>, <code>rank</code>, <code>list</code>,
+          <code>serve</code>, <code>ps</code>, <code>stop</code>, <code>run</code>,
+          <code>version</code>, <code>rm</code>, <code>import</code>, <code>login</code>.</p>
 
         <div class="install" role="group" aria-label="Install command">
           <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh</code>
           <button class="copy" type="button" data-copy="install-cmd">copy</button>
         </div>
-        <p class="fine install-note"><strong>Release pending:</strong> the one-liner installs the
-          latest published release — none is published yet, so it fails with &ldquo;could not
-          determine latest release version&rdquo;. Until the first release lands, build from
-          source: <a href="https://github.com/rizperdana/stone-llama/blob/main/docs/INSTALLATION.md#option-b--build-from-source-always-works">docs/INSTALLATION.md, Option&nbsp;B</a>.</p>
+        <p class="fine install-note">Install with the one-line installer (SHA-256 verified
+          against the release&rsquo;s combined <code>checksums.txt</code>) or build from source:
+          <a href="https://github.com/rizperdana/stone-llama/blob/main/docs/INSTALLATION.md">docs/INSTALLATION.md</a>.
+          A pre-release, <code>v0.1.0-rc1</code>, is published.</p>
 
         <div class="hero-links">
           <a class="btn btn-primary" href="https://github.com/rizperdana/stone-llama">View on GitHub</a>
           <a class="btn btn-ghost" href="https://github.com/rizperdana/stone-llama/blob/main/docs/QUICKSTART.md">Quickstart docs</a>
         </div>
-        <p class="fine">MIT &middot; Go &ge; 1.24 &middot; single static binary (~10&ndash;15&nbsp;MB)
+        <p class="fine">MIT &middot; Go &ge; 1.24 &middot; single static binary (7,770,296&nbsp;B &asymp; 7.4&nbsp;MiB)
           &middot; NVIDIA CUDA, Linux/amd64</p>
       </div>
     </div>
@@ -89,7 +89,7 @@
   <section class="sect" id="output" aria-labelledby="output-title">
     <div class="wrap">
       <p class="eyebrow reveal">01 &mdash; terminal output</p>
-      <h2 id="output-title" class="reveal">Five captures from a live run</h2>
+      <h2 id="output-title" class="reveal">Seven captures from a live run</h2>
       <p class="sect-lede reveal">2026-09-26, RTX 3050 Laptop 4096&nbsp;MiB, driver 580.178.04,
         Linux/amd64; raw files in
         <a href="https://github.com/rizperdana/stone-llama/tree/main/docs/screenshots">docs/screenshots/</a>.
@@ -160,6 +160,60 @@ async0x42/Qwen3-1.7B-exl3_4.0bpw  4bpw   warn:40960 Q4  31       582          -
 async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
 ~ values are estimates [est] from metadata + GPU spec — not measured (calibration pending)
 <span class="c">EXIT=0</span></code></pre>
+        </figure>
+
+        <figure class="term term-wide reveal">
+          <figcaption class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>serve.txt — attach mode: daemon up, /healthz marker, ps, stop (live TabbyAPI upstream)</figcaption>
+          <pre tabindex="0"><code><span class="cmd">$ stone-llama serve --attach 127.0.0.1:5002 --key-file &lt;key-file&gt;</span>
+stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
+  upstream: http://127.0.0.1:5002 (attach)
+
+<span class="cmd">$ curl -sS -D raw/healthz-headers.txt -o raw/healthz-body.txt http://127.0.0.1:5111/healthz</span>
+HTTP=200
+
+HTTP/1.1 200 OK
+X-Stone-Llama: 1
+Date: Sat, 26 Sep 2026 05:16:22 GMT
+Content-Length: 12
+Content-Type: text/plain; charset=utf-8
+
+stone-llama
+
+<span class="cmd">$ stone-llama ps</span>
+stone-llama: running (pid 419204)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   3m45s
+
+<span class="cmd">$ stone-llama stop</span>
+stone-llama: stopped
+<span class="c">exit=0</span></code></pre>
+        </figure>
+
+        <figure class="term term-wide reveal">
+          <figcaption class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>run.txt — attach mode: ps, piped /bye, state intact afterwards</figcaption>
+          <pre tabindex="0"><code><span class="cmd">$ stone-llama ps</span>
+stone-llama: running (pid 458259)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   22s
+<span class="c">exit=0</span>
+
+<span class="cmd">$ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3</span>
+&gt;&gt;&gt; exit=0
+
+<span class="cmd">$ ls ~/.local/share/stone-llama/   # state intact after run</span>
+daemon.json
+logs
+models
+runtime
+stone-llama.lock</code></pre>
         </figure>
       </div>
     </div>

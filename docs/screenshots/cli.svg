@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1686" height="294" viewBox="0 0 1686 294" font-family="DejaVu Sans Mono, monospace" font-size="12">
-<rect width="1686" height="294" rx="10" fill="#1e1e1e"/>
-<text x="16" y="30" fill="#9cdcfe">stone-llama — real terminal output (captured 2026-09-26, linux/amd64; rendering of docs/screenshots/*.txt)</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1686" height="1144" viewBox="0 0 1686 1144" font-family="DejaVu Sans Mono, monospace" font-size="12">
+<rect width="1686" height="1144" rx="10" fill="#1e1e1e"/>
+<text x="16" y="30" fill="#9cdcfe">stone-llama — real terminal output (captured 2026-09-26, linux/amd64; rendering of docs/screenshots/doctor-list.txt, fit.txt, serve.txt, run.txt)</text>
 <text x="16" y="50" fill="#4ec9b0">$ stone-llama doctor</text>
 <text x="16" y="67" fill="#d4d4d4">GPU        NVIDIA GeForce RTX 3050 Laptop GPU</text>
 <text x="16" y="84" fill="#d4d4d4">VRAM       4096 MiB</text>
@@ -15,4 +15,43 @@
 <text x="16" y="237" fill="#d4d4d4">gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)</text>
 <text x="16" y="254" fill="#d4d4d4">      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx</text>
 <text x="16" y="271" fill="#d4d4d4">estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending</text>
+<text x="16" y="322" fill="#4ec9b0">$ stone-llama serve --attach 127.0.0.1:5002 --key-file &lt;key-file&gt;</text>
+<text x="16" y="339" fill="#d4d4d4">stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)</text>
+<text x="16" y="356" fill="#d4d4d4">  upstream: http://127.0.0.1:5002 (attach)</text>
+<text x="16" y="390" fill="#4ec9b0">$ curl -sS -D raw/healthz-headers.txt -o raw/healthz-body.txt http://127.0.0.1:5111/healthz</text>
+<text x="16" y="407" fill="#d4d4d4">HTTP=200</text>
+<text x="16" y="441" fill="#d4d4d4">HTTP/1.1 200 OK</text>
+<text x="16" y="458" fill="#d4d4d4">X-Stone-Llama: 1</text>
+<text x="16" y="475" fill="#d4d4d4">Date: Sat, 26 Sep 2026 05:16:22 GMT</text>
+<text x="16" y="492" fill="#d4d4d4">Content-Length: 12</text>
+<text x="16" y="509" fill="#d4d4d4">Content-Type: text/plain; charset=utf-8</text>
+<text x="16" y="543" fill="#d4d4d4">stone-llama</text>
+<text x="16" y="577" fill="#4ec9b0">$ stone-llama ps</text>
+<text x="16" y="594" fill="#d4d4d4">stone-llama: running (pid 419204)</text>
+<text x="16" y="611" fill="#d4d4d4">  address:  127.0.0.1:5111</text>
+<text x="16" y="628" fill="#d4d4d4">  mode:     attach (http://127.0.0.1:5002)</text>
+<text x="16" y="645" fill="#d4d4d4">            stone-llama does not own this process — it proxies only; load/unload is the upstream's</text>
+<text x="16" y="662" fill="#d4d4d4">  ready:    yes</text>
+<text x="16" y="679" fill="#d4d4d4">  model:    SmolLM3-3B-exl3</text>
+<text x="16" y="696" fill="#d4d4d4">  uptime:   3m45s</text>
+<text x="16" y="730" fill="#4ec9b0">$ stone-llama stop</text>
+<text x="16" y="747" fill="#d4d4d4">stone-llama: stopped</text>
+<text x="16" y="764" fill="#d4d4d4">exit=0</text>
+<text x="16" y="815" fill="#4ec9b0">$ stone-llama ps</text>
+<text x="16" y="832" fill="#d4d4d4">stone-llama: running (pid 458259)</text>
+<text x="16" y="849" fill="#d4d4d4">  address:  127.0.0.1:5111</text>
+<text x="16" y="866" fill="#d4d4d4">  mode:     attach (http://127.0.0.1:5002)</text>
+<text x="16" y="883" fill="#d4d4d4">            stone-llama does not own this process — it proxies only; load/unload is the upstream's</text>
+<text x="16" y="900" fill="#d4d4d4">  ready:    yes</text>
+<text x="16" y="917" fill="#d4d4d4">  model:    SmolLM3-3B-exl3</text>
+<text x="16" y="934" fill="#d4d4d4">  uptime:   22s</text>
+<text x="16" y="951" fill="#d4d4d4">exit=0</text>
+<text x="16" y="985" fill="#4ec9b0">$ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3</text>
+<text x="16" y="1002" fill="#d4d4d4">&gt;&gt;&gt; exit=0</text>
+<text x="16" y="1036" fill="#4ec9b0">$ ls ~/.local/share/stone-llama/   # state intact after run</text>
+<text x="16" y="1053" fill="#d4d4d4">daemon.json</text>
+<text x="16" y="1070" fill="#d4d4d4">logs</text>
+<text x="16" y="1087" fill="#d4d4d4">models</text>
+<text x="16" y="1104" fill="#d4d4d4">runtime</text>
+<text x="16" y="1121" fill="#d4d4d4">stone-llama.lock</text>
 </svg>

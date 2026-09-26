@@ -9,7 +9,7 @@ NVIDIA-CUDA-only, so on CPU/AMD/Apple machines nothing below will ever serve.
 | Requirement | Detail |
 |---|---|
 | Platform | NVIDIA CUDA GPU, Linux x86_64 (amd64), driver ≥ **570** (`cu12` runtime extra) or ≥ **580** (`cu13`). No CPU path, no AMD/ROCm, no Apple/Metal; older driver → `doctor` refuses with the upgrade hint. Full table: [README platform support](../README.md#platform-support). |
-| Disk (binary alone) | ~10–15 MB. |
+| Disk (binary alone) | ~9 MB — measured 8,941,752 B for the installed `v0.1.0-rc1` binary (release asset 8,933,560 B ≈ 8.5 MiB) and 7,770,296 B ≈ 7.41 MiB for the current source build. |
 | Disk (`setup` runtime) | **≈ 1 GB of downloads** — measured here: torch+cu130 531 MB, exllamav3 419 MB, uv 24 MB (950 MB total, HEAD-announced per URL before consent), plus a pinned CPython and the TabbyAPI checkout; the unpacked venv takes more than the downloads. Free space is checked with `statfs` and the run refuses if short. |
 | Disk (models) | Whatever the weights are — e.g. `SmolLM3-3B-exl3` is 1.84 GiB. Checked per-pull before any byte moves. |
 | Network | Only for `setup` (runtime) and `pull` (weights). `doctor`, `list`, `fit`, `import` need none (aside from small HuggingFace metadata for `fit`). |
@@ -19,15 +19,20 @@ driver, chosen runtime extra — and makes no changes.
 
 ## Option A — release binary / install.sh
 
-Releases are tagged `vX.Y.Z` and publish, per platform:
+Releases are tagged `vX.Y.Z` and publish, per platform. Names are ollama-style:
+hyphens, **no version in the filename**, `.tgz` for linux/darwin, `.zip` for
+windows:
 
 | Artifact | Note |
 |---|---|
-| `stone-llama_X.Y.Z_linux_amd64.tar.gz` | **the supported target** |
-| `stone-llama_X.Y.Z_windows_amd64.zip` | published, **untested at runtime** (daemonization differs) |
-| `stone-llama_X.Y.Z_darwin_amd64.tar.gz` / `_darwin_arm64.tar.gz` | builds; can run `doctor`/`list`/`fit`, **can never serve** (no CUDA) |
+| `stone-llama-linux-amd64.tgz` | **the supported target** |
+| `stone-llama-linux-arm64.tgz` | published, builds only (untested — no arm64 machine here) |
+| `stone-llama-windows-amd64.zip` | published, **untested at runtime** (daemonization differs) |
+| `stone-llama-darwin-amd64.tgz` | builds; can run `doctor`/`list`/`fit`, **can never serve** (no CUDA) |
+| `stone-llama-darwin-arm64.tgz` | builds; can run `doctor`/`list`/`fit`, **can never serve** (no CUDA) |
 
-Each has a `.sha256` sidecar (plus a combined `checksums.txt`).
+All artifacts are verified against a single combined `checksums.txt` (474 B in
+`v0.1.0-rc1`) — there are **no per-file `.sha256` sidecars**.
 
 One-line install (resolves the latest release, verifies sha256, installs to
 `~/.local/bin`):
@@ -37,11 +42,15 @@ curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts
 ```
 
 `scripts/install.sh` lives on `main` and supports `--help` (prints usage, exits
-0). It resolves the latest published release, verifies the `.sha256` sidecar,
-then installs. **No release has been published yet** — the release pipeline
-exists and a pre-release is planned to prove it end-to-end, but until that lands
-the working install path is **Option B (build from source)**, which needs no
-release.
+0). It resolves the latest published release, verifies the SHA-256 against the
+combined `checksums.txt`, then installs. **`v0.1.0-rc1` is published as a
+pre-release** (2026-09-26: five platform bundles + `checksums.txt` — six assets
+in total) and `install.sh` is proven end-to-end: `PREFIX=/tmp/sl-install-test sh
+scripts/install.sh --version v0.1.0-rc1` resolves, downloads
+`stone-llama-linux-amd64.tgz` (5,719,364 B), verifies the checksum against the
+published value, extracts, installs and runs `stone-llama v0.1.0-rc1 (linux/amd64)`.
+Use `--version v0.1.0-rc1` to pin the pre-release, or run without `--version` to
+install the latest release.
 
 Or from a checkout: `scripts/install.sh --version X.Y.Z` pins a release tag.
 
@@ -133,8 +142,12 @@ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw   # metadata only — no downlo
 stone-llama list           # should show installed models (or the empty hint)
 ```
 
-If `doctor` reports the runtime as missing, run `setup` before `run`/`serve`
-(both still landing in M6/M5).
+Expected `version` banner for this machine's source build:
+[screenshots/version.txt](screenshots/version.txt) — `dev` is what an untagged
+build prints; the published release binary prints its tag instead
+(`stone-llama v0.1.0-rc1 (linux/amd64)`).
+
+If `doctor` reports the runtime as missing, run `setup` before `run`/`serve`.
 
 ## Uninstall
 

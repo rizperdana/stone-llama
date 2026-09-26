@@ -1,2 +1,14 @@
 $ stone-llama version
-stone-llama dev (linux/amd64) — app icon stone-llama.png embedded (1254528 bytes)
+stone-llama dev (linux/amd64) — app icon stone-llama.png embedded (91972 bytes)
+EXIT=0
+
+Conditions: captured 2026-09-26 by running the binary built from this
+tree (`main` at 4f020dc, plus the brand-icon size patch), linux/amd64,
+`CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`, resulting binary
+7,770,296 bytes.
+
+`dev` is what an UNTAGGED source build prints. The published
+`v0.1.0-rc1` release binary prints `stone-llama v0.1.0-rc1 (linux/amd64)`
+instead, and embeds the 1,254,528-byte app icon; the current source build
+embeds the 91,972-byte one (byte-identical to assets/stone-llama-256.png),
+which is where the size drop comes from.

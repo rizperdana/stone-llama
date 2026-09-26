@@ -99,6 +99,10 @@ If you already have an EXL3 model directory on disk, `stone-llama import <dir>
     #  or stop an existing TabbyAPI, it may serve live work):
     stone-llama serve --attach 127.0.0.1:5002
 
+For `--attach`, supply the TabbyAPI key with `--key-file <path>`: the key is
+read from the file and never placed on argv. Example:
+`stone-llama serve --attach 127.0.0.1:5002 --key-file ~/.config/tabbyapi/api_key.txt`
+
 Verify with:
 
     curl -s http://127.0.0.1:5111/v1/models
@@ -109,10 +113,9 @@ Verify with:
 
 Then `stone-llama ps` (loaded model + live VRAM) and `stone-llama stop`.
 
-If `serve`/`ps`/`stop`/`run` print "not implemented yet (ships in M5/M6)",
-they are not in the build you have — report that honestly as an unfinished
-step; do not improvise an alternative server. `doctor`, `fit`, `list`,
-`list --estimate`, `rank`, `import`, `rm`, `pull`, `login` are implemented.
+All commands — including `serve`, `ps`, `stop` and `run` — are implemented in
+the current build. If any command prints "not implemented," report that
+honestly instead of improvising an alternative server.
 
 ## Decision points (recap)
 

@@ -83,6 +83,43 @@ stone-llama run Qwen3-1.7B-exl3_4.0bpw --ctx 16384   # override autofit
 `run` prints the autofit decision (ctx, cache mode, the arithmetic) before the
 first token.
 
+In attach mode there is nothing for `run` to load, so no autofit line is
+printed. Live capture (source build of `main` at 4f020dc, 2026-09-26, attach
+mode against a live TabbyAPI; full transcript and caveats:
+[screenshots/run.txt](screenshots/run.txt)):
+
+```console
+$ stone-llama ps
+stone-llama: running (pid 458259)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   22s
+exit=0
+
+$ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3
+>>> exit=0
+
+$ ls ~/.local/share/stone-llama/   # state intact after run
+daemon.json
+logs
+models
+runtime
+stone-llama.lock
+```
+
+Two caveats, both observed at that revision:
+
+- The `run -p` one-shot is currently **unbounded**: 285 s / 2206 lines on one
+  short prompt, because the completions body omits `max_tokens` and the only
+  fix so far is an uncommitted local change sending `"max_tokens": 0`
+  (= generate to EOS, no cap). Prefer piped input such as `/bye` above until
+  that lands — do not read an unbounded `-p` run as normal behaviour.
+- Loading is the upstream's job in attach mode: `/-/load` answers 409
+  `attach_mode`, and a mismatched model name exits 1 with the same message.
+
 ## 6. `serve` + `curl` — OpenAI-compatible API
 
 ```bash
@@ -93,21 +130,49 @@ stone-llama serve --attach 127.0.0.1:5002          # attach mode: proxy to a Tab
 Attach mode never restarts or stops the upstream server — it points stone-llama's
 OpenAI-compatible endpoint at an existing TabbyAPI.
 
-Status when this page was written (2026-09-26): `serve` ships with milestone M5
-and `run` with M6 — neither is in the build yet; each says so, verbatim:
+`serve`, `ps`, `stop` and `run` are all implemented in the current build. Live
+attach-mode capture against a running TabbyAPI (source build of `main` at
+4f020dc, 2026-09-26; the API key was passed with `--key-file`, never argv;
+full transcript, headers and evidence:
+[screenshots/serve.txt](screenshots/serve.txt)):
 
 ```console
-$ stone-llama serve
-stone-llama serve: not implemented yet (ships in M5)
-EXIT=2
-$ stone-llama run Qwen3-1.7B-exl3_4.0bpw
-stone-llama run: not implemented yet (ships in M6)
-EXIT=2
+$ stone-llama serve --attach 127.0.0.1:5002 --key-file <key-file>
+stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
+  upstream: http://127.0.0.1:5002 (attach)
+
+$ curl -sS -D raw/healthz-headers.txt -o raw/healthz-body.txt http://127.0.0.1:5111/healthz
+HTTP=200
+
+HTTP/1.1 200 OK
+X-Stone-Llama: 1
+Date: Sat, 26 Sep 2026 05:16:22 GMT
+Content-Length: 12
+Content-Type: text/plain; charset=utf-8
+
+stone-llama
+
+$ stone-llama ps
+stone-llama: running (pid 419204)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   3m45s
+
+$ stone-llama stop
+stone-llama: stopped
+exit=0
 ```
 
-The walkthrough below is the v1 surface; a live `serve` + `curl` capture is
-appended once M5 lands. (The measured autofit numbers in this doc were obtained
-in attach mode against a live TabbyAPI — zero downloads.)
+`X-Stone-Llama: 1` is the daemon's own marker on **`/healthz`**; the literal
+`/health` path is an upstream passthrough (`Server: uvicorn`) and carries no
+marker header. Measured on that same daemon: a non-streaming completion
+returned 200 in 0.344 s, and a streaming request had TTFB 0.0105 s against a
+total of 1.4166 s across 56 SSE events — per-chunk passthrough, not buffering.
+(The measured autofit numbers in this doc were obtained in attach mode against
+a live TabbyAPI — zero downloads.)
 
 ```bash
 curl http://127.0.0.1:5111/v1/models
@@ -120,6 +185,21 @@ curl http://127.0.0.1:5111/v1/chat/completions -d '{
 
 Then `stone-llama ps` (loaded model + live VRAM) and `stone-llama stop`.
 
+With no daemon the two commands differ in exit code — scripts will care. Both
+lines below are observed at revision 4f020dc, where `ps` finds the daemon only
+through `daemon.json` and auto-starts one by default (that behaviour is being
+reworked upstream; do not read the auto-start as the intended long-term
+design):
+
+```console
+$ STONE_LLAMA_NO_AUTOSTART=1 stone-llama ps
+stone-llama ps: no stone-llama daemon is running (start one with 'stone-llama serve')
+exit=1
+$ stone-llama stop
+stone-llama: not running
+exit=0
+```
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -129,3 +209,4 @@ Then `stone-llama ps` (loaded model + live VRAM) and `stone-llama stop`.
 | `exl2` / GGUF-only repo refused | wrong format for exllamav3; GGUF means use ollama with GGUF |
 | pull 401/403 | gated repo → `stone-llama login` (or `HF_TOKEN`) |
 | `setup` ENOSPC | free up disk; the error prints required vs available |
+| Testing without touching the live daemon | point `XDG_DATA_HOME` at an empty directory (separate state dir) and `XDG_CONFIG_HOME` / `STONE_LLAMA_CONFIG` at a scratch config — see [README](../README.md#commands) |

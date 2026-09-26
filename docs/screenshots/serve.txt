@@ -1,6 +1,168 @@
-$ stone-llama serve
-stone-llama serve: not implemented yet (ships in M5)
-EXIT=2
-$ stone-llama serve --attach 127.0.0.1:5002
-stone-llama serve: not implemented yet (ships in M5)
-EXIT=2
+stone-llama serve — live capture (attach mode)
+==============================================
+
+Conditions: captured 2026-09-26 from a source build of `main` at 4f020dc,
+Linux/amd64 (RTX 3050 Laptop, 4096 MiB, driver 580.178.04), ATTACH MODE
+against a live TabbyAPI on http://127.0.0.1:5002 (model SmolLM3-3B-exl3).
+The API key was passed with --key-file (never argv, never stdout) and is
+written <key>; the key-file path is written <key-file>. The upstream
+server was never restarted or stopped, and nothing was downloaded.
+
+Annotations: command lines read `stone-llama …` — the verification ran the
+same build at /tmp/sl-a/stone-llama. `raw/…` names are the verification's
+own capture files (evidence: /tmp/sl-a/raw/, narrative:
+/tmp/sl-a/report.md). Headers below are curl -D output, bodies curl -o
+output.
+
+[shared block begins — quoted verbatim in docs/QUICKSTART.md §6 and site/index.html]
+$ stone-llama serve --attach 127.0.0.1:5002 --key-file <key-file>
+stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
+  upstream: http://127.0.0.1:5002 (attach)
+
+$ curl -sS -D raw/healthz-headers.txt -o raw/healthz-body.txt http://127.0.0.1:5111/healthz
+HTTP=200
+
+HTTP/1.1 200 OK
+X-Stone-Llama: 1
+Date: Sat, 26 Sep 2026 05:16:22 GMT
+Content-Length: 12
+Content-Type: text/plain; charset=utf-8
+
+stone-llama
+
+$ stone-llama ps
+stone-llama: running (pid 419204)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   3m45s
+
+$ stone-llama stop
+stone-llama: stopped
+exit=0
+[shared block ends]
+
+Notes on the shared block
+-------------------------
+
+* `--attach 127.0.0.1:5002` is SCHEMELESS and was normalised to
+  `http://127.0.0.1:5002`. Attach mode never restarts or stops the
+  upstream; it only points stone-llama's OpenAI-compatible endpoint at it.
+* `/healthz` is the daemon's own health route and carries
+  `X-Stone-Llama: 1`. The literal `/health` path is an upstream
+  passthrough (Server: uvicorn) and carries NO marker header — see §2.
+* `ps` and `stop` are shown exactly as OBSERVED at this revision
+  (4f020dc). They are not a statement of final semantics: at this
+  revision `ps` is not read-only (with no daemon it auto-starts a
+  detached one, and a failed /healthz probe can remove `daemon.json`).
+  That behaviour was reported by the independent verification run and is
+  under active fix — treat the block above as observed-at-revision.
+
+§2 — further evidence from the same session
+-------------------------------------------
+
+State file (token redacted as <key>), source raw/daemon.json.txt:
+
+{
+  "pid": 419204,
+  "host": "127.0.0.1",
+  "port": 5111,
+  "token": "<key>",
+  "attach": "http://127.0.0.1:5002",
+  "started_at": 1790399668
+}
+
+`/health` — upstream passthrough, NO marker header (raw/health-headers.txt):
+
+$ curl -sS -D raw/health-headers.txt -o raw/health-body.txt http://127.0.0.1:5111/health
+HTTP=200
+
+HTTP/1.1 200 OK
+Content-Length: 32
+Content-Type: application/json
+Date: Sat, 26 Sep 2026 05:14:58 GMT
+Server: uvicorn
+Vary: Origin
+
+{"status":"healthy","issues":[]}
+
+Non-streaming chat completion (raw/nonstream-headers.txt,
+raw/nonstream-body.txt):
+
+$ curl -sS -D raw/nonstream-headers.txt -o raw/nonstream-body.txt \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"SmolLM3-3B-exl3","messages":[{"role":"user","content":"Reply with exactly: OK"}],"max_tokens":8,"stream":false}' \
+    http://127.0.0.1:5111/v1/chat/completions
+HTTP=200 time_total=0.343878
+
+HTTP/1.1 200 OK
+Content-Length: 368
+Content-Type: application/json
+Date: Sat, 26 Sep 2026 05:16:46 GMT
+Server: uvicorn
+Vary: Origin
+
+{"id":"cmpl-9f870328a952490c9a71dfe4db6ad336","choices":[{"index":0,"finish_reason":"length","eos_reason":"max_new_tokens","stop_str":null,"message":{"role":"assistant","content":"OK\n\n\nI'm an AI","reasoning_content":null,"tool_calls":null,"tool_call_id":null},"logprobs":null}],"created":1790399806,"model":"SmolLM3-3B-exl3","object":"chat.completion","usage":null}
+
+Streaming completion — genuine per-chunk passthrough, not buffering
+(raw/stream-headers.txt, raw/stream-timing.txt, raw/stream-body.txt):
+
+$ curl -sSN -D raw/stream-headers.txt -o raw/stream-body.txt \
+    -w 'HTTP=%{http_code} ttfb=%{time_starttransfer} total=%{time_total}\n' \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"SmolLM3-3B-exl3","messages":[{"role":"user","content":"Count from 1 to 20, one number per line."}],"max_tokens":80,"stream":true}' \
+    http://127.0.0.1:5111/v1/chat/completions
+HTTP=200 ttfb=0.010530 total=1.416609
+
+HTTP/1.1 200 OK
+Cache-Control: no-store
+Content-Type: text/event-stream; charset=utf-8
+Date: Sat, 26 Sep 2026 05:17:14 GMT
+Server: uvicorn
+Vary: Origin
+X-Accel-Buffering: no
+Transfer-Encoding: chunked
+
+Measured on that stream: TTFB 0.0105 s vs total 1.4166 s (first byte ~135x
+before completion), 56 `data:` events = 55 content chunks + `data: [DONE]`.
+The 12.1 KB SSE body is kept in raw/stream-body.txt and is not reproduced
+here.
+
+Second `ps` sample immediately after the first (raw/ps-2.txt) — same pid,
+uptime 3m51s:
+
+stone-llama: running (pid 419204)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   3m51s
+
+`stop` residue proof (raw/stop-residue.txt):
+
+$ ss -ltnp | grep :5111
+grep_exit=1
+$ pgrep -af stone-llama
+pgrep_exit=1
+$ ls -la ~/.local/share/stone-llama/
+total 0
+drwx------ 1 anon anon   66 Sep 26 12:37 .
+drwx------ 1 anon anon 2514 Sep 26 10:02 ..
+drwx------ 1 anon anon   20 Sep 26 11:39 logs
+drwx------ 1 anon anon   64 Sep 26 11:54 models
+drwx------ 1 anon anon    0 Sep 26 12:26 runtime
+-rw------- 1 anon anon    0 Sep 26 12:36 stone-llama.lock
+
+No listener, no process, no `daemon.json`. The only residue is the 0-byte
+`stone-llama.lock`, which is by design (the flock target is closed but
+never unlinked). The pre-existing upstream TabbyAPI (pid 74737) and
+9Router (:20128) were untouched before and after.
+
+Not exercised in this session: non-attach `serve` (the daemon loading a
+model itself) and the supervised `/-/load` SSE success path. Both need the
+provisioned Python runtime (`stone-llama setup`, ~5.6 GB, never authorized
+on this machine) plus a second model load contending for the same 4096 MiB
+card — a KNOWN UNTESTED PATH here, not a claim of support.

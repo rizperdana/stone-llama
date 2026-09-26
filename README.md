@@ -32,10 +32,11 @@ go build -o stone-llama ./cmd/stone-llama
 install -Dm755 stone-llama ~/.local/bin/stone-llama
 ```
 
-The binary is static — Go is only needed to build. No release is published yet, so
-build-from-source is the install path; a sha256-verifying `install.sh` lands with the
-first release. Prerequisites, the consent-gated `setup` step (≈ 1 GB announced before you
-confirm), verification and uninstall: [docs/INSTALLATION.md](docs/INSTALLATION.md).
+The binary is static — Go is only needed to build. A pre-release (`v0.1.0-rc1`) is
+published, and `scripts/install.sh` verifies the SHA-256 against the release's combined
+`checksums.txt` before installing — see [docs/INSTALLATION.md](docs/INSTALLATION.md) for
+the one-line installer or build-from-source, plus prerequisites, the consent-gated
+`setup` step (≈ 1 GB announced before you confirm), verification and uninstall.
 
 ## Quickstart
 
@@ -47,10 +48,6 @@ stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # gate runs first, then resu
 stone-llama run Qwen3-1.7B-exl3_4.0bpw    # CLI chat (prints the autofit decision)
 stone-llama serve                         # OpenAI-compatible API on 127.0.0.1:5111
 ```
-
-In today's build `run` prints `not implemented yet (ships in M6)` and `serve`/`ps`/`stop`
-print `ships in M5` — see [Commands](#commands). Once `serve` ships it answers
-`POST /v1/chat/completions` on `127.0.0.1:5111`.
 
 Step-by-step with expected output and a working `curl` request:
 [docs/QUICKSTART.md](docs/QUICKSTART.md). Handing this to a coding agent? Copy
@@ -89,20 +86,33 @@ numbers — before anything gets installed.
 | `stone-llama pull <model>[:tag]` | pre-download gate → consent → resumable download + sha256 verify | ✅ shipped |
 | `stone-llama login` | HuggingFace token for gated repos (stored 0600) | ✅ shipped |
 | `stone-llama setup [--yes] [--cu12\|--cu13]` | provision the pinned Python runtime (consent-gated, resumable; extra picked from driver unless overridden) | ✅ shipped |
-| `stone-llama serve [--attach host:port]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream) | 🚧 M5 |
-| `stone-llama ps` | loaded model + live VRAM | 🚧 M5 |
-| `stone-llama stop` | stop the daemon | 🚧 M5 |
-| `stone-llama run <model>` | streaming CLI chat | 🚧 M6 |
+| `stone-llama serve [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream) | ✅ shipped |
+| `stone-llama ps` | loaded model + live VRAM | ✅ shipped |
+| `stone-llama stop` | stop the daemon | ✅ shipped |
+| `stone-llama run <model>` | streaming CLI chat | ✅ shipped |
 | `stone-llama version` | version | ✅ shipped |
+
+`rank --file <refs.txt>` takes one model ref per line — the same `owner/name`
+(or `owner/name:tag`) form `pull` accepts; blank lines and `#`-prefixed comment
+lines are skipped, and a file with no refs is an error.
 
 Flags that always win over autofit: `--ctx N`, `--cache-mode Q8|Q4|FP16|"2,2"`,
 `--no-autofit`. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`,
-`STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
+`STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`, plus the XDG pair below.
+
+State and config locations: state (`models/`, `runtime/`, `daemon.json`, logs) is
+`$XDG_DATA_HOME/stone-llama`, falling back to `~/.local/share/stone-llama`; config is
+`$XDG_CONFIG_HOME/stone-llama/config.json`, falling back to
+`~/.config/stone-llama/config.json`, and `STONE_LLAMA_CONFIG` names an explicit config
+file instead. **Testing? Point `XDG_DATA_HOME` at an empty directory** — otherwise
+`ps`, `run` and `serve` find (and can start or stop) the daemon living in the default
+state dir.
 
 ## Real terminal output
 
 Captured verbatim from a live run on 2026-09-26 (RTX 3050 Laptop, 4096 MiB, driver
-580.178.04, Linux/amd64). Raw files for every capture: [docs/screenshots/](docs/screenshots/).
+580.178.04, Linux/amd64). The `serve` and `run` transcripts are attach mode against a
+live TabbyAPI. Raw files for every capture: [docs/screenshots/](docs/screenshots/).
 
 ```console
 $ stone-llama doctor
@@ -135,9 +145,10 @@ stone-llama pull: non-interactive pull requires --yes to confirm the download
 The second run was refused (non-interactive stdin without `--yes`), so nothing was fetched
 beyond KB of metadata; `list` above shows a model linked in with `import`, also no download.
 Model-download steps are deliberately omitted from the captures. The rest — `fit` on a model
-that fits and one that does not, `rank`, `list --estimate`, `setup` preflight, and the
-`serve` "ships in M5" output — is in [docs/screenshots/](docs/screenshots/), rendered as
-[cli.svg](docs/screenshots/cli.svg).
+that fits and one that does not, `rank`, `list --estimate`, `setup` preflight, plus the live
+[`serve`](docs/screenshots/serve.txt) and [`run`](docs/screenshots/run.txt) transcripts and
+the [`version`](docs/screenshots/version.txt) banner — is in [docs/screenshots/](docs/screenshots/),
+rendered together in [cli.svg](docs/screenshots/cli.svg).
 
 ## How autofit picks your context
 

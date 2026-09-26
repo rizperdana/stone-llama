@@ -1,0 +1,82 @@
+stone-llama run — live capture (attach mode)
+===========================================
+
+Conditions: captured 2026-09-26 from a source build of `main` at 4f020dc,
+Linux/amd64 (RTX 3050 Laptop, 4096 MiB, driver 580.178.04), ATTACH MODE
+against a live TabbyAPI on http://127.0.0.1:5002 (model SmolLM3-3B-exl3).
+In attach mode `run` proxies to the upstream: it never loads or unloads a
+model itself, and `/bye` leaves the upstream's model alone. Nothing was
+downloaded.
+
+Annotations: command lines read `stone-llama …` — the verification ran the
+same build at /tmp/sl-a/stone-llama, and the raw transcript abbreviates
+them; they are written out in full here. The output lines themselves are
+quoted verbatim from /tmp/sl-a/raw/run-bye-transcript.txt.
+
+[shared block begins — quoted verbatim in docs/QUICKSTART.md §5 and site/index.html]
+$ stone-llama ps
+stone-llama: running (pid 458259)
+  address:  127.0.0.1:5111
+  mode:     attach (http://127.0.0.1:5002)
+            stone-llama does not own this process — it proxies only; load/unload is the upstream's
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  uptime:   22s
+exit=0
+
+$ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3
+>>> exit=0
+
+$ ls ~/.local/share/stone-llama/   # state intact after run
+daemon.json
+logs
+models
+runtime
+stone-llama.lock
+[shared block ends]
+
+Notes on the shared block
+-------------------------
+
+* `run` with empty stdin (`< /dev/null`) also exits 0 immediately; four
+  consecutive `ps`/`run` calls against the healthy daemon left the state
+  intact after each (raw/run-load-path.txt).
+* The state dir shown is the default one; point `XDG_DATA_HOME` at an
+  empty directory to test against a separate state dir instead.
+
+Attach mode owns no model load — by design (raw/run-load-path.txt,
+raw/load-attach-body.txt):
+
+$ curl -N -H 'Content-Type: application/json' -d '{"model":"SmolLM3-3B-exl3"}' http://127.0.0.1:5111/-/load
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Date: Sat, 26 Sep 2026 05:37:33 GMT
+Content-Length: 159
+
+{"error":{"message":"attach mode: model loading is owned by the upstream server — restart serve without --attach to load models here","type":"attach_mode"}}
+
+$ stone-llama run SomeOtherModel -p hi
+stone-llama run: attach mode: model loading is owned by the upstream server — restart serve without --attach to load models here
+exit=1
+
+With the model name that the upstream actually has loaded, `run` never
+calls `/-/load` at all — there is nothing to load in attach mode.
+
+Known caveat — `run -p` one-shot output is unbounded
+----------------------------------------------------
+
+The `-p` one-shot path was exercised: it exited 0, but generated for
+**285 s / 2206 lines** on a single short prompt (full transcript on record,
+deliberately not reproduced here). Two facts are on file: the committed
+completions body omits `max_tokens` (the pinned backend aborts a
+completion without it), and the only fix so far is an uncommitted local
+change that sends `"max_tokens": 0` — which means "generate to EOS, no
+cap". Until that lands properly, do not treat an unbounded `-p` run as
+normal behaviour: prefer a piped input such as the `/bye` capture above,
+or budget time and cap tokens yourself.
+
+Supervised (non-attach) `serve` and its `/-/load` SSE success stream were
+NOT exercised: they need the provisioned Python runtime (`stone-llama
+setup`, ~5.6 GB, never authorized on this machine) plus a second model
+load contending for the same 4096 MiB card. Known untested path, not a
+claim of support.

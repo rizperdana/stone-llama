@@ -18,7 +18,7 @@
 | exllamav3 wheel source | direct GitHub-release URLs in `pyproject.toml` → lockfile pins exact URLs + hashes |
 | exllamav3 license | **MIT** (verified: dist-info `METADATA` `License-Expression: MIT`) |
 | torch license | **BSD-3-Clause** (verified: dist-info `METADATA`) |
-| Architecture support matrix | the project's research notes (`exllamav3-support.md`) — built from installed `architecture/*.py` + upstream README + TabbyAPI templates (A5 source) |
+| Architecture support matrix | the embedded arch list (`internal/preflight/archlist.go`) — built from installed `architecture/*.py` + upstream README + TabbyAPI templates (A5 source) |
 | GPU | RTX 3050 Laptop, **4096 MiB**, driver 580.178.04 |
 | Measured model | `SmolLM3-3B-exl3`: `model.safetensors` = 1,957,008,720 B (**1866 MiB**) |
 | Measured load | Q4 @ 65536 → **peak 3105 MiB** (1866 weights + 1152 KV + ≈ 87 overhead) — the *old* default; under A10's headroom it is refused and the ladder lands Q4@32768 |
@@ -58,8 +58,8 @@ New amendments A5–A8, A10: §4 (A5 gate), §6 (A6 licensing + A7 setup preflig
 
 | Criterion | Go | Rust | Python control plane |
 |---|---|---|---|
-| Install | one static binary ≈ 10–15 MB (`-s -w -trimpath`) | same | needs the multi-GB venv before the UI works |
-| Cold start | < 10 ms | < 10 ms | 0.5–2 s (torch import alone is seconds) |
+| Install | one static binary, measured 7,770,296 B ≈ 7.41 MiB (`-s -w -trimpath` — release builds are already stripped; `-buildvcs=false` measured 0 bytes saved) | same | needs the multi-GB venv before the UI works |
+| Cold start | `version`/`list` ~4–6 ms, `doctor` ~24 ms median because it spawns `nvidia-smi` and probes the GPU (hardware-probe latency, not binary init); measured warm-cache on a quiet host — a loaded host taxes every process equally | < 10 ms | 0.5–2 s (torch import alone is seconds) |
 | Idle daemon RSS | ~15–30 MB | ~5–15 MB | 100–300 MB |
 | Stdlib fit | `net/http`, `httputil.ReverseProxy`, `encoding/json`, `os/exec` — all of it | no HTTP in stdlib | native, but competes with inference venv for deps |
 
@@ -119,7 +119,7 @@ The "low potato" constraint targets **memory and startup**; inference speed is P
 
 `pull` phase 0 fetches **metadata only** (KBs): repo tree, `config.json`, `quantization_config.json`. Then three checks, in order:
 
-1. **Architecture support.** `config.architectures[]` checked against a list **embedded in the binary**, sourced from `docs/…/exllamav3-support.md` (verified against installed `architecture/*.py` + upstream README). Verified strings include: `Qwen2ForCausalLM`, `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM`, `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration`, `Qwen3NextForCausalLM`, `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`, `Qwen4ExpForCausalLM`, `LlamaForCausalLM`, `Gemma2ForCausalLM`, `Gemma3ForCausalLM`, `Gemma3ForConditionalGeneration`, `Gemma4ForConditionalGeneration` (E2B/E4B variants unsupported), `Phi3ForCausalLM`, `MistralForCausalLM`, `Mistral3ForConditionalGeneration`, `MixtralForCausalLM`, `DeepseekV3ForCausalLM`, `Glm4ForCausalLM`, `Glm4MoeForCausalLM`, `Glm4MoeLiteForCausalLM`, `GlmMoeDsaForCausalLM`, `GptOssForCausalLM`, `CohereForCausalLM`, `Cohere2ForCausalLM`, `Olmo3ForCausalLM`, `OlmoHybridForCausalLM`, `SmolLM3ForCausalLM`, `Lfm2ForCausalLM`, `Lfm2MoeForCausalLM`, `HYV3ForCausalLM`, `Step3p5ForCausalLM`, `SeedOssForCausalLM`, `SolarOpenForCausalLM`, `IQuestCoderForCausalLM`, `KimiLinearForCausalLM`, `HyperCLOVAXForCausalLM`, `LagunaForCausalLM`, `MiniMaxM2ForCausalLM`, `MuseGlimmerForCausalLM`, `ArceeForCausalLM`, `ApertusForCausalLM`, `Exaone4ForCausalLM`, `Dots1ForCausalLM`, `Ernie4_5_MoeForCausalLM`, `ArceeForCausalLM`. **Unknown arch → warn with the exact string + confirm on TTY (`--yes` to proceed), never silent.** The list is a snapshot that drifts with exllamav3 releases; warn-not-refuse means an incomplete list degrades to warnings, not false refusals (G13).
+1. **Architecture support.** `config.architectures[]` checked against a list **embedded in the binary**, sourced from `internal/preflight/archlist.go` (verified against installed `architecture/*.py` + upstream README). Verified strings include: `Qwen2ForCausalLM`, `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM`, `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration`, `Qwen3NextForCausalLM`, `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`, `Qwen4ExpForCausalLM`, `LlamaForCausalLM`, `Gemma2ForCausalLM`, `Gemma3ForCausalLM`, `Gemma3ForConditionalGeneration`, `Gemma4ForConditionalGeneration` (E2B/E4B variants unsupported), `Phi3ForCausalLM`, `MistralForCausalLM`, `Mistral3ForConditionalGeneration`, `MixtralForCausalLM`, `DeepseekV3ForCausalLM`, `Glm4ForCausalLM`, `Glm4MoeForCausalLM`, `Glm4MoeLiteForCausalLM`, `GlmMoeDsaForCausalLM`, `GptOssForCausalLM`, `CohereForCausalLM`, `Cohere2ForCausalLM`, `Olmo3ForCausalLM`, `OlmoHybridForCausalLM`, `SmolLM3ForCausalLM`, `Lfm2ForCausalLM`, `Lfm2MoeForCausalLM`, `HYV3ForCausalLM`, `Step3p5ForCausalLM`, `SeedOssForCausalLM`, `SolarOpenForCausalLM`, `IQuestCoderForCausalLM`, `KimiLinearForCausalLM`, `HyperCLOVAXForCausalLM`, `LagunaForCausalLM`, `MiniMaxM2ForCausalLM`, `MuseGlimmerForCausalLM`, `ArceeForCausalLM`, `ApertusForCausalLM`, `Exaone4ForCausalLM`, `Dots1ForCausalLM`, `Ernie4_5_MoeForCausalLM`, `ArceeForCausalLM`. **Unknown arch → warn with the exact string + confirm on TTY (`--yes` to proceed), never silent.** The list is a snapshot that drifts with exllamav3 releases; warn-not-refuse means an incomplete list degrades to warnings, not false refusals (G13).
 2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 quant here — use ollama with GGUF." Missing/ambiguous metadata → warn + confirm. Converts a 2 GB mistake into a 2 KB check.
 3. **Fit projection.** Run §5 autofit against the fetching machine's GPU (VRAM from `nvidia-smi`): print `weights + KV(ctx) + overhead + headroom vs available`, then **proceed** / **proceed-with-warning** / **refuse** (with the numbers and *the largest ctx that would fit*). `min_vram` rule (§8) wired into `pull`, not just `doctor`.
 
@@ -228,8 +228,8 @@ stone-llama fit <repo[@branch][:quant]>  # gate + verdict + tok/s [est] — HF m
 stone-llama rank --collection <id> | --file <path> [--ratings <file>]  # fit-ordered candidate table
 stone-llama rm <model>
 stone-llama import <path> [--name N]     # symlink (zero-copy); name defaults to base dir
-stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]   # M6
-stone-llama serve [--attach <url>]       # OpenAI-compatible API (M5)
+stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]   # shipped (M6)
+stone-llama serve [--attach <url>]       # OpenAI-compatible API (shipped M5)
 stone-llama ps
 stone-llama stop
 stone-llama login
@@ -313,7 +313,7 @@ README carries this in the first screen (Q10).
 
 ## 9. Packaging + **A8 repo/delivery shape**
 
-- **Artifact:** `stone-llama-vX.Y.Z-linux-amd64.tar.gz` (~12 MB): binary + `runtime.lock.json` + README + `install.sh`; `-trimpath -ldflags "-s -w"`; sha256 published. amd64 only (G9).
+- **Artifact:** `stone-llama-linux-amd64.tgz` (~5.5 MB bundle, 5,719,364 B; binary 8,933,560 B ≈ 8.5 MiB): binary + README.md + LICENSE + stone-llama.png; `-trimpath -ldflags "-s -w"`; sha256 published in the combined `checksums.txt`. Five targets built (linux amd64/arm64, windows amd64, darwin amd64/arm64) (G9: windows/macOS/arm64 runtime untested).
 - **Install:** GitHub Releases + `install.sh` (download, verify sha256, `~/.local/bin`, PATH hint). No package managers in v1 (G11).
 - **Release:** tag → build + sha256 + contract test (§10) → release. No Docker, no telemetry.
 - **A8 — repository (now):** `git init` at project start; **one commit per milestone**, conventional format (`feat(m1): …`); `.gitignore` excludes built binaries (`/stone-llama`, `/bin/`, `/dist/`), `/models/`, `/downloads/`, `/runtime/`, `*.part`, `/logs/`, `*.log`. **Public repo, owner `rizperdana`** — `gh auth status` verified this session: active account is `rizperdana` ✓ (gate satisfied; the repo **exists** at github.com/rizperdana/stone-llama). Plan doc committed as `docs/ARCHITECTURE.md`.
