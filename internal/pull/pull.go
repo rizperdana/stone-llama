@@ -45,15 +45,16 @@ type Options struct {
 }
 
 type Result struct {
-	Name         string
-	RepoID       string
-	Verdict      store.Verdict
-	Files        int
-	Bytes        int64
-	Refused      bool         // gate refused; DryRun returns this instead of erroring
-	WeightsBytes int64        // scoped weight bytes (estimator input)
-	Spec         autofit.Spec // parsed config.json (estimator input)
-	QuantLabel   string       // e.g. "3.5bpw"
+	Name          string
+	RepoID        string
+	Verdict       store.Verdict
+	Files         int
+	Bytes         int64
+	Refused       bool         // gate refused; DryRun returns this instead of erroring
+	RefusalReason string       // first failing gate (quant/arch vs VRAM) for the summary line
+	WeightsBytes  int64        // scoped weight bytes (estimator input)
+	Spec          autofit.Spec // parsed config.json (estimator input)
+	QuantLabel    string       // e.g. "3.5bpw"
 }
 
 func (o *Options) defaults() {
@@ -167,19 +168,20 @@ func Run(opts Options) (Result, error) {
 
 	if opts.DryRun {
 		return Result{
-			Name:         modelName(repo.ID, explicitTag, scope),
-			RepoID:       repo.ID,
-			Verdict:      report.Verdict,
-			Files:        len(files),
-			Bytes:        total,
-			Refused:      report.Refused,
-			WeightsBytes: weights,
-			Spec:         spec,
-			QuantLabel:   quantLabel,
+			Name:          modelName(repo.ID, explicitTag, scope),
+			RepoID:        repo.ID,
+			Verdict:       report.Verdict,
+			Files:         len(files),
+			Bytes:         total,
+			Refused:       report.Refused,
+			RefusalReason: report.RefusalSummary(),
+			WeightsBytes:  weights,
+			Spec:          spec,
+			QuantLabel:    quantLabel,
 		}, nil
 	}
 	if report.Refused {
-		return Result{}, errors.New("model refused by pre-download gate — see the report above")
+		return Result{}, fmt.Errorf("model refused by pre-download gate: %s (see the gate report above)", report.RefusalSummary())
 	}
 
 	free, err := opts.FreeBytes(opts.ModelsDir)

@@ -224,6 +224,54 @@ func TestEvaluateNoFitRefusesWithArithmetic(t *testing.T) {
 	}
 }
 
+// The top-level summary must name the FIRST failing gate: a quant-format
+// refusal is never reported as a VRAM problem (dogfood bug: fit printed
+// "no context fits this model in VRAM" for an EXL2 repo).
+func TestRefusalSummaryNamesFirstFailingGate(t *testing.T) {
+	quant := Evaluate(Input{
+		Architectures: []string{"LlamaForCausalLM"},
+		RepoFiles:     []string{"config.json", "model.safetensors", "measurement.json"},
+		Repo:          "org/exl2-model",
+		Spec:          smolSpec(),
+		WeightsBytes:  4_000_000_000,
+		VRAMMiB:       4096,
+	})
+	if !quant.Refused {
+		t.Fatal("measurement.json fixture must refuse")
+	}
+	vram := Evaluate(func() Input {
+		in := baseInput()
+		in.WeightsBytes = 3400 << 20 // fits nowhere on 4096 MiB
+		return in
+	}())
+	if !vram.Refused {
+		t.Fatal("oversized fixture must refuse")
+	}
+	qs, vs := quant.RefusalSummary(), vram.RefusalSummary()
+	if qs == vs {
+		t.Fatalf("summaries must differ:\nquant: %s\nvram:  %s", qs, vs)
+	}
+	if !strings.Contains(qs, "quant format") || !strings.Contains(qs, "EXL2 quant") {
+		t.Errorf("quant summary = %q, want the EXL2 cause", qs)
+	}
+	if strings.Contains(qs, "VRAM") {
+		t.Errorf("quant summary blames VRAM: %q", qs)
+	}
+	if vs != "no context fits this model in VRAM" {
+		t.Errorf("vram summary = %q", vs)
+	}
+	// Both gates failing → lead with the more fundamental one (quant).
+	both := Evaluate(func() Input {
+		in := baseInput()
+		in.QuantMethod = "exl2"
+		in.WeightsBytes = 3400 << 20
+		return in
+	}())
+	if !both.Refused || !strings.Contains(both.RefusalSummary(), "quant format") {
+		t.Errorf("both-fail summary = %q, want quant first", both.RefusalSummary())
+	}
+}
+
 func TestEvaluateFormatContinuationLines(t *testing.T) {
 	in := baseInput()
 	in.WeightsBytes = 3400 << 20

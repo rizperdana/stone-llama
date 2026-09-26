@@ -176,6 +176,39 @@ func fitDetail(res autofit.Result) string {
 	}
 }
 
+// RefusalSummary names the FIRST failing gate so the top-level
+// "refused" line never misattributes a format/architecture failure to
+// VRAM. Checks are ordered arch → quant → fit (most fundamental first);
+// detail lines stay untouched in the report above.
+func (r Report) RefusalSummary() string {
+	for _, c := range r.Checks {
+		if c.Status != StatusRefuse {
+			continue
+		}
+		switch c.Name {
+		case "quant":
+			return "unsupported quant format: " + firstClause(c.Detail)
+		case "arch":
+			return "unsupported architecture: " + firstClause(c.Detail)
+		default: // fit
+			return "no context fits this model in VRAM"
+		}
+	}
+	return ""
+}
+
+// firstClause cuts a check detail at the first clause/line break: the
+// cause, not the remedy ("… — exllamav3 cannot load it; look for -exl3…").
+func firstClause(s string) string {
+	if i := strings.IndexAny(s, "\n;"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.Index(s, " — "); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
 // OOMAdvice turns a stored autofit projection into a runtime-CUDA-OOM
 // hint (load or prefill): what happened, the largest ctx that would fit
 // (when known), and the cheapest KV-cost reduction. 2–4 lines.

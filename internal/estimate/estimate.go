@@ -2,9 +2,9 @@
 // models on a given NVIDIA GPU from metadata alone (weights, quant, KV
 // geometry, context) — no model on disk required.
 //
-// Calibration status: PLACEHOLDER. The calibration note
-// /home/anon/ai/research/toks-estimator.md was still in progress when this
-// package was written, so the constants below are fitted to the single
+// Calibration status: PLACEHOLDER. The calibration note in the project's
+// research notes was still in progress when this package was written,
+// so the constants below are fitted to the single
 // measured anchor recorded in this project's evidence log:
 //
 //	decode anchor: SmolLM3-3B-exl3 3.5bpw, 1,957,008,720 B weights,

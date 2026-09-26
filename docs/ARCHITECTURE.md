@@ -11,20 +11,20 @@
 
 | Fact | Value |
 |---|---|
-| TabbyAPI checkout | `/home/anon/ai/tabbyapi/tabbyAPI`, commit `f07131c`, **license AGPL-3.0** (verified: `LICENSE`) |
+| TabbyAPI checkout | `/path/to/tabbyAPI`, commit `f07131c`, **license AGPL-3.0** (verified: `LICENSE`) |
 | TabbyAPI OpenAI routes | `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/apply-template` (Bearer-key gated, SSE) |
 | TabbyAPI config override | `start.py --config <path>` (`args.config`) → we never touch a user's `config.yml` |
 | TabbyAPI extras | `cu12` = torch 2.9.0+cu128 + exllamav3 1.5.1+cu128; `cu13` = torch 2.11.0+cu130 + exllamav3 1.5.1+cu132. **Both exist.** |
 | exllamav3 wheel source | direct GitHub-release URLs in `pyproject.toml` → lockfile pins exact URLs + hashes |
 | exllamav3 license | **MIT** (verified: dist-info `METADATA` `License-Expression: MIT`) |
 | torch license | **BSD-3-Clause** (verified: dist-info `METADATA`) |
-| Architecture support matrix | `/home/anon/ai/research/exllamav3-support.md` — built from installed `architecture/*.py` + upstream README + TabbyAPI templates (A5 source) |
+| Architecture support matrix | the project's research notes (`exllamav3-support.md`) — built from installed `architecture/*.py` + upstream README + TabbyAPI templates (A5 source) |
 | GPU | RTX 3050 Laptop, **4096 MiB**, driver 580.178.04 |
 | Measured model | `SmolLM3-3B-exl3`: `model.safetensors` = 1,957,008,720 B (**1866 MiB**) |
 | Measured load | Q4 @ 65536 → **peak 3105 MiB** (1866 weights + 1152 KV + ≈ 87 overhead) — the *old* default; under A10's headroom it is refused and the ladder lands Q4@32768 |
 | KV arithmetic | `layers × 2 × kv_heads × head_dim` = 36 × 2 × 4 × 128 = **36,864 elems/token** → FP16 72 KiB, Q8 36 KiB, Q4 18 KiB per token; @65536: 4608 / 2304 / 1152 MiB. **Verified against `config.json`.** |
 | Go | go1.24.4 linux/amd64 installed |
-| `gh` | **active account `rizperdana`** (verified this session; two other logged-in accounts exist but are inactive — repo creation gated on this check per A8) |
+| `gh` | **active account `rizperdana`** (verified this session; two other logged-in accounts exist but are inactive — this check gated repo creation per A8) |
 | Bootstrap pain (known) | missing `aiofiles`, no `pip` in uv venv, `--gpu-lib` = install-time extra selection, API key auto-generated to `api_tokens.yml` |
 
 **Correction to the brief (kept from v1):** the "2909 MiB used" figure must not calibrate the heuristic. Weights (1866) + full Q4 KV (1152) = 3018 ≈ measured **peak** 3105. Autofit models **peak**, with a 128 MiB overhead term — reproduces 3105 within 4 MiB.
@@ -316,7 +316,7 @@ README carries this in the first screen (Q10).
 - **Artifact:** `stone-llama-vX.Y.Z-linux-amd64.tar.gz` (~12 MB): binary + `runtime.lock.json` + README + `install.sh`; `-trimpath -ldflags "-s -w"`; sha256 published. amd64 only (G9).
 - **Install:** GitHub Releases + `install.sh` (download, verify sha256, `~/.local/bin`, PATH hint). No package managers in v1 (G11).
 - **Release:** tag → build + sha256 + contract test (§10) → release. No Docker, no telemetry.
-- **A8 — repository (now):** `git init` at project start; **one commit per milestone**, conventional format (`feat(m1): …`); `.gitignore` excludes built binaries (`/stone-llama`, `/bin/`, `/dist/`), `/models/`, `/downloads/`, `/runtime/`, `*.part`, `/logs/`, `*.log`. **Public repo, owner `rizperdana`** — `gh auth status` verified this session: active account is `rizperdana` ✓ (gate satisfied; repo creation still awaits director confirmation). Plan doc committed as `docs/ARCHITECTURE.md`.
+- **A8 — repository (now):** `git init` at project start; **one commit per milestone**, conventional format (`feat(m1): …`); `.gitignore` excludes built binaries (`/stone-llama`, `/bin/`, `/dist/`), `/models/`, `/downloads/`, `/runtime/`, `*.part`, `/logs/`, `*.log`. **Public repo, owner `rizperdana`** — `gh auth status` verified this session: active account is `rizperdana` ✓ (gate satisfied; the repo **exists** at github.com/rizperdana/stone-llama). Plan doc committed as `docs/ARCHITECTURE.md`.
 - **Residual risk:** G16.
 
 ## 10. Testing strategy — zero weight downloads (A5 gate testable from fixtures)
@@ -363,7 +363,7 @@ CI runs 1–4: no GPU, no Python, no external network.
 - **G13 · A5 gate correctness (MED).** *Risk:* bundled arch list drifts with exllamav3 releases → stale warnings (or stale confirms); `quant_method` absent in odd repos → heuristic fallback must not false-refuse (design: warn+confirm, only `exl2` and GGUF-only refuse — refusals are format-certain, warnings cover uncertainty); some repos put `config.json` only in quant subdirs → resolution fetches the subdir config (M2). *Residual:* a newly-supported arch not in our list ships as a warning until next release; a newly-**broken** arch still in our list passes the gate — the gate catches format/scale errors, not upstream regressions.
 - **G14 · A6 licensing (CLEARED).** TabbyAPI **AGPL-3.0** verified — we neither distribute nor modify (reasoning recorded in §6); forking would change that analysis (reinforces Q11). `uv`, Python, NVIDIA wheels were the last unverified entries; commit `1aaa785` verified **every** licence from real sources and emptied `THIRD-PARTY.md`'s UNVERIFIED section ("Still open: Nothing"). Publishing with guessed licenses was the failure mode this gap existed to prevent — it can no longer happen. Remaining open project items are tracked elsewhere: M5/M6 delivery, the deferred provisioning run (Q6), Windows runtime untested (G9).
 - **G15 · A7 singleton + secret hygiene (LOW-MED).** flock correct on local FS; pathological cases (NFS lock weirdness, SIGKILL mid-download leaving `.part` — acceptable, resume handles it, and `.part` is never loadable as a model). Token exposure: injected in proxy headers only, never argv/log/env — audited at M5 (grep-level test: logs contain no token substring).
-- **G16 · A8 delivery shape (LOW).** Public repo from day one → no secrets/weights may ever enter git (`.gitignore` + review); one-commit-per-milestone = coarse history (accepted: matches user's "regular commits" ask with reviewable per-milestone gates); `gh` gate verified (`rizperdana` active) but **repo creation still awaits director's explicit go** per instruction.
+- **G16 · A8 delivery shape (LOW).** Public repo from day one → no secrets/weights may ever enter git (`.gitignore` + review); one-commit-per-milestone = coarse history (accepted: matches user's "regular commits" ask with reviewable per-milestone gates); `gh` gate verified (`rizperdana` active) and the public repo exists.
 
 ## 13. Remaining open points (defaults stand unless director objects)
 
@@ -372,5 +372,5 @@ All v1 §13 questions are answered (decision log, top). Residual points with sta
 1. **Arch-list entries where the research doc elided the exact class string** (e.g. DeepSeek V4, GLM5Next, Step 3.7) → default: omit from the embedded list; those land on the warn path (safe by design). Reconcile against `architecture/*.py` at M2.
 2. **`list` output gains a `VERDICT` column** (A5) → default: always shown, `-` when absent (shown in §7 sample).
 3. **Ladder modes remain FP16/Q8/Q4**; Q6 and `"2,2"`-style pairs are override-only until M5 calibration proves them fit-safe → default: as stated.
-4. **GitHub repo creation** → blocked on director's explicit confirmation even though `gh` active account is `rizperdana` (A8 instruction).
+4. **GitHub repo creation** → **done**: the public repo exists under `rizperdana` (the A8 gate — verified `gh` account — was satisfied first).
 5. **Real provisioning run (blocked step, Q6)** → default: when authorized, run to a throwaway `runtime_dir` first (prove installer), then real paths only on second authorization.

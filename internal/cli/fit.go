@@ -75,7 +75,9 @@ func runFit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if res.Refused {
-		fmt.Fprintln(stdout, "fit: refused — no context fits this model in VRAM (see the gate report above)")
+		// First failing gate, not a hardcoded VRAM claim: a quant/arch
+		// refusal must not send the user chasing a VRAM problem.
+		fmt.Fprintf(stdout, "fit: refused — %s (see the gate report above)\n", res.RefusalReason)
 		return 3
 	}
 	fmt.Fprintln(stdout, estimateLine(res, rep.GPUs[0].Name))
