@@ -16,8 +16,10 @@ import (
 	"time"
 )
 
-// child is a supervised TabbyAPI process. Only the supervisor consumes
-// the wait channel (one receive per incarnation).
+// child is a supervised TabbyAPI process. Its wait channel carries
+// exactly one value per incarnation: awaitReady may consume it first
+// when the child dies before readiness (startReady pushes it back so
+// supervise/shutdownChild still get theirs).
 type child struct {
 	cmd  *exec.Cmd
 	wait chan error
@@ -133,7 +135,28 @@ func awaitReady(ctx context.Context, c *child, timeout, delay time.Duration, pro
 // logTail returns the last n lines of path (crash forensics).
 func logTail(path string, n int) string {
 	b, err := os.ReadFile(path)
-	if err != nil || len(b) == 0 {
+	if err != nil {
+		return ""
+	}
+	return tailLines(b, n)
+}
+
+// logTailSince returns only the lines appended after offset — auto-start
+// forensics scoped to THIS attempt (A5: the full-file tail re-printed
+// every past failure, stacking a duplicate wall one line per retry). A
+// file that shrank or rotated below offset yields nothing.
+func logTailSince(path string, offset int64, n int) string {
+	b, err := os.ReadFile(path)
+	if err != nil || offset >= int64(len(b)) {
+		return ""
+	}
+	return tailLines(b[offset:], n)
+}
+
+// tailLines renders the last n lines of b, newline-prefixed ("" when b
+// is empty).
+func tailLines(b []byte, n int) string {
+	if len(b) == 0 {
 		return ""
 	}
 	lines := 0

@@ -9,11 +9,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 )
 
 var ErrNoDaemon = errors.New("no stone-llama daemon is running")
+
+// ErrCorruptState marks an unparseable daemon.json — reported, never
+// auto-deleted (H3); see ReadState for the salvage contract.
+var ErrCorruptState = errors.New("daemon.json is corrupt")
 
 // State is daemon.json (0600): who serves, where, and the downstream
 // bearer token (A7 secret hygiene — file only, never argv/log).
@@ -50,7 +55,13 @@ func LockPath(dataDir string) string { return filepath.Join(dataDir, "stone-llam
 // and live state in one round trip (the ps/run client side).
 func Query(dataDir string) (Status, error) {
 	st, err := ReadState(dataDir)
-	if err != nil {
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrCorruptState) && st.usable():
+		// corrupt but salvaged (H3): ps/stop must still reach a live
+		// daemon instead of hiding it behind the parse error — the
+		// caller reports the corruption alongside the status.
+	default:
 		return Status{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -77,7 +88,13 @@ func Query(dataDir string) (Status, error) {
 	return s, nil
 }
 
-// ReadState loads daemon.json. Missing/corrupt → ErrNoDaemon.
+// ReadState loads daemon.json. Missing → ErrNoDaemon; corrupt →
+// ErrCorruptState wrapping the parse error, with a partial State
+// salvaged from the bytes when pid/host/port are recoverable — the
+// file itself is never modified or deleted here (H3: readers must not
+// destroy state; a corrupt file is reported, kept for repair, and only
+// usable when the salvaged fields let stop/ps identify and probe a
+// real daemon).
 func ReadState(dataDir string) (State, error) {
 	b, err := os.ReadFile(StatePath(dataDir))
 	if err != nil {
@@ -88,9 +105,45 @@ func ReadState(dataDir string) (State, error) {
 	}
 	var st State
 	if err := json.Unmarshal(b, &st); err != nil {
-		return State{}, fmt.Errorf("daemon.json: %w", err)
+		salv := salvageState(b)
+		return salv, fmt.Errorf("%w: %v", ErrCorruptState, err)
 	}
 	return st, nil
+}
+
+// salvage patterns quote the JSON key so "child_pid" never matches
+// "pid" — enough field recovery to gate a signal (pid), probe a
+// listener (host/port), and authenticate /-/status (token).
+var (
+	salvagePID   = regexp.MustCompile(`"pid"\s*:\s*(\d+)`)
+	salvagePort  = regexp.MustCompile(`"port"\s*:\s*(\d+)`)
+	salvageHost  = regexp.MustCompile(`"host"\s*:\s*"([^"]*)"`)
+	salvageToken = regexp.MustCompile(`"token"\s*:\s*"([^"]*)"`)
+)
+
+// salvageState extracts what it can from corrupt bytes; zero fields
+// mean not found.
+func salvageState(b []byte) State {
+	var st State
+	if m := salvagePID.FindSubmatch(b); m != nil {
+		st.PID, _ = strconv.Atoi(string(m[1]))
+	}
+	if m := salvagePort.FindSubmatch(b); m != nil {
+		st.Port, _ = strconv.Atoi(string(m[1]))
+	}
+	if m := salvageHost.FindSubmatch(b); m != nil {
+		st.Host = string(m[1])
+	}
+	if m := salvageToken.FindSubmatch(b); m != nil {
+		st.Token = string(m[1])
+	}
+	return st
+}
+
+// usable reports whether the fields can carry stop/ps: an identifiable
+// pid and a dialable port.
+func (s State) usable() bool {
+	return s.PID > 0 && s.Host != "" && s.Port > 0 && s.Port <= 65535
 }
 
 // WriteState persists state as 0600 via temp+fsync+rename.
