@@ -17,8 +17,15 @@ BINARY="stone-llama"
 REPO="rizperdana/stone-llama"
 RELEASE_BASE="https://github.com/${REPO}/releases/download"
 API_BASE="https://api.github.com/repos/${REPO}/releases"
-PREFIX="${HOME}/.local/bin"
+PREFIX="${PREFIX:-${HOME}/.local/bin}"
 VERSION=""
+
+# ---- helpers ---------------------------------------------------------------
+
+die() {
+	printf 'install: %s\n' "$*" >&2
+	exit 1
+}
 
 # ---- sha256 tool detection --------------------------------------------------
 
@@ -28,16 +35,8 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
 	SHA256="shasum -a 256"
 else
-	die "no SHA-256 tool found (need sha256sum or shasum)" 2>/dev/null || \
-		{ echo "install: no SHA-256 tool found (need sha256sum or shasum)" >&2; exit 1; }
+	die "no SHA-256 tool found (need sha256sum or shasum)"
 fi
-
-# ---- helpers ---------------------------------------------------------------
-
-die() {
-	printf 'install: %s\n' "$*" >&2
-	exit 1
-}
 
 usage() {
 	cat <<'USAGE'
