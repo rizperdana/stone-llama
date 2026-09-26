@@ -1,0 +1,6 @@
+{
+  "uv": {"version": "0.11.6", "url": "https://github.com/astral-sh/uv/releases/download/0.11.6/uv-x86_64-unknown-linux-gnu.tar.gz", "sha256": "0c6bab77a67a445dc849ed5e8ee8d3cb333b6e2eba863643ce1e228075f27943"},
+  "python": {"spec": "3.12"},
+  "tabbyapi": {"repo": "https://github.com/theroyallab/tabbyAPI", "commit": "f07131cd8fe34e449fe87cdd3a066b52b96d3cac"},
+  "requirements": {"cu13": "requirements-cu13.lock", "cu12": "requirements-cu12.lock"}
+}
