@@ -405,7 +405,7 @@ h3 {
 
 .features {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: clamp(1.6rem, 4vw, 3rem);
 }
 .feature {
@@ -413,44 +413,6 @@ h3 {
   padding-top: var(--sp-5);
 }
 .feature p { color: var(--fg-2); max-width: 62ch; }
-
-.formula {
-  margin: var(--sp-4) 0;
-  border-radius: var(--r-md);
-}
-.formula pre {
-  font-size: var(--fs-sm);
-  color: var(--term-cmd);
-  padding: var(--sp-4) var(--sp-5);
-}
-
-.gate-list {
-  margin: 0 0 var(--sp-4);
-  padding: 0;
-  list-style: none;
-  counter-reset: gate;
-  display: grid;
-  gap: var(--sp-3);
-}
-.gate-list li {
-  position: relative;
-  padding-left: 2.5rem;
-  color: var(--fg-2);
-  font-size: var(--fs-sm);
-}
-.gate-list li::before {
-  counter-increment: gate;
-  content: counter(gate, decimal-leading-zero);
-  position: absolute;
-  left: 0;
-  top: 0.15em;
-  font: 600 var(--fs-xs)/1 var(--mono);
-  color: var(--accent);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
-  padding: 0.3em 0.45em;
-}
-.gate-k { font-weight: 600; color: var(--fg); }
 
 .stat {
   border: 1px solid var(--line);
@@ -488,7 +450,6 @@ h3 {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--sp-4);
 }
-.term-grid .term-wide { grid-column: 1 / -1; }
 
 .term {
   margin: 0;
@@ -535,15 +496,6 @@ h3 {
 }
 .table-wrap:focus-visible { outline-offset: -2px; }
 
-.scroll-hint {
-  display: none;
-  font: 600 var(--fs-xs)/1 var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0 0 var(--sp-2);
-}
-
 table {
   border-collapse: collapse;
   width: 100%;
@@ -560,13 +512,7 @@ thead th {
   padding: var(--sp-3) var(--sp-4);
   vertical-align: bottom;
 }
-.th-sub {
-  display: block;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  text-transform: none;
-  color: var(--muted);
-}
+
 tbody th, tbody td {
   padding: var(--sp-3) var(--sp-4);
   border-bottom: 1px solid var(--line);
@@ -589,7 +535,6 @@ tbody th { font-weight: 400; color: var(--fg); }
 }
 .tag-ok { color: var(--ok); }
 .tag-tight { color: var(--warn); }
-.tag-meas { color: var(--accent); }
 
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row-anchor { background: var(--row-tint); }
@@ -603,70 +548,25 @@ tbody th { font-weight: 400; color: var(--fg); }
   word-break: break-word;
 }
 
-/* comparison table */
-.table-cmp { min-width: 1080px; }
-.cmp th[scope="row"] { font-weight: 600; white-space: nowrap; }
-.cmp td { color: var(--fg-2); max-width: 22ch; }
-.cmp .self { background: var(--row-tint); }
-.cmp .self th[scope="row"] { color: var(--fg); }
+/* comparison matrix: rows = capabilities, columns = tools, cells = ✓ ✗ ~ ? */
+.table-cmp { table-layout: fixed; }
+.table-cmp thead th:first-child { width: 32%; }
+.table-cmp thead th:not(:first-child),
+.table-cmp td { text-align: center; }
+.table-cmp th[scope="row"] { font-weight: 600; }
+/* stone-llama is a column: tint ours */
+.table-cmp .self { background: var(--row-tint); }
 
-/* tinted rows carry a neutral chip: accent-on-accent over the darker tint
+/* tinted surfaces carry a neutral chip: accent-on-accent over the darker tint
    drops below 4.5:1 in the light theme (measured — see STYLEGUIDE) */
-.row-anchor code, .cmp .self code { background: var(--panel); }
-
-.cite {
-  font-size: 0.7em;
-  color: var(--muted);
-  text-decoration: none;
-  margin-left: 0.15em;
-  vertical-align: super;
-}
-.cite:hover { color: var(--accent); }
-
-.sources {
-  margin: var(--sp-5) 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: var(--sp-2);
-  font-size: var(--fs-sm);
-  color: var(--muted);
-}
-.sources li { max-width: 100ch; }
-.sources b { color: var(--fg-2); font-weight: 600; }
-
-.loses {
-  margin: var(--sp-4) 0 0;
-  padding-left: 1.2rem;
-  color: var(--fg-2);
-  font-size: var(--fs-sm);
-  max-width: 80ch;
-}
-.loses li { margin-bottom: var(--sp-2); }
+.row-anchor code { background: var(--panel); }
 
 /* ---------- platform (03) ---------- */
 
-.table-plat { min-width: 640px; }
-.plat tbody th { font-weight: 600; }
-
-.plat-notes {
-  display: grid;
-  gap: var(--sp-5);
-  margin-top: var(--sp-6);
-}
-.plat-notes > p {
-  font-size: var(--fs-lg);
-  color: var(--fg-2);
-  max-width: 76ch;
-  margin: 0;
-}
-
-/* ---------- models (04) ---------- */
-
-.table-models { min-width: 940px; }
-
-.est-lead { max-width: 74ch; margin-top: var(--sp-4); }
-.est-lead p { color: var(--fg-2); margin: 0 0 var(--sp-3); }
+.table-plat tbody th { font-weight: 600; }
+.table-plat thead th:not(:first-child),
+.table-plat td { text-align: center; }
+.table-plat td { white-space: nowrap; }
 
 /* ---------- footer ---------- */
 
@@ -699,10 +599,6 @@ tbody th { font-weight: 400; color: var(--fg); }
   .foot-legal { grid-column: 1 / -1; }
 }
 
-@media (max-width: 1100px) {
-  .scroll-hint { display: block; }
-}
-
 @media (max-width: 860px) {
   .head-row { flex-wrap: wrap; gap: var(--sp-3); padding-block: var(--sp-2); }
   .site-head nav {
@@ -724,8 +620,18 @@ tbody th { font-weight: 400; color: var(--fg); }
   .copy { border-left: 0; border-top: 1px solid var(--line-strong); padding: var(--sp-3); }
   .hero-links .btn { flex: 1; }
   .foot-grid { grid-template-columns: minmax(0, 1fr); }
+  .site-head nav ul { gap: var(--sp-2); }   /* five links fit 375px, no strip scroll */
 
-  /* sticky first column so row identity survives horizontal scroll */
+  /* every table fits 375px without horizontal scroll: smaller type,
+     6px cell padding, headers allowed to break anywhere */
+  table { font-size: var(--fs-xs); }
+  thead th, tbody th, tbody td { padding: var(--sp-2) 6px; }
+  .table-cmp thead th { font-size: 0.625rem; padding-inline: 4px; overflow-wrap: anywhere; }
+  .table-cmp thead th:first-child { width: 26%; }
+  .table-models .tag { white-space: normal; margin-right: 0; }
+  .table-models .num .est { display: block; }
+
+  /* sticky first column so row identity survives the rare overflow */
   .table-wrap th:first-child,
   .table-wrap td:first-child {
     position: sticky;
@@ -736,7 +642,5 @@ tbody th { font-weight: 400; color: var(--fg); }
   }
   .table-wrap thead th:first-child { background: var(--panel); }
   .table-wrap .row-anchor th:first-child,
-  .table-wrap .row-anchor td:first-child,
-  .table-wrap .self th:first-child,
-  .table-wrap .self td:first-child { background: var(--row-tint); }
+  .table-wrap .row-anchor td:first-child { background: var(--row-tint); }
 }

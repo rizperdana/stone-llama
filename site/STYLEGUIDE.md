@@ -16,6 +16,11 @@ either. Every element earns its place: if a block repeats its neighbour,
 merge or delete it. One accent colour; status colours exist only to carry
 honesty signals (`✓/⚠/✗`, `[est]`), never decoration.
 
+The page is a scan, not an essay: one claim per block, tables are ✓/✗
+matrices with a two- or three-word row label, and every section links to the
+docs tree instead of explaining itself. When a sentence restates its heading
+or its neighbour, delete it — depth lives in `README.md` and `docs/`.
+
 ## 2. Token layer
 
 ### 2.1 Colour
@@ -59,7 +64,10 @@ rows, opaque so sticky cells don't bleed). Code chips inside tinted rows use
 `--panel` — accent-on-accent over the darker tint measures 4.13:1 in light.
 Tags and callouts use `color-mix(in srgb, …)` on top of existing surfaces —
 never a new flat hex. **Worst gated pair: 3.08:1** (light control border on
-`--bg-raise`). **Worst text pair: 4.52:1** (light `--muted` on `--row-tint`).
+`--bg-raise`). **Worst rendered text pair: 4.52:1** (light `--muted` on
+`--row-tint`). One combination is deliberately unused: `--est` on `--row-tint`
+would be 4.35:1 in light, so `?`/`[est]` markers never sit in a tinted cell
+(`.self`, `.row-anchor`) — no current cell does.
 
 Recompute any pair:
 
@@ -79,12 +87,17 @@ No web fonts, no `@font-face`.
 | Token | Size | Weight | Line height | Use |
 |---|---|---|---|---|
 | `--fs-xs` | 0.75rem | 600 | 1.4 | eyebrows, table headers, tags, term bars, footnotes |
-| `--fs-sm` | 0.875rem | 400 | 1.6 | fine print, table cells, terminal pre, buttons (600) |
+| `--fs-sm` | 0.875rem | 400 | 1.6 | fine print, table cells (≥561px), terminal pre, buttons (600) |
 | `--fs-base` | 1rem | 400 | `--lh-body` (1.6) | body, lede paragraphs |
-| `--fs-lg` | 1.125rem | 400 | 1.55 | `.lede`, `.plat-notes` |
+| `--fs-lg` | 1.125rem | 400 | 1.55 | `.lede` |
 | `--fs-xl` | 1.375rem | 600 | `--lh-tight` (1.15) | `h3` |
 | `--fs-2xl` | `clamp(1.5rem, 3.2vw, 2rem)` | 600 | `--lh-tight` | `h2` |
 | `--fs-3xl` | `clamp(2rem, 5vw, 3rem)` | 600 | `--lh-tight` | `h1` |
+
+Fixed micro-sizes outside the scale, each with one job: `0.9em` (inline
+`code`), `0.85em` (`.est`), `1.75rem` (`.stat-n`), `0.625rem`
+(comparison-matrix column headers, ≤560px only — five tool names must fit
+375px).
 
 Weights in use: 400 (body), 600 (headings, labels, buttons, verdicts), 700
 nowhere — emphasis is `strong` at 600 or a colour token. Letter-spacing: only
@@ -95,7 +108,8 @@ Do not introduce a size or weight outside this table without editing it here.
 
 4px base, `--sp-1 … --sp-8`: `0.25 / 0.5 / 0.75 / 1 / 1.5 / 2 / 3 / 4 rem`.
 Section rhythm: `.sect { padding-block: clamp(2.75rem, 7vw, 5rem) }`; hero
-`clamp(2.5rem, 6vw, 4.5rem)`. Table cell padding `--sp-3 --sp-4`. Use tokens,
+`clamp(2.5rem, 6vw, 4.5rem)`. Table cell padding `--sp-3 --sp-4` (`--sp-2`
+6px at ≤560px). Use tokens, never raw px, for anything vertical.
 never raw px, for anything vertical.
 
 ### 2.4 Radii, borders, depth
@@ -119,25 +133,31 @@ editing this section first.
 
 ## 3. Components
 
-**Terminal block (`.term`)** — use for verbatim CLI output and the two formula
-lines. What not to do: never recolour per theme (fixed dark tokens), never
-restyle the text inside beyond the semantic spans (`.cmd`, `.c`, `.ok`,
-`.warn`, `.bad`), never wrap (`pre` scrolls; `tabindex="0"` keeps it keyboard
-reachable), never add window dots/traffic lights — the `.term-bar` filename
-label is the only chrome.
+**Terminal block (`.term`)** — use for verbatim CLI output. What not to do:
+never recolour per theme (fixed dark tokens), never restyle the text inside
+beyond the semantic spans (`.cmd`, `.c`, `.ok`, `.warn`, `.bad`), never wrap
+(`pre` scrolls; `tabindex="0"` keeps it keyboard reachable), never add window
+dots/traffic lights — the `.term-bar` filename label is the only chrome.
 
 **Capture figure (`figure.term > figcaption.term-bar + pre`)** — use for the
-seven live captures. What not to do: no `screenshot` images of terminals, no
-trimming/paraphrasing capture text, no removing `[est]`/`calibration pending`
-markers, no `reveal`/fade classes (content is never hidden pending JS).
+four live captures (`doctor-list`, `fit`, `gate`, `serve`). What not to do: no
+`screenshot` images of terminals, no paraphrasing capture text, no removing
+`[est]`/`calibration pending` markers, no `reveal`/fade classes (content is
+never hidden pending JS). Length is cut only by eliding a contiguous block:
+one `<span class="c">[…]</span>` line replacing the cut lines; every
+displayed line stays byte-identical to `docs/screenshots/*.txt`.
 
-**Comparison table (`.table-wrap > table.table-cmp`)** — use for cross-tool
-claims; always as a real `<table>` with `role="region"`, `aria-label`,
-`tabindex="0"` and `min-width` inside the scroll wrapper; a `.scroll-hint`
-line appears ≤1100px. Every competitor cell carries a `<sup>` footnote link to
-`.sources`. What not to do: never card-ify rows (comparison needs aligned
-rows), never state an unsourced competitor behaviour, never drop the losing
-rows, never re-sort to bury a stone-llama loss.
+**Comparison matrix (`.table-wrap > table.table-cmp`)** — rows are
+capabilities (2–5-word row header), columns are the five tools, cells are only
+`✓`/`✗`/`~`/`?` in `.ok`/`.bad`/`.dim`/`.est`; one legend line + one compact
+sources line (both `.fine`); `table-layout: fixed` with the stone-llama
+column tinted (`.self`), glyphs centred. Still a real `<table>` with
+`role="region"`, `aria-label` and `tabindex="0"`. What not to do: never
+card-ify rows (comparison needs aligned rows), never state an unsourced
+competitor behaviour, never drop the losing rows, never re-sort to bury a
+stone-llama loss, never put an `.est`/`?` marker inside a tinted cell (light
+`--est` on `--row-tint` measures 4.35:1), never add per-cell footnote links —
+the single sources line carries provenance.
 
 **Feature item (`.feature`)** — top hairline `--line-strong` + `h3` + prose.
 Use for the two mechanisms. What not to do: no card background, no icon, no
@@ -148,20 +168,21 @@ platform hard-stop only (currently exactly one: prefill OOM). What not to do:
 not for emphasis, not for asides, not for links, never a second callout style
 or a "good news" variant — good news is plain prose.
 
-**Tags (`.tag .tag-ok/.tag-tight/.tag-meas`)** — border-only, `currentColor`
-at 45%, uppercase mono, for verdicts only (`fits`, `fits-tight`, `measured`).
-What not to do: no filled backgrounds, no new variants beyond these three.
+**Tags (`.tag .tag-ok/.tag-tight`)** — border-only, `currentColor` at 45%,
+uppercase mono, for verdicts only (`fits`, `fits-tight`). What not to do: no
+filled backgrounds, no new variants beyond these two.
 
 **Nav/header (`.site-head`)** — sticky, solid `--bg`, hairline bottom, no
 blur/transparency; nav is muted links, which become a horizontally scrollable
 strip below 860px (the section TOC never simply vanishes). What not to do: no
 mega-menu, no animated underline, no second CTA in the header.
 
-**Wide tables** — wrapper scrolls (`overflow-x:auto`, `role="region"`,
-`tabindex="0"`, visible `.scroll-hint` ≤1100px), never cards. Below 560px the
-first column is `position:sticky; left:0` (opaque background, right hairline)
-so the row identity survives the scroll; keep any first-cell background rules
-in sync when tinting rows.
+**Tables** — every table is sized to fit 375px (smaller type, 6px padding,
+headers allowed to break anywhere), so the page has no horizontal scroll on a
+phone. The wrapper still scrolls (`overflow-x:auto`, `role="region"`,
+`tabindex="0"`) as a safety net below ~360px, where the first column turns
+`position:sticky; left:0` (opaque background, right hairline) so row identity
+survives; keep any first-cell background rules in sync when tinting rows.
 
 **Buttons (`.btn`, `.btn-primary`/`.btn-ghost`)** — one primary per screen
 (View on GitHub), ghost for the rest; `--r-sm`, no transform on hover.
@@ -174,19 +195,21 @@ repeating the nav verbatim.
 ## 4. Honesty rules for content
 
 1. **`[est]` markers always stay.** Every estimated number keeps `[est]` (or a
-   `tag-tight`/`dim` qualifier); `measured` is reserved for actually measured
-   values (currently: 42.7 tok/s, the prefill OOM at ~2.5k tokens/~20 MiB, the
-   4096 MiB card, driver/build facts).
+   `tag-tight`/`dim` qualifier); measured values are called out as measured in
+   prose (currently: 42.7 tok/s, the prefill OOM at ~2.5k tokens/~20 MiB, the
+   4096 MiB card, driver/build facts) — never marked `[est]`, never rounded
+   into a cleaner number.
 2. **Never imply unsupported platforms work.** Linux/amd64 is the only
    supported platform; Windows stays "published but untested at runtime";
    macOS stays "can run `doctor`/`list`/`fit`, never serve".
 3. **Never invent numbers.** A number on this page exists in the repo, in the
    captures, or in the cited peer research — or it is not printed. No
    benchmarks beyond the one measured anchor; no invented percentages.
-4. **Captures must be real output**, byte-identical to `docs/screenshots/`,
-   including `EXIT=`/`exit=` lines and refusal text.
-5. **Competitor claims cite their source** (footnote per cell → `.sources`);
-   anything the sources don't cover is marked `?` or "not verified". No
+4. **Captures must be real output**: displayed lines byte-identical to
+   `docs/screenshots/`, including `EXIT=`/`exit=` lines and refusal text;
+   cutting for length is one `<span class="c">[…]</span>` elision line.
+5. **Competitor claims cite their source** in the single `.sources` line under
+   each matrix; anything the sources don't cover is `?`. No
    runtime-adoption/`update`/`uninstall` claims — none of that is in HEAD.
 6. **Dependency claims are checkable**: "zero third-party dependencies —
    `go.mod` has no `require`, no `go.sum`". Never write "one dependency" or
@@ -200,6 +223,9 @@ repeating the nav verbatim.
   (`header`/`main`/`footer`, named `nav`s); tables are real tables with
   `scope` on headers; wide tables are labelled scroll regions (`role=region`,
   `aria-label`, `tabindex=0`) so keyboards can scroll them.
+- **No horizontal scroll at 375px**: all three tables are sized to fit
+  (`≤ 375px` columns sum), verified at 1440/375 — only the scroll-region
+  wrapper (below ~360px) may scroll, and it stays keyboard-scrollable.
 - **Focus**: `:focus-visible` = 2px `--accent` outline, 2px offset, never
   removed; skip link (`.skip`) is the first focusable element and jumps to
   `#main`.
