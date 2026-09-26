@@ -19,23 +19,24 @@ import (
 
 // Status is the /-/status payload — ps and run both read it.
 type Status struct {
-	Mode      string `json:"mode"` // "supervised" | "attach"
-	Upstream  string `json:"upstream"`
-	Attach    string `json:"attach,omitempty"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	PID       int    `json:"pid"`
-	ChildPID  int    `json:"child_pid,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Ctx       int    `json:"ctx,omitempty"`
-	CacheMode string `json:"cache_mode,omitempty"`
-	VRAMPeak  int    `json:"vram_peak_mib,omitempty"`
-	UptimeS   int64  `json:"uptime_s"`
-	Ready     bool   `json:"ready"`
+	Mode       string `json:"mode"` // "supervised" | "attach"
+	Upstream   string `json:"upstream"`
+	Attach     string `json:"attach,omitempty"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	PID        int    `json:"pid"`
+	ChildPID   int    `json:"child_pid,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Ctx        int    `json:"ctx,omitempty"`
+	CacheMode  string `json:"cache_mode,omitempty"`
+	VRAMPeak   int    `json:"vram_peak_mib,omitempty"`
+	UptimeS    int64  `json:"uptime_s"`
+	Ready      bool   `json:"ready"`
+	FitSummary string `json:"fit_summary,omitempty"` // last accepted autofit breakdown
 }
 
-// loadRequest is the /-/load payload (run, tests, direct clients).
-type loadRequest struct {
+// LoadRequest is the /-/load payload (run, tests, direct clients).
+type LoadRequest struct {
 	Model     string `json:"model"`
 	Ctx       int    `json:"ctx,omitempty"`
 	CacheMode string `json:"cache_mode,omitempty"`
@@ -53,6 +54,10 @@ func (d *daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	d.mu.Lock()
 	st := d.st
+	fitSum := ""
+	if d.fit != nil {
+		fitSum = d.fit.Summary()
+	}
 	d.mu.Unlock()
 
 	model := st.Model
@@ -62,19 +67,20 @@ func (d *daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		model = d.attachModel()
 	}
 	resp := Status{
-		Mode:      "supervised",
-		Upstream:  d.conn.BaseURL,
-		Attach:    st.Attach,
-		Host:      st.Host,
-		Port:      st.Port,
-		PID:       st.PID,
-		ChildPID:  st.ChildPID,
-		Model:     model,
-		Ctx:       st.Ctx,
-		CacheMode: st.CacheMode,
-		VRAMPeak:  st.VRAMPeakMiB,
-		UptimeS:   d.opts.Now().Unix() - st.StartedAt,
-		Ready:     d.readyNow(),
+		Mode:       "supervised",
+		Upstream:   d.conn.BaseURL,
+		Attach:     st.Attach,
+		Host:       st.Host,
+		Port:       st.Port,
+		PID:        st.PID,
+		ChildPID:   st.ChildPID,
+		Model:      model,
+		Ctx:        st.Ctx,
+		CacheMode:  st.CacheMode,
+		FitSummary: fitSum,
+		VRAMPeak:   st.VRAMPeakMiB,
+		UptimeS:    d.opts.Now().Unix() - st.StartedAt,
+		Ready:      d.readyNow(),
 	}
 	if st.Attach != "" {
 		resp.Mode = "attach"
@@ -142,7 +148,7 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 	d.loadMu.Lock()
 	defer d.loadMu.Unlock()
 
-	var req loadRequest
+	var req LoadRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, "decode /-/load body: "+err.Error(), "invalid_request")
 		return
@@ -506,4 +512,100 @@ func writeJSON(w http.ResponseWriter, code int, msg, typ string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{"message": msg, "type": typ},
 	})
+}
+
+// Load is the run-side client for /-/load: POST, consume the backend
+// event stream to completion, surface any error event, return fresh
+// status (ctx/cache/fit summary included).
+func Load(ctx context.Context, dataDir string, req LoadRequest) (Status, error) {
+	st, err := ReadState(dataDir)
+	if err != nil {
+		return Status{}, err
+	}
+	body, merr := json.Marshal(req)
+	if merr != nil {
+		return Status{}, merr
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+st.Addr()+loadPath, bytes.NewReader(body))
+	if err != nil {
+		return Status{}, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if st.Token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+st.Token)
+	}
+	resp, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return Status{}, err
+	}
+	defer resp.Body.Close()
+	var streamErr error
+	if resp.StatusCode == http.StatusOK {
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, rerr := br.ReadString('\n')
+			if strings.HasPrefix(strings.TrimSpace(line), "data:") {
+				var m struct {
+					Error *struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
+				if json.Unmarshal([]byte(payload), &m) == nil && m.Error != nil && m.Error.Message != "" {
+					streamErr = fmt.Errorf("%s", m.Error.Message)
+				}
+			}
+			if rerr != nil {
+				break
+			}
+		}
+	} else {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		streamErr = fmt.Errorf("%s", envelopeMessage(b, resp.StatusCode))
+	}
+	if streamErr != nil {
+		return Status{}, streamErr
+	}
+	return Query(dataDir)
+}
+
+// Unload is the run-side client for /-/unload.
+func Unload(ctx context.Context, dataDir string) error {
+	st, err := ReadState(dataDir)
+	if err != nil {
+		return err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+st.Addr()+unloadPath, strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if st.Token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+st.Token)
+	}
+	resp, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+	return fmt.Errorf("%s", envelopeMessage(b, resp.StatusCode))
+}
+
+// envelopeMessage pulls {"error":{"message"}} out of an error body.
+func envelopeMessage(b []byte, code int) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &env) == nil && env.Error.Message != "" {
+		return env.Error.Message
+	}
+	return fmt.Sprintf("HTTP %d: %s", code, strings.TrimSpace(string(b)))
 }

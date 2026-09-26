@@ -3,10 +3,13 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,12 +31,6 @@ import (
 	"github.com/rizperdana/stone-llama/internal/setup"
 	"github.com/rizperdana/stone-llama/internal/store"
 )
-
-// planned lists commands that exist in the product surface but are not
-// implemented yet, mapped to the milestone that ships them (ARCHITECTURE.md §11).
-var planned = map[string]string{
-	"run": "M6",
-}
 
 // Run executes one CLI invocation and returns the process exit code.
 func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -73,14 +70,238 @@ func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Write
 		return runPs(rest, stdout, stderr)
 	case "stop":
 		return runStop(rest, stdout, stderr)
-	}
-	if ms, ok := planned[cmd]; ok {
-		fmt.Fprintf(stderr, "stone-llama %s: not implemented yet (ships in %s)\n", cmd, ms)
-		return 2
+	case "run":
+		return runRun(rest, stdin, stdout, stderr)
 	}
 	fmt.Fprintf(stderr, "stone-llama: unknown command %q\n\n", cmd)
 	fmt.Fprint(stderr, usage())
 	return 2
+}
+
+// runRun runs the interactive/one-shot REPL (M6): ensure the daemon,
+// load the model through /-/load (autofit prints), stream completions.
+// /bye unloads — supervised mode only; attach leaves the upstream's
+// model alone (its lifecycle is not ours).
+func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]`
+	model, cacheMode, oneShot := "", "", ""
+	ctxN, noAutofit := 0, false
+	// the loop reassigns i when consuming flag values (explicit classic loop)
+	need := func(i *int, flag string) (string, bool) {
+		if *i+1 >= len(args) {
+			fmt.Fprintf(stderr, "stone-llama run: %s needs a value\n", flag)
+			return "", false
+		}
+		*i++
+		return args[*i], true
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		var val string
+		var ok bool
+		switch {
+		case a == "--ctx" || strings.HasPrefix(a, "--ctx="):
+			if strings.HasPrefix(a, "--ctx=") {
+				val = strings.TrimPrefix(a, "--ctx=")
+			} else if val, ok = need(&i, "--ctx"); !ok {
+				return 2
+			}
+			n, aerr := strconv.Atoi(val)
+			if aerr != nil || n < 0 {
+				fmt.Fprintf(stderr, "stone-llama run: invalid --ctx %q\n", val)
+				return 2
+			}
+			ctxN = n
+		case a == "--cache-mode" || strings.HasPrefix(a, "--cache-mode="):
+			if strings.HasPrefix(a, "--cache-mode=") {
+				val = strings.TrimPrefix(a, "--cache-mode=")
+			} else if val, ok = need(&i, "--cache-mode"); !ok {
+				return 2
+			}
+			cacheMode = val
+		case a == "--no-autofit":
+			noAutofit = true
+		case a == "-p" || a == "--prompt" || strings.HasPrefix(a, "--prompt="):
+			if strings.HasPrefix(a, "--prompt=") {
+				val = strings.TrimPrefix(a, "--prompt=")
+			} else if val, ok = need(&i, "-p"); !ok {
+				return 2
+			}
+			oneShot = val
+		case a == "-h" || a == "--help":
+			fmt.Fprintln(stdout, usageLine)
+			return 0
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(stderr, "stone-llama run: unknown flag %q\n%s\n", a, usageLine)
+			return 2
+		default:
+			if model != "" {
+				fmt.Fprintln(stderr, usageLine)
+				return 2
+			}
+			model = a
+		}
+	}
+	if model == "" {
+		fmt.Fprintln(stderr, usageLine)
+		return 2
+	}
+
+	dataDir := config.DataDir()
+	_, prevErr := serve.ReadState(dataDir)
+	started := errors.Is(prevErr, serve.ErrNoDaemon)
+	if _, err := serve.EnsureDaemon(dataDir, true, 30*time.Second); err != nil {
+		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+		return 1
+	}
+	if started {
+		fmt.Fprintln(stdout, "starting runtime…")
+	}
+	ctx := context.Background()
+	st, err := serve.Query(dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+		return 1
+	}
+	token := ""
+	if state, serr := serve.ReadState(dataDir); serr == nil {
+		token = state.Token
+	}
+	if st.Model != model {
+		st, err = serve.Load(ctx, dataDir, serve.LoadRequest{
+			Model:     model,
+			Ctx:       ctxN,
+			CacheMode: cacheMode,
+			NoAutofit: noAutofit,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+			return 1
+		}
+		if !noAutofit && st.CacheMode != "" {
+			fmt.Fprintf(stdout, "autofit: cache %s, max_seq_len %d\n", st.CacheMode, st.Ctx)
+		}
+		if s := st.FitSummary; s != "" {
+			if strings.Contains(s, "warning") {
+				fmt.Fprintf(stdout, "  %s\n", s)
+			} else {
+				fmt.Fprintf(stdout, "  %s ✓\n", s)
+			}
+		}
+	}
+	if st.Model == "" {
+		fmt.Fprintln(stderr, "stone-llama run: no model is loaded")
+		return 1
+	}
+
+	// one streamed completion; tokens are printed as they arrive.
+	ask := func(prompt string) error {
+		body, _ := json.Marshal(map[string]any{"model": st.Model, "prompt": prompt, "stream": true})
+		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/completions", bytes.NewReader(body))
+		if rerr != nil {
+			return rerr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, derr := http.DefaultClient.Do(req)
+		if derr != nil {
+			return derr
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			return errors.New(serveEnvelope(b, resp.StatusCode))
+		}
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, rerr := br.ReadString('\n')
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "data:") {
+				payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				if payload == "[DONE]" {
+					fmt.Fprintln(stdout)
+					return nil
+				}
+				var chunk struct {
+					Choices []struct {
+						Text string `json:"text"`
+					} `json:"choices"`
+					Error *struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if json.Unmarshal([]byte(payload), &chunk) == nil {
+					if chunk.Error != nil && chunk.Error.Message != "" {
+						return errors.New(chunk.Error.Message)
+					}
+					if len(chunk.Choices) > 0 {
+						io.WriteString(stdout, chunk.Choices[0].Text)
+					}
+				}
+			}
+			if rerr != nil {
+				if rerr == io.EOF {
+					return nil
+				}
+				return rerr
+			}
+		}
+	}
+
+	if oneShot != "" {
+		if err := ask(oneShot); err != nil {
+			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+			return 1
+		}
+	} else {
+		in := bufio.NewReader(stdin)
+		for {
+			fmt.Fprint(stdout, ">>> ")
+			line, rerr := in.ReadString('\n')
+			text := strings.TrimSpace(line)
+			if text == "" {
+				if rerr != nil {
+					break
+				}
+				continue
+			}
+			if text == "/bye" {
+				break
+			}
+			if strings.HasPrefix(text, "/") {
+				fmt.Fprintln(stdout, "unknown command (try /bye to quit)")
+				continue
+			}
+			if err := ask(text); err != nil {
+				fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+			}
+			if rerr != nil {
+				break
+			}
+		}
+	}
+	if st.Mode != "attach" {
+		if err := serve.Unload(ctx, dataDir); err == nil {
+			fmt.Fprintln(stdout, "unloaded.")
+		}
+	}
+	return 0
+}
+
+// serveEnvelope pulls the {"error":{"message"}} envelope out of a
+// non-200 body.
+func serveEnvelope(b []byte, code int) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &env) == nil && env.Error.Message != "" {
+		return env.Error.Message
+	}
+	return fmt.Sprintf("HTTP %d: %s", code, strings.TrimSpace(string(b)))
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -579,6 +800,6 @@ Commands:
   serve       start the OpenAI-compatible API [--attach host:port] [--port n]
   ps          show the running daemon + loaded model
   stop        stop the daemon
-  run         chat with a model in the CLI     (M6)
+  run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p prompt]   chat (streams)
 `
 }

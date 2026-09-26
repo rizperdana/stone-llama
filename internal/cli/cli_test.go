@@ -2,10 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/rizperdana/stone-llama/internal/config"
+	"github.com/rizperdana/stone-llama/internal/serve"
 )
 
 func run(args ...string) (int, string, string) {
@@ -31,15 +39,15 @@ func TestBareAndHelpPrintUsage(t *testing.T) {
 }
 
 func TestPlannedCommandNamesMilestone(t *testing.T) {
-	// serve/ps/stop dispatch for real now (M5); only run stays planned.
-	for _, c := range []string{"serve", "ps", "stop"} {
-		if _, ok := planned[c]; ok {
-			t.Errorf("%q still in the planned map", c)
-		}
-	}
+	// M6 complete: no planned stubs remain. `run` with no model is a
+	// usage error BEFORE any daemon work (never auto-starts in tests).
 	code, _, errOut := run("run")
-	if code != 2 || !strings.Contains(errOut, "M6") {
-		t.Errorf("code/err = %d/%q, want 2/mentions M6", code, errOut)
+	if code != 2 || !strings.Contains(errOut, "usage: stone-llama run") {
+		t.Errorf("run: code/err = %d/%q, want 2/usage", code, errOut)
+	}
+	code, _, errOut = run("frobnicate")
+	if code != 2 || !strings.Contains(errOut, "unknown command") {
+		t.Errorf("unknown: code/err = %d/%q", code, errOut)
 	}
 }
 
@@ -296,4 +304,70 @@ func TestIsTerminalNotFooledByCharDevice(t *testing.T) {
 	if isTerminal("stdin") { // non-*os.File
 		t.Error("non-file must not count as a TTY")
 	}
+}
+
+// TestRunOneShotStreams: attach-mode daemon over a fake upstream —
+// run -p skips the load (model already reported), streams tokens as
+// they arrive, and must not unload (attach leaves lifecycle upstream).
+func TestRunOneShotStreams(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"object":"list","data":[]}`)
+	})
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"fake-model"}`)
+	})
+	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, _ *http.Request) {
+		fl := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"text\":\"Hi \"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: {\"choices\":[{\"text\":\"there\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	dataDir := config.DataDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serve.Serve(ctx, serve.Options{
+			Host:    "127.0.0.1",
+			DataDir: dataDir,
+			Attach:  strings.TrimPrefix(ts.URL, "http://"),
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case err := <-errCh:
+			t.Fatalf("serve exited early: %v", err)
+		default:
+		}
+		if st, err := serve.Query(dataDir); err == nil && st.Ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon not ready within 5s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	var out, errb bytes.Buffer
+	code := runRun([]string{"fake-model", "-p", "hello"}, bytes.NewReader(nil), &out, &errb)
+	if code != 0 {
+		t.Fatalf("run -p: code=%d err=%q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "Hi there") {
+		t.Errorf("streamed output missing tokens: %q", out.String())
+	}
+	if strings.Contains(out.String(), "unloaded.") {
+		t.Errorf("attach mode must not unload the upstream model")
+	}
+	cancel()
+	<-errCh
 }
