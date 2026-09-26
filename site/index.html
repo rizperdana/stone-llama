@@ -202,11 +202,11 @@ fit: refused — no context fits this model in VRAM (see the gate report above)
         </figure>
 
         <figure class="term term-wide reveal">
-          <figcaption class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>gate.txt — the gate inside pull; the download was declined</figcaption>
+          <figcaption class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>gate.txt — the gate inside pull; the pull was refused (non-interactive stdin, no --yes)</figcaption>
           <pre tabindex="0"><code><span class="cmd">$ stone-llama pull ggml-org/SmolLM3-3B-GGUF</span>
 stone-llama pull: repo ggml-org/SmolLM3-3B-GGUF has no config.json — not an EXL3 model layout
 
-<span class="cmd">$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # download declined</span>
+<span class="cmd">$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # declined: non-interactive, --yes required, 'n' never read</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
 gate: quant <span class="ok">✓</span> exl3
 gate: fit   <span class="warn">⚠</span> weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
@@ -227,8 +227,9 @@ async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
         </figure>
       </div>
       <p class="fine reveal">Model-download steps are deliberately omitted from these captures: the
-        declined <code>pull</code> stopped at the consent prompt, so nothing was fetched beyond a few
-        KB of metadata.</p>
+        <code>pull</code> run above was refused — non-interactive stdin without <code>--yes</code>,
+        so no consent prompt is shown, only the <em>requires --yes</em> line — and nothing was
+        fetched beyond a few KB of metadata.</p>
     </div>
   </section>
 
