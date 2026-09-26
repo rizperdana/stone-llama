@@ -43,11 +43,12 @@ func dryOpts(cfg *config.Config, rep doctor.Report) pull.Options {
 		VRAMMiB:   rep.GPUs[0].VRAMMiB,
 		GPUName:   rep.GPUs[0].Name,
 		Autofit: autofit.Options{
-			HeadroomMiB:    cfg.Autofit.HeadroomMiB,
-			WorkspaceMiB:   cfg.Autofit.WorkspaceMiB,
-			CtxHeadroomMiB: cfg.Autofit.CtxHeadroomMiB,
-			OverheadMiB:    cfg.Autofit.OverheadMiB,
-			MinCtx:         cfg.Autofit.MinCtx,
+			HeadroomMiB:       cfg.Autofit.HeadroomMiB,
+			WorkspaceMiB:      cfg.Autofit.WorkspaceMiB,
+			CtxHeadroomMiB:    cfg.Autofit.CtxHeadroomMiB,
+			OverheadMiB:       cfg.Autofit.OverheadMiB,
+			MinCtx:            cfg.Autofit.MinCtx,
+			ChunkSizeOverride: cfg.Autofit.ChunkSize,
 		},
 	}
 }

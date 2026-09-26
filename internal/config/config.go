@@ -19,6 +19,7 @@ type Autofit struct {
 	CtxHeadroomMiB int  `json:"ctx_headroom_mib"` // extra headroom at 65536 ctx, linear [est]
 	OverheadMiB    int  `json:"overhead_mib"`
 	MinCtx         int  `json:"min_ctx"`
+	ChunkSize      int  `json:"chunk_size"` // TabbyAPI load chunk override: 0 auto (fit decides), else 512-4096
 }
 
 type Config struct {
@@ -101,6 +102,9 @@ func Load() (Config, error) {
 		cfg.Port = n
 	}
 
+	if c := cfg.Autofit.ChunkSize; c != 0 && (c < 512 || c > 4096) {
+		return Config{}, fmt.Errorf("autofit.chunk_size must be 0 (auto) or 512-4096 (got %d) — remove it to let the fit decide", c)
+	}
 	cfg.ModelsDir = expandHome(cfg.ModelsDir)
 	cfg.RuntimeDir = expandHome(cfg.RuntimeDir)
 	return cfg, nil

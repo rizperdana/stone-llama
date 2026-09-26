@@ -188,6 +188,7 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 			"not_found")
 		return
 	}
+	var fitRes *autofit.Result
 	if !req.NoAutofit {
 		var res autofit.Result
 		if err := d.fitModel(w, dir, req.Model, &ctx, &mode, &res); err != nil {
@@ -196,6 +197,7 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		d.fit = &res
 		d.mu.Unlock()
+		fitRes = &res
 	}
 
 	// Load through the backend's native endpoint; the event stream is
@@ -207,6 +209,13 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 	}
 	if mode != "" {
 		payload["cache_mode"] = NormalizeForTabby(mode)
+	}
+	// The same autofit.Result that chose ctx/cache above decides load
+	// tuning — payload and rendered config can never disagree.
+	if fitRes != nil {
+		for k, v := range fitLoadArgs(fitRes) {
+			payload[k] = v
+		}
 	}
 	body, _ := json.Marshal(payload)
 	hreq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
@@ -290,13 +299,14 @@ func (d *daemon) fitModel(w http.ResponseWriter, dir, model string, ctx *int, mo
 		return errFitRefused
 	}
 	out, ferr := autofit.Fit(spec, store.WeightsBytes(dir), rep.GPUs[0].VRAMMiB, autofit.Options{
-		HeadroomMiB:    d.opts.Fit.HeadroomMiB,
-		WorkspaceMiB:   d.opts.Fit.WorkspaceMiB,
-		CtxHeadroomMiB: d.opts.Fit.CtxHeadroomMiB,
-		OverheadMiB:    d.opts.Fit.OverheadMiB,
-		MinCtx:         d.opts.Fit.MinCtx,
-		UserCtx:        *ctx,
-		ForceMode:      *mode,
+		HeadroomMiB:       d.opts.Fit.HeadroomMiB,
+		WorkspaceMiB:      d.opts.Fit.WorkspaceMiB,
+		CtxHeadroomMiB:    d.opts.Fit.CtxHeadroomMiB,
+		OverheadMiB:       d.opts.Fit.OverheadMiB,
+		MinCtx:            d.opts.Fit.MinCtx,
+		ChunkSizeOverride: d.opts.Fit.ChunkSize,
+		UserCtx:           *ctx,
+		ForceMode:         *mode,
 	})
 	if ferr != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, ferr.Error(), "invalid_model")
@@ -309,6 +319,22 @@ func (d *daemon) fitModel(w http.ResponseWriter, dir, model string, ctx *int, mo
 	*ctx, *mode = out.Ctx, out.Mode
 	*res = out
 	return nil
+}
+
+// fitLoadArgs maps an accepted autofit verdict onto TabbyAPI's
+// ModelLoadRequest keys (chunk_size and warmup are both accepted fields
+// at the pinned commit — endpoints/core/types/model.py). The verdict is
+// the only source: nothing here computes, so payload and rendered YAML
+// cannot disagree. Unset verdict fields emit no key (backend defaults).
+func fitLoadArgs(res *autofit.Result) map[string]any {
+	args := map[string]any{}
+	if res.ChunkSize > 0 {
+		args["chunk_size"] = res.ChunkSize
+	}
+	if res.Warmup {
+		args["warmup"] = true
+	}
+	return args
 }
 
 // errFitRefused signals that fitModel already wrote the response.

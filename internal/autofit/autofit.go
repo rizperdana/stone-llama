@@ -172,13 +172,14 @@ func kvLayers(total int, layerTypes []string) int {
 // Options are the config knobs (ARCHITECTURE.md §5/§7). Zero values take
 // the approved defaults.
 type Options struct {
-	HeadroomMiB    int    // base fragmentation headroom; default 512
-	WorkspaceMiB   int    // cold prefill workspace reserve [est]; default 512
-	CtxHeadroomMiB int    // extra headroom at 65536 ctx, linear in ctx [est]; default 512
-	OverheadMiB    int    // default 128 (measured fixed overhead)
-	MinCtx         int    // default 4096 (ladder floor)
-	UserCtx        int    // 0 → trained max; above trained max is clamped (Q3a)
-	ForceMode      string // non-empty → bypass the ladder entirely (Q3b)
+	HeadroomMiB       int    // base fragmentation headroom; default 512
+	WorkspaceMiB      int    // cold prefill workspace reserve [est]; default 512
+	CtxHeadroomMiB    int    // extra headroom at 65536 ctx, linear in ctx [est]; default 512
+	OverheadMiB       int    // default 128 (measured fixed overhead)
+	MinCtx            int    // default 4096 (ladder floor)
+	UserCtx           int    // 0 → trained max; above trained max is clamped (Q3a)
+	ForceMode         string // non-empty → bypass the ladder entirely (Q3b)
+	ChunkSizeOverride int    // config autofit.chunk_size: 0 auto, else forced (512..4096)
 }
 
 // Result is the autofit decision plus the arithmetic behind it.
@@ -197,6 +198,10 @@ type Result struct {
 	LargestCtx  int    // largest ctx that would fit at the effective mode, 256-aligned
 	Reason      string
 	ElemsPerTok int64
+	// Load tuning the verdict recommends for TabbyAPI's ModelLoadRequest;
+	// 0/unset when the fit refused (no verdict to serve).
+	ChunkSize int  // chunk_size in tokens: 2048 = comfortable (backend default)
+	Warmup    bool // warmup: true only when slack is thin
 }
 
 func (o *Options) fillDefaults() {
@@ -260,11 +265,28 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 		res.HeadroomMiB = opts.headroomFor(ctx)
 		res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
 		load := res.WeightsMiB + res.KVMiB + res.OverheadMiB
-		if slack := vramTotalMiB - load - res.HeadroomMiB; slack < thinMarginMiB {
+		slack := vramTotalMiB - load - res.HeadroomMiB
+		if slack < thinMarginMiB {
 			res.Warning = fmt.Sprintf(
 				"only %d MiB margin above the %d MiB headroom (prefill workspace [est] included): "+
 					"multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx",
 				slack, res.HeadroomMiB)
+		}
+		// Load tuning from the SAME slack that gated the fit: thin slack
+		// means the cold prefill workspace is the scarce resource, so cap
+		// TabbyAPI's chunk and pre-warm on a throwaway prefill (transient
+		// alloc stays small and failures show up before the real prompt).
+		// Comfortable fits keep TabbyAPI's shipped defaults (2048, no
+		// warmup). A config override forces the chunk size, never warmup.
+		res.ChunkSize, res.Warmup = 2048, false
+		switch {
+		case slack < 256:
+			res.ChunkSize, res.Warmup = 512, true
+		case slack < thinMarginMiB:
+			res.ChunkSize, res.Warmup = 1024, true
+		}
+		if opts.ChunkSizeOverride > 0 {
+			res.ChunkSize = opts.ChunkSizeOverride
 		}
 	}
 

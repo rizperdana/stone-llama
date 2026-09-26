@@ -31,6 +31,11 @@ type TabbyConfig struct {
 	ModelName string
 	Ctx       int    // max_seq_len = cache_size (both set, 256-aligned)
 	CacheMode string // raw mode; normalized to TabbyAPI syntax here
+	// Load tuning from an autofit verdict (Result.ChunkSize/Warmup).
+	// Zero/unset omits the keys entirely — TabbyAPI defaults apply, so
+	// the boot (model-less) render stays byte-identical.
+	ChunkSize int
+	Warmup    bool
 }
 
 // RenderTabbyYAML emits the generated config passed to
@@ -51,6 +56,16 @@ func RenderTabbyYAML(c TabbyConfig) string {
 	if c.CacheMode != "" {
 		modeLine = "  cache_mode: " + q(NormalizeForTabby(c.CacheMode)) + "\n"
 	}
+	// Load tuning: omitted when the render carries no verdict (boot
+	// model-less config) — omit == TabbyAPI default, so a key TabbyAPI
+	// hasn't been shown to accept never reaches its YAML parser.
+	loadLines := ""
+	if c.ChunkSize > 0 {
+		loadLines += fmt.Sprintf("  chunk_size: %d\n", c.ChunkSize)
+	}
+	if c.Warmup {
+		loadLines += "  warmup: true\n"
+	}
 	return fmt.Sprintf(`network:
   host: %s
   port: %d
@@ -59,10 +74,10 @@ func RenderTabbyYAML(c TabbyConfig) string {
 model:
   model_dir: %s
   model_name: %s
-%s%s  tool_format: auto
+%s%s%s  tool_format: auto
   gpu_split_auto: true
   autosplit_reserve: [96]
 `, q(c.Host), c.Port,
 		q(c.ModelDir), q(c.ModelName),
-		ctxLines, modeLine)
+		ctxLines, modeLine, loadLines)
 }
