@@ -28,6 +28,7 @@ import (
 	"github.com/rizperdana/stone-llama/internal/doctor"
 	"github.com/rizperdana/stone-llama/internal/hf"
 	"github.com/rizperdana/stone-llama/internal/pull"
+	"github.com/rizperdana/stone-llama/internal/selfmgmt"
 	"github.com/rizperdana/stone-llama/internal/serve"
 	"github.com/rizperdana/stone-llama/internal/setup"
 	"github.com/rizperdana/stone-llama/internal/store"
@@ -73,6 +74,10 @@ func Run(args []string, version string, stdin io.Reader, stdout, stderr io.Write
 		return runStop(rest, stdout, stderr)
 	case "run":
 		return runRun(rest, stdin, stdout, stderr)
+	case "update":
+		return runUpdate(rest, version, stdin, stdout, stderr)
+	case "uninstall":
+		return runUninstall(rest, stdin, stdout, stderr)
 	}
 	fmt.Fprintf(stderr, "stone-llama: unknown command %q\n\n", cmd)
 	fmt.Fprint(stderr, usage())
@@ -822,6 +827,107 @@ func runStop(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runUpdate self-updates from the latest GitHub release (or a pinned
+// --version tag). --check reports without downloading; every download
+// is size-announced and consent-gated (A7), --yes for scripts, and the
+// SHA-256 in checksums.txt must match before anything is replaced.
+func runUpdate(args []string, version string, stdin io.Reader, stdout, stderr io.Writer) int {
+	usageLine := "usage: stone-llama update [--check] [--version <tag>] [--force] [--yes]"
+	opts := selfmgmt.UpdateOpts{Version: version, Stdout: stdout}
+	need := func(i *int, flag string) (string, bool) {
+		if *i+1 >= len(args) {
+			fmt.Fprintf(stderr, "stone-llama update: %s needs a value\n", flag)
+			return "", false
+		}
+		*i++
+		return args[*i], true
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--check":
+			opts.Check = true
+		case a == "--force":
+			opts.Force = true
+		case a == "--yes" || a == "-y":
+			opts.Yes = true
+		case a == "--version" || strings.HasPrefix(a, "--version="):
+			val, ok := "", false
+			if strings.HasPrefix(a, "--version=") {
+				val = strings.TrimPrefix(a, "--version=")
+			} else if val, ok = need(&i, "--version"); !ok {
+				return 2
+			}
+			opts.Want = val
+		case a == "-h" || a == "--help":
+			fmt.Fprintln(stdout, usageLine)
+			return 0
+		default:
+			fmt.Fprintf(stderr, "stone-llama update: unknown flag %q\n%s\n", a, usageLine)
+			return 2
+		}
+	}
+	opts.Confirm = func() bool {
+		if !isTerminal(stdin) {
+			fmt.Fprintln(stderr, "stone-llama update: non-interactive — pass --yes to confirm the download")
+			return false
+		}
+		fmt.Fprint(stdout, "Proceed? [y/N] ")
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return false
+		}
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+	}
+	if _, err := selfmgmt.Update(context.Background(), opts); err != nil {
+		fmt.Fprintf(stderr, "stone-llama update: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runUninstall removes the binary and the tool's data completely (A7):
+// the plan always prints first and consent is required (--yes for
+// scripts); --dry-run stops after the plan, --keep-models preserves
+// downloaded weights.
+func runUninstall(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	usageLine := "usage: stone-llama uninstall [--dry-run] [--keep-models] [--yes]"
+	opts := selfmgmt.UninstallOpts{Stdout: stdout}
+	for _, a := range args {
+		switch a {
+		case "--dry-run":
+			opts.DryRun = true
+		case "--keep-models":
+			opts.KeepModels = true
+		case "--yes", "-y":
+			opts.Yes = true
+		case "-h", "--help":
+			fmt.Fprintln(stdout, usageLine)
+			return 0
+		default:
+			fmt.Fprintf(stderr, "stone-llama uninstall: unknown flag %q\n%s\n", a, usageLine)
+			return 2
+		}
+	}
+	opts.Confirm = func(selfmgmt.Report) bool {
+		if !isTerminal(stdin) {
+			fmt.Fprintln(stderr, "stone-llama uninstall: non-interactive — pass --yes to confirm the plan")
+			return false
+		}
+		fmt.Fprint(stdout, "Proceed? [y/N] ")
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return false
+		}
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+	}
+	if _, err := selfmgmt.Uninstall(context.Background(), opts); err != nil {
+		fmt.Fprintf(stderr, "stone-llama uninstall: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func usage() string {
 	return `stone-llama — local model server + CLI (ExLlamaV3 + TabbyAPI), OpenAI-compatible API
 
@@ -843,5 +949,7 @@ Commands:
   ps          show the running daemon + loaded model
   stop        stop the daemon
   run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p prompt]   chat (streams)
+  update      self-update to the latest release [--check] [--version tag] [--force] [--yes]
+  uninstall   remove the binary + its data completely [--dry-run] [--keep-models] [--yes]
 `
 }
