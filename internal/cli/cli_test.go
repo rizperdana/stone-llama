@@ -266,3 +266,28 @@ func TestLoginRejectsBadTokenAndArgs(t *testing.T) {
 		t.Errorf("args accepted: %d/%q", code, errOut)
 	}
 }
+
+// /dev/null is a character device but not a terminal — the ModeCharDevice
+// check used to make `setup </dev/null` prompt interactively.
+func TestIsTerminalNotFooledByCharDevice(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	if isTerminal(devNull) {
+		t.Error("/dev/null must not count as a TTY")
+	}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+	if isTerminal(pr) || isTerminal(pw) {
+		t.Error("pipe must not count as a TTY")
+	}
+	if isTerminal("stdin") { // non-*os.File
+		t.Error("non-file must not count as a TTY")
+	}
+}

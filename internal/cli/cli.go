@@ -340,14 +340,16 @@ func runLogin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// isTerminal reports whether x is a character device (interactive TTY).
+// isTerminal reports whether x is a real interactive TTY. A plain
+// ModeCharDevice check is wrong: /dev/null is a character device but
+// not a terminal, so `setup </dev/null` used to prompt. isTTY is the
+// platform ioctl (TCGETS/TIOCGETA/GetConsoleMode).
 func isTerminal(x any) bool {
 	f, ok := x.(*os.File)
 	if !ok {
 		return false
 	}
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	return isTTY(f)
 }
 
 // runSetup provisions the pinned Python runtime. Consent-gated (A7):
