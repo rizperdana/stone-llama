@@ -429,8 +429,8 @@ func TestRunHonoursNoAutostart(t *testing.T) {
 }
 
 // Item 3: a supervised-backend start failure prints the cause once and
-// exactly one remedy block (attach → setup → adoption-not-supported),
-// naming only flags that exist; a failed start keeps no secrets.
+// exactly one remedy block (attach → adopt → setup), naming only flags
+// that exist; a failed start keeps no secrets.
 func TestServeStartFailurePrintsRemediesOnce(t *testing.T) {
 	isolateConfig(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -444,8 +444,8 @@ func TestServeStartFailurePrintsRemediesOnce(t *testing.T) {
 	for _, want := range []string{
 		"stone-llama serve --attach",
 		"--key-file",
+		"stone-llama setup --adopt",
 		"stone-llama setup",
-		"not supported yet",
 	} {
 		if !strings.Contains(errb, want) {
 			t.Errorf("remedy %q missing from %q", want, errb)

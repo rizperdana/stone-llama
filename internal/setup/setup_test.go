@@ -125,6 +125,8 @@ func buildOpts(rt string, rec *recorder, stdout io.Writer, yes bool) Options {
 			rec.calls = append(rec.calls, call{stepID, name, args})
 			return []byte("ok\n"), nil
 		},
+		// never scan the real machine for adoption candidates
+		Detect: func(DetectInput) []Candidate { return nil },
 	}
 }
 

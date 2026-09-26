@@ -109,6 +109,44 @@ stone-llama setup --yes    # non-interactive consent (required when non-TTY)
 stone-llama setup --cu12   # override the driver-derived extra (also --cu13)
 ```
 
+### Reusing an existing runtime (adoption)
+
+Before any plan, `setup` looks for a runtime already on the machine and, if it
+passes the validation gate, reuses it instead of provisioning — **0 bytes
+downloaded, your environment never modified** (stone-llama only reads it;
+your venv, a private checkout clone, `config.yml` and `api_tokens.yml` are
+left alone):
+
+```console
+$ stone-llama setup
+✓ Found a matching runtime: /home/you/ai/tabbyapi/tabbyAPI/venv
+  validated: python 3.12.13 · 88/88 locked pins exact · torch 2.11.0+cu130 (CUDA 13.0)
+             · exllamav3 1.5.1+cu132.torch2.11.0 · import exllamav3 OK · cuda available
+  Reusing it downloads 0 bytes and adds 0 bytes of disk.
+  A fresh provision would download 974,640,904 B and write ≈6.9 GB to disk.
+  Your environment stays untouched: stone-llama only reads it (your venv, a checkout
+  cloned for stone-llama, your config.yml and api_tokens.yml are never modified).
+Reuse this runtime? [Y/n]
+```
+
+Signals are only pointers — the gate decides: venv identity, Python 3.12,
+every locked package at its exact version, a real `exllamav3`/`torch` import,
+and a working CUDA of the selected generation. Any failed check prints the
+found-vs-needed diff plus your options instead of a silent fallback:
+
+```bash
+stone-llama setup --adopt /path/to/venv   # point at a specific runtime (stops with the truth if it fails)
+stone-llama setup --provision             # force the full provision, skip detection
+STONE_LLAMA_RUNTIME=/path/to/venv stone-llama setup   # env-var form
+```
+
+If stone-llama finds a *running* TabbyAPI, the cheapest option is attaching to
+it — zero downloads, zero disk: `stone-llama serve --attach 127.0.0.1:5002`.
+
+Adoption is recorded in `runtime/adoption.json` and **re-validated on every
+later `setup`/`doctor` run** (≈1 s): if you upgrade or delete the venv, you get
+the exact failed check, never a stale "reuse is safe" claim.
+
 Real preflight on this machine (sizes are HTTP HEAD requests; without consent
 nothing is downloaded — the run aborts at the prompt):
 

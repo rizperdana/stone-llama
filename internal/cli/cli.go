@@ -599,17 +599,30 @@ func isTerminal(x any) bool {
 // the plan prints first, then an explicit confirmation; --yes for
 // scripts. The plan covers multi-GB downloads — run it deliberately.
 func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	yes, extra := false, ""
-	for _, a := range args {
-		switch a {
-		case "--yes", "-y", "-yes":
+	yes, extra, adopt, provision := false, "", "", false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--yes", a == "-y", a == "-yes":
 			yes = true
-		case "--cu12":
+		case a == "--cu12":
 			extra = "cu12"
-		case "--cu13":
+		case a == "--cu13":
 			extra = "cu13"
+		case a == "--provision":
+			// design §5: force the full provision (skip adoption detection)
+			provision = true
+		case a == "--adopt":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "stone-llama setup: --adopt needs a path")
+				return 2
+			}
+			i++
+			adopt = args[i]
+		case strings.HasPrefix(a, "--adopt="):
+			adopt = strings.TrimPrefix(a, "--adopt=")
 		default:
-			fmt.Fprintln(stderr, "usage: stone-llama setup [--yes] [--cu12|--cu13]")
+			fmt.Fprintln(stderr, "usage: stone-llama setup [--yes] [--cu12|--cu13] [--adopt <path>] [--provision]")
 			return 2
 		}
 	}
@@ -618,6 +631,9 @@ func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Extra:      extra,
 		Yes:        yes,
 		Stdout:     stdout,
+		Adopt:      adopt,
+		Provision:  provision,
+
 		Confirm: func(setup.Plan) bool {
 			if !isTerminal(stdin) {
 				fmt.Fprintln(stderr, "stone-llama setup: non-interactive — pass --yes to confirm the plan")
@@ -629,6 +645,20 @@ func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return false
 			}
 			return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+		},
+		// adoption consent (design §5: "Reuse this runtime? [Y/n]")
+		PromptReuse: func(setup.Report) bool {
+			if !isTerminal(stdin) {
+				fmt.Fprintln(stderr, "stone-llama setup: non-interactive — pass --yes to adopt the found runtime")
+				return false
+			}
+			fmt.Fprint(stdout, "Reuse this runtime? [Y/n] ")
+			line, err := bufio.NewReader(stdin).ReadString('\n')
+			if err != nil && line == "" {
+				return false
+			}
+			s := strings.ToLower(strings.TrimSpace(line))
+			return s == "" || strings.HasPrefix(s, "y") // [Y/n]: default yes
 		},
 	}
 	if err := setup.Run(opts); err != nil {
@@ -648,8 +678,8 @@ func noAutostart() bool {
 
 // backendStartHelp is the single, once-per-failure remedy block for
 // "the supervised backend could not start": least friction first —
-// attach an already-running server, provision with setup, adoption
-// (not yet supported). Only flags that actually exist are named, and
+// attach an already-running server, adopt an existing local runtime,
+// provision with setup. Only flags that actually exist are named, and
 // it prints at most once per error (never as a repeating wall).
 func backendStartHelp(msg string) string {
 	// the captured auto-start tail can already carry the child's own
@@ -664,8 +694,8 @@ func backendStartHelp(msg string) string {
 	}
 	return "\nremedies, least friction first:\n" +
 		"  1. attach to a running OpenAI-compatible server: stone-llama serve --attach host:port --key-file <file> ('stone-llama run' works against an attached daemon)\n" +
-		"  2. provision the pinned runtime: stone-llama setup\n" +
-		"  3. adopting an existing local install (a working tabbyAPI checkout/venv) is not supported yet"
+		"  2. adopt an existing local runtime (a working tabbyAPI checkout/venv): stone-llama setup --adopt <path> (0 bytes downloaded)\n" +
+		"  3. provision the pinned runtime: stone-llama setup"
 }
 
 // runServe runs the daemon in the foreground (M5): a supervised child
@@ -944,7 +974,7 @@ Commands:
   fit         fit verdict + ctx/cache pick + tok/s estimate (no download)
   rank        rank candidates by fit/speed (--collection|--file [--ratings])
   login       set a HuggingFace token
-  setup       provision the pinned Python runtime (consent-gated)
+  setup       provision the pinned Python runtime (consent-gated) [--adopt <path>] [--provision]
   serve       start the OpenAI-compatible API [--attach host:port] [--port n]
   ps          show the running daemon + loaded model
   stop        stop the daemon

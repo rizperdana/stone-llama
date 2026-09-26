@@ -25,6 +25,18 @@ package metadata, or authoritative upstream repository). The A6/M7 gate is
 4. **Python dependencies** — `uv pip install --require-hashes -r
    requirements-cu{12,13}.lock` into a fresh venv.
 
+### Adopted runtimes (reuse instead of download)
+
+`setup --adopt` (and automatic detection) can reuse a Python environment that
+is already on the machine instead of provisioning one. Adoption fetches
+**nothing**: stone-llama only *reads* the candidate — validation probes against
+the embedded locks — and records the result in `runtime/adoption.json`. No
+component crosses the network and no license grant arises from stone-llama;
+the wheels themselves are the same upstream artifacts enumerated above, under
+the same licenses (BSD-3-Clause, MIT, proprietary NVIDIA EULA, …), already
+installed by the user's own tooling. Adoption never installs into, modifies,
+or copies the candidate venv.
+
 ## AGPL note (TabbyAPI)
 
 We neither distribute nor modify TabbyAPI. `setup` downloads upstream sources

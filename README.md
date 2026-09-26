@@ -42,7 +42,7 @@ the one-line installer or build-from-source, plus prerequisites, the consent-gat
 
 ```bash
 stone-llama doctor                        # GPU + driver check, picks cu12/cu13 — no downloads
-stone-llama setup                         # Python/torch runtime; announces sizes, asks before any byte
+stone-llama setup                         # reuses a verified existing runtime if one is on the machine (0 B), else Python/torch runtime; sizes announced first
 stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw    # gate + tok/s estimate from HF metadata — no download
 stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # gate runs first, then resumable download
 stone-llama run Qwen3-1.7B-exl3_4.0bpw    # CLI chat (prints the autofit decision)
@@ -85,7 +85,7 @@ numbers — before anything gets installed.
 | `stone-llama rm <model>` | remove a model (import symlinks: link only, target untouched) | ✅ shipped |
 | `stone-llama pull <model>[:tag]` | pre-download gate → consent → resumable download + sha256 verify | ✅ shipped |
 | `stone-llama login` | HuggingFace token for gated repos (stored 0600) | ✅ shipped |
-| `stone-llama setup [--yes] [--cu12\|--cu13]` | provision the pinned Python runtime (consent-gated, resumable; extra picked from driver unless overridden) | ✅ shipped |
+| `stone-llama setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; extra picked from driver unless overridden) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) | ✅ shipped |
 | `stone-llama serve [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream) | ✅ shipped |
 | `stone-llama ps` | loaded model + live VRAM | ✅ shipped |
 | `stone-llama stop` | stop the daemon | ✅ shipped |

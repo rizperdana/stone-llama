@@ -95,6 +95,19 @@ type Options struct {
 	// ExpectedSHA returns the expected base16 sha256 for url.
 	// Default: the uv sha256 from runtime.lock.json.
 	ExpectedSHA func(url string) string
+
+	// --- adoption (internal/sl-adopt/adoption-design.md §5) ---
+	// Adopt is an explicit pointer path for detection (--adopt <path>); when
+	// set it is probe 1 and only that candidate is considered first.
+	Adopt string
+	// Provision forces the full provision path (skips detection entirely).
+	Provision bool
+	// PromptReuse is invoked for adoption consent (message (a)) when !Yes.
+	// Returning false aborts; when nil and !Yes, adoption is refused.
+	PromptReuse func(Report) bool
+	// Detect collects candidates for adoption (default: Detect itself).
+	// A test seam so tests never scan the real machine.
+	Detect func(DetectInput) []Candidate
 }
 
 // runtimeLock mirrors runtime.lock.json.
@@ -155,6 +168,9 @@ func loadLock() (runtimeLock, error) {
 }
 
 func withDefaults(o Options) Options {
+	if o.Detect == nil {
+		o.Detect = Detect
+	}
 	if o.Extra == "" {
 		o.Extra = "cu13"
 	}
@@ -323,12 +339,41 @@ func Run(opts Options) error {
 		return errors.New("setup: refusing to download without consent (pass --yes or run interactively)")
 	}
 
+	// Adoption runs before Preflight (design §8 slice 1 step 2) unless
+	// --provision forces a full provision.
+	if !opts.Provision {
+		decision, err := detectAdoption(opts)
+		if err != nil {
+			return err
+		}
+		switch decision.kind {
+		case adoptFound:
+			// message (a) already printed by detectAdoption
+			if !opts.Yes {
+				if opts.PromptReuse != nil {
+					if !opts.PromptReuse(decision.report) {
+						return errors.New("setup: aborted (adoption not confirmed)")
+					}
+				} else if !opts.Confirm(Plan{}) {
+					return errors.New("setup: aborted (adoption not confirmed)")
+				}
+			}
+			return runAdoption(opts, decision.report)
+		case adoptReject:
+			if decision.explicit {
+				return decision.err
+			}
+			// non-explicit candidate rejected → fall through to provision
+		case adoptNone:
+			// no candidate → fall through to provision
+		}
+	}
+
 	plan, err := Preflight(opts)
 	if err != nil {
 		return err
 	}
 	printPlan(opts.Stdout, plan)
-
 	if !opts.Yes && !opts.Confirm(plan) {
 		return errors.New("setup: aborted (plan not confirmed)")
 	}
