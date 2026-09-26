@@ -197,7 +197,10 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	// one streamed completion; tokens are printed as they arrive.
 	ask := func(prompt string) error {
-		body, _ := json.Marshal(map[string]any{"model": st.Model, "prompt": prompt, "stream": true})
+		// max_tokens is required by the pinned backend: omitting it
+		// aborts every completion ("Completion aborted", live-verified
+		// 2026-09-26). 0 = generate to EOS, no cap.
+		body, _ := json.Marshal(map[string]any{"model": st.Model, "prompt": prompt, "stream": true, "max_tokens": 0})
 		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
