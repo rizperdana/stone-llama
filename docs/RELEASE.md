@@ -83,19 +83,35 @@ commands known to work on any platform.
 The compile-check matrix proves **compilation**, not that the artifact runs. The
 platform table above is the honest record of what has actually been executed.
 
+**Tag gap (why release.yml has its own gate):** `ci.yml` triggers on
+pushes/PRs to `main` only — its `on.push.branches: [main]` filter does not
+match tag refs, so a tag pushed at an unvetted commit would bypass CI
+entirely. The `verify` job in `release.yml` (next section) re-runs the same
+format/vet/test commands against the tagged commit before anything is built.
+
 ## Release pipeline
 
 **`.github/workflows/release.yml`** triggers on:
 - Tag push matching `v*`
 - `workflow_dispatch` with a `version` input (dispatch input wins over ref name)
 
-The workflow has two jobs:
+The workflow has three jobs, chained `verify` → `build` → `release`; each
+depends on the previous one, so a gate failure stops the release instead of
+being reported after the fact.
 
-1. **`build`** — matrix over the 5 targets above (`fail-fast: false` so one
+1. **`verify`** — runs first; `build` has `needs: verify`:
+   1. `actions/checkout@v4` + `actions/setup-go@v5` (Go 1.24)
+   2. **Tagged-commit check** (tag pushes only): `git rev-parse HEAD` must
+      equal `refs/tags/<tag>^{}` — a stale or wrong checkout fails the gate
+   3. `gofmt -l .` (fail if non-empty), `go vet ./...`,
+      `go test ./... -count=1` — the same commands `ci.yml` runs on `main`
+      (cheap: one platform, no cross-compile matrix, no smoke build)
+2. **`build`** — matrix over the 5 targets above (`fail-fast: false` so one
    failure doesn't mask others), builds + packages each artifact
-   (`stone-llama-<os>-<arch>.tgz` / `.zip`), uploads to
+   (`stone-llama-<os>-<arch>.tgz` / `.zip`), **attests build provenance**
+   (`actions/attest-build-provenance@v4`), uploads to
    `actions/upload-artifact@v4`.
-2. **`release`** — runs these steps in order:
+3. **`release`** — runs these steps in order:
    1. `actions/checkout@v4` with `fetch-depth: 0` (full history + tags — the
       release notes group `git log` by commit type)
    2. **Determine version** — validate `^v?[0-9]+\.[0-9]+\.[0-9]+(-…)?$`, then
@@ -108,9 +124,11 @@ The workflow has two jobs:
       `checksums.txt` with `sha256sum`; then a **coverage check**: every
       artifact must have a line in `checksums.txt`, and the line count must
       equal the artifact count (nothing missing, nothing extra)
-   5. **Generate release notes** — render
+   5. **Attest `checksums.txt`** — signed provenance for the checksum file;
+      the 5 archives are attested in their build legs (see Permissions)
+   6. **Generate release notes** — render
       `.github/release-notes-template.md` (see next section)
-   6. **Create or update release** — idempotent: if the release exists, re-run
+   7. **Create or update release** — idempotent: if the release exists, re-run
       uploads assets with `--clobber` and refreshes the notes with
       `gh release edit --notes-file`; otherwise `gh release create` with
       `--notes-file` and `--prerelease` (pre-release tags) or `--latest`
@@ -119,6 +137,37 @@ The workflow has two jobs:
 There is **no `continue-on-error` anywhere** in this workflow, by design: an
 unrendered placeholder in the notes, a missing checksum line, or an oversized
 failure must fail the release loudly.
+
+**Permissions (least privilege).** The workflow default is `contents: read`;
+each job declares only what it needs:
+
+| Job       | Permissions                                                              | Why                          |
+| --------- | ------------------------------------------------------------------------ | ---------------------------- |
+| `verify`  | `contents: read`                                                        | checkout                     |
+| `build`   | `contents: read`, `id-token: write`, `attestations: write`, `artifact-metadata: write` | build + attestation |
+| `release` | `contents: write`, `id-token: write`, `attestations: write`, `artifact-metadata: write` | create release, upload assets, attest `checksums.txt` |
+
+The three attestation permissions are **required** by
+`actions/attest-build-provenance@v4` per the permissions block documented by
+its backing action, [`actions/attest`](https://github.com/actions/attest)
+(`id-token` mints the OIDC token for the Sigstore signing certificate,
+`attestations` persists the statement, `artifact-metadata` creates the
+artifact storage record). Sources: the `actions/attest-build-provenance`
+README (v4 is a wrapper over `actions/attest`; latest tag `v4.2.2`), the
+`actions/attest` README, and GitHub's *Using artifact attestations to
+establish provenance for builds* documentation.
+
+**Provenance.** Every published asset — the 5 archives (attested in their
+build legs) and `checksums.txt` (attested in the release job) — carries a
+signed in-toto/SLSA statement binding it to this workflow run and commit.
+Verify any download with:
+
+```sh
+gh attestation verify stone-llama-linux-amd64.tgz -o rizperdana/stone-llama
+```
+
+The gate re-runs on an idempotent re-run of an existing tag (cheap: one
+platform, vet+test only) and does not change the `--clobber`/`edit` path.
 
 ## Release-notes template
 
@@ -195,6 +244,11 @@ unzip -l stone-llama-windows-amd64.zip   # should list stone-llama-windows-amd64
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); yaml.safe_load(open('.github/workflows/release.yml'))"
 actionlint .github/workflows/*.yml       # best offline signal; skip if not installed
 
+# 4b. The release verify gate (same commands — must all pass)
+gofmt -l .                      # must print nothing
+go vet ./...
+go test ./... -count=1
+
 # 5. Test install.sh syntax and basic behavior
 sh -n scripts/install.sh
 sh scripts/install.sh --help
@@ -240,6 +294,9 @@ sh scripts/install.sh --uninstall --prefix /tmp/sl-install-test   # removes it
 - [ ] **Release-notes template summary** reviewed for this tag
 - [ ] **README/docs install claims match the published artifacts** (see
       "Known doc drift" below)
+- [ ] **Provenance verified** — `gh attestation verify <asset> -o rizperdana/stone-llama`
+      passes for this tag's assets (first provable on the first tag pushed
+      after this workflow change lands)
 
 **`v0.1.0` gate: CLEARED.** M5/M6 are implemented and the `v0.1.0-rc1`
 pre-release exercised the release machinery (naming, checksums, install.sh).
@@ -270,6 +327,7 @@ git push origin v0.1.0-rc1
 # 3. Verify the release workflow ran, artifacts uploaded, and the release
 #    is marked pre-release (rc suffix) — plain vX.Y.Z would be "latest"
 gh release view v0.1.0-rc1 --json assets,isPrerelease --jq '{assets:[.assets[].name],pre:.isPrerelease}'
+gh attestation verify stone-llama-linux-amd64.tgz -o rizperdana/stone-llama
 
 # 4. Test install.sh against the release
 PREFIX=/tmp/sl-install-test sh scripts/install.sh --version v0.1.0-rc1
@@ -333,4 +391,5 @@ These files are owned by other writers — reported, not edited:
 | `actions/setup-go@v5`       | ✅     | Official                       |
 | `actions/upload-artifact@v4`| ✅     | Official (singular)            |
 | `actions/download-artifact@v4` | ✅  | Official (singular — NOT `download-artifacts`) |
+| `actions/attest-build-provenance@v4` | ✅ | Official GitHub action (latest `v4.2.2`) — signed SLSA provenance; needs `id-token`/`attestations`/`artifact-metadata` write |
 | `gh CLI`                    | ✅     | Pre-installed on ubuntu-latest |

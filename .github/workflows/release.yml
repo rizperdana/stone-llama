@@ -11,15 +11,69 @@ on:
         required: true
         type: string
 
+# Least privilege by default — each job declares exactly what it needs.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CGO_ENABLED: 0
 
 jobs:
-  build:
+  # Gate: ci.yml only runs on pushes/PRs to main — a tag push is NOT covered,
+  # so this job vets the tagged commit before any artifact is built. Commands
+  # mirror ci.yml steps 1-3 (cheap: one platform, no cross-compile matrix).
+  verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      # On a tag push, actions/checkout fetches github.sha = the tagged
+      # commit; assert it against the tag ref itself so a stale or wrong
+      # checkout fails the gate instead of shipping bytes that were never
+      # vetted.
+      - name: Confirm checkout is the tagged commit
+        if: github.ref_type == 'tag'
+        run: |
+          head=$(git rev-parse HEAD)
+          tagged=$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{}")
+          [ "$head" = "$tagged" ] || { echo "::error::HEAD ($head) != tag ${GITHUB_REF_NAME} ($tagged)"; exit 1; }
+          echo "verified: HEAD == ${GITHUB_REF_NAME} -> $head"
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::go files need formatting"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # actions/attest-build-provenance@v4 requires exactly these three
+      # (permissions block documented by its backing action, actions/attest):
+      # id-token mints the OIDC token for the Sigstore signing certificate,
+      # attestations persists the statement, artifact-metadata creates the
+      # artifact storage record.
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +140,14 @@ jobs:
           else
             tar czf "${name}.tgz" "$name"
           fi
-          echo "ARTIFACT_NAME=${name}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_FILE=${name}.${ext}" >> "$GITHUB_ENV"
+
+      # Signed SLSA provenance for the exact bytes uploaded below — verify
+      # any download with:  gh attestation verify <file> -o <owner>/<repo>
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ env.ARTIFACT_FILE }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -100,7 +161,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write           # create the release and upload its assets
+      id-token: write           # OIDC token for the Sigstore signing cert
+      attestations: write       # persist the attestation (checksums.txt)
+      artifact-metadata: write  # artifact storage record
 
     steps:
       # Full history + tags: release notes group `git log` by commit type.
@@ -164,6 +228,12 @@ jobs:
 
           echo "=== checksums.txt ($n_sum/$n_art artifacts covered) ==="
           cat checksums.txt
+
+      # checksums.txt is a published asset too — attest it the same way.
+      - name: Attest checksums.txt
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release/checksums.txt
 
       - name: Generate release notes from template
         run: |
