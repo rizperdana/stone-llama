@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>stone-llama — ollama-style CLI + local model server for ExLlamaV3</title>
-<meta name="description" content="One small Go binary that pulls EXL3 models, auto-fits context to your VRAM, gates downloads before a byte moves, and serves an OpenAI-compatible API. NVIDIA CUDA, Linux/amd64.">
+<meta name="description" content="Ollama-style CLI and local model server for ExLlamaV3 + TabbyAPI: pulls EXL3 models, auto-fits context to your VRAM, gates downloads before a byte moves, serves an OpenAI-compatible API. NVIDIA CUDA, Linux/amd64.">
 <meta name="theme-color" content="#071419">
 <meta property="og:title" content="stone-llama">
-<meta property="og:description" content="Ollama-style CLI + local model server for ExLlamaV3 + TabbyAPI. VRAM-aware auto-fit context, pre-download fit gate, OpenAI-compatible API.">
+<meta property="og:description" content="Ollama-style CLI and local model server for ExLlamaV3 + TabbyAPI: VRAM-aware auto-fit context, pre-download fit gate, OpenAI-compatible API.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://rizperdana.github.io/stone-llama/">
 <meta property="og:image" content="https://rizperdana.github.io/stone-llama/assets/icon.png">
@@ -33,11 +33,10 @@
     </a>
     <nav aria-label="Page sections">
       <ul>
-        <li><a href="#why">Why it&rsquo;s different</a></li>
-        <li><a href="#output">Output</a></li>
-        <li><a href="#estimator">Estimator</a></li>
-        <li><a href="#models">Models</a></li>
-        <li><a href="#platform">Platform</a></li>
+        <li><a href="#output">Terminal output</a></li>
+        <li><a href="#why">Before download</a></li>
+        <li><a href="#platform">Platform limits</a></li>
+        <li><a href="#models">Model table</a></li>
       </ul>
     </nav>
     <div class="head-actions">
@@ -56,109 +55,46 @@
   <section class="hero" id="top" aria-labelledby="hero-title">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <span class="icon-plate"><img src="assets/icon.png" alt="stone-llama icon" width="128" height="128"></span>
+        <span class="icon-plate"><img src="assets/icon.png" alt="stone-llama" width="128" height="128"></span>
         <p class="eyebrow">CLI &middot; local model server &middot; EXL3</p>
         <h1 id="hero-title">stone-llama</h1>
-        <p class="lede">Ollama-style CLI + local model server for ExLlamaV3&nbsp;+&nbsp;TabbyAPI — one small
+        <p class="lede">Ollama-style CLI and local model server for ExLlamaV3&nbsp;+&nbsp;TabbyAPI — one
           Go binary that pulls EXL3 models, auto-fits context to your VRAM, and serves an
-          OpenAI-compatible API that any client or gateway can point at.</p>
+          OpenAI-compatible API.</p>
+        <p class="fine status">Ships today: <code>doctor</code>, <code>setup</code>,
+          <code>fit</code>, <code>pull</code>, <code>rank</code>, <code>list</code>.
+          Not implemented yet: <code>serve</code>, <code>ps</code>, <code>stop</code> (M5) and
+          <code>run</code> (M6) — the binary prints &ldquo;not implemented yet&rdquo;.</p>
 
         <div class="install" role="group" aria-label="Install command">
           <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh</code>
           <button class="copy" type="button" data-copy="install-cmd">copy</button>
         </div>
+        <p class="fine install-note"><strong>Release pending:</strong> the one-liner installs the
+          latest published release — none is published yet, so it fails with &ldquo;could not
+          determine latest release version&rdquo;. Until the first release lands, build from
+          source: <a href="https://github.com/rizperdana/stone-llama/blob/main/docs/INSTALLATION.md#option-b--build-from-source-always-works">docs/INSTALLATION.md, Option&nbsp;B</a>.</p>
 
         <div class="hero-links">
           <a class="btn btn-primary" href="https://github.com/rizperdana/stone-llama">View on GitHub</a>
           <a class="btn btn-ghost" href="https://github.com/rizperdana/stone-llama/blob/main/docs/QUICKSTART.md">Quickstart docs</a>
         </div>
-        <p class="fine">MIT &middot; Go &ge; 1.24 &middot; one static binary &middot; NVIDIA CUDA, Linux/amd64</p>
-      </div>
-
-      <figure class="term hero-term reveal">
-        <figcaption class="term-bar"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>quickstart — README.md</figcaption>
-        <pre><code><span class="c">#</span> GPU + driver check, picks cu12/cu13 — no downloads
-stone-llama doctor
-
-<span class="c">#</span> Python/torch runtime; announces sizes, asks before any byte
-stone-llama setup
-
-<span class="c">#</span> gate + tok/s estimate from HF metadata — no download
-stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw
-
-<span class="c">#</span> gate runs first, then resumable download
-stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw
-
-<span class="c">#</span> streaming CLI chat (prints the autofit decision)
-stone-llama run Qwen3-1.7B-exl3_4.0bpw
-
-<span class="c">#</span> OpenAI-compatible API on 127.0.0.1:5111
-stone-llama serve</code></pre>
-        <p class="term-note">Per-command status (some commands ship with later
-          milestones) is tracked in the <a href="https://github.com/rizperdana/stone-llama/blob/main/README.md">README</a>.</p>
-      </figure>
-    </div>
-  </section>
-
-  <!-- ============ 01 WHY DIFFERENT ============ -->
-  <section class="sect" id="why" aria-labelledby="why-title">
-    <div class="wrap">
-      <p class="eyebrow reveal">01 &mdash; why it&rsquo;s different</p>
-      <h2 id="why-title" class="reveal">Two checks you don&rsquo;t get from a model catalog</h2>
-
-      <div class="why-grid">
-        <article class="why-item reveal">
-          <h3>VRAM-aware auto-fit context</h3>
-          <p>stone-llama computes your largest <strong>safe</strong> context and cache mode from your
-            GPU and the model&rsquo;s own <code>config.json</code>, instead of shipping conservative
-            defaults. The arithmetic is printed every time — you can see <em>why</em> you got Q4.
-            Flags (<code>--ctx</code>, <code>--cache-mode</code>, <code>--no-autofit</code>) always win.</p>
-          <div class="term term-flat">
-            <pre><code>head_dim  = hidden_size / num_attention_heads      <span class="c"># 2048/16 = 128</span>
-elems/tok = num_hidden_layers × 2 × num_key_value_heads × head_dim
-
-load_mib    = weights_mib + ctx × elems/tok × bytes_per_element/2²⁰ + 128
-headroom_mib(ctx) = 512 base + 512 prefill workspace [est]
-                    + 512 × ctx/65536 [est]
-fits        ⟺ load_mib ≤ vram_total_mib − headroom_mib(ctx)</code></pre>
-          </div>
-          <p class="fine">Cache-mode cost per token: <strong>FP16 = 2&nbsp;B, Q8 = 1&nbsp;B, Q4 = 0.5&nbsp;B</strong>
-            per element. If the smallest config doesn&rsquo;t fit, you get the full breakdown plus the
-            largest ctx that <em>would</em> fit — before anything is downloaded.</p>
-        </article>
-
-        <article class="why-item reveal">
-          <h3>Pre-download fit gate</h3>
-          <p><code>fit</code> — and the same gate inside <code>pull</code> — reads only small metadata
-            first (<code>config.json</code>, <code>quantization_config.json</code>, file tree: KB, not
-            weights) and checks three things <strong>before a single weight byte moves</strong>:</p>
-          <ol class="gate-list">
-            <li><span class="gate-k">Architecture</span> — is <code>config.architectures[]</code> one the
-              installed exllamav3 declares? Unknown → warned with the exact string, never silently accepted.</li>
-            <li><span class="gate-k">Quant format</span> — <code>quant_method</code> must be
-              <code>exl3</code>. <code>exl2</code> → refused. GGUF-only repo → refused with
-              &ldquo;use ollama with GGUF&rdquo;.</li>
-            <li><span class="gate-k">Fit</span> — the autofit math against <em>your</em> GPU:
-              proceed, proceed-with-warning (smaller ctx), or refuse — with numbers either way.</li>
-          </ol>
-          <p class="stat"><span class="stat-n">~2&nbsp;KB</span> of metadata is the cost of a caught
-            mistake — instead of a wasted multi-GB download. That&rsquo;s why a 2&nbsp;GB pull never
-            starts for a model that doesn&rsquo;t fit.</p>
-        </article>
+        <p class="fine">MIT &middot; Go &ge; 1.24 &middot; single static binary (~10&ndash;15&nbsp;MB)
+          &middot; NVIDIA CUDA, Linux/amd64</p>
       </div>
     </div>
   </section>
 
-  <!-- ============ 02 TERMINAL OUTPUT ============ -->
+  <!-- ============ 01 TERMINAL OUTPUT ============ -->
   <section class="sect" id="output" aria-labelledby="output-title">
     <div class="wrap">
-      <p class="eyebrow reveal">02 &mdash; real terminal output</p>
-      <h2 id="output-title" class="reveal">Captured verbatim, markers and all</h2>
-      <p class="sect-lede reveal">Live run on 2026-09-26: RTX 3050 Laptop, 4096&nbsp;MiB, driver
-        580.178.04, Linux/amd64. Raw files in
+      <p class="eyebrow reveal">01 &mdash; terminal output</p>
+      <h2 id="output-title" class="reveal">Five captures from a live run</h2>
+      <p class="sect-lede reveal">2026-09-26, RTX 3050 Laptop 4096&nbsp;MiB, driver 580.178.04,
+        Linux/amd64; raw files in
         <a href="https://github.com/rizperdana/stone-llama/tree/main/docs/screenshots">docs/screenshots/</a>.
-        The <code>[est]</code> and &ldquo;calibration pending&rdquo; markers are the tool&rsquo;s own —
-        they stay.</p>
+        No weight download appears — the <code>pull</code> run was refused (non-interactive stdin
+        without <code>--yes</code>) — and the <code>[est]</code> markers are the tool&rsquo;s own.</p>
 
       <div class="term-grid">
         <figure class="term reveal">
@@ -226,67 +162,119 @@ async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
 <span class="c">EXIT=0</span></code></pre>
         </figure>
       </div>
-      <p class="fine reveal">Model-download steps are deliberately omitted from these captures: the
-        <code>pull</code> run above was refused — non-interactive stdin without <code>--yes</code>,
-        so no consent prompt is shown, only the <em>requires --yes</em> line — and nothing was
-        fetched beyond a few KB of metadata.</p>
     </div>
   </section>
 
-  <!-- ============ 03 ESTIMATOR ============ -->
-  <section class="sect" id="estimator" aria-labelledby="estimator-title">
+  <!-- ============ 02 BEFORE ANY DOWNLOAD ============ -->
+  <section class="sect" id="why" aria-labelledby="why-title">
     <div class="wrap">
-      <p class="eyebrow reveal">03 &mdash; the estimator</p>
-      <h2 id="estimator-title" class="reveal">Where the predicted tok/s comes from</h2>
+      <p class="eyebrow reveal">02 &mdash; before any download</p>
+      <h2 id="why-title" class="reveal">Fit and gate decide from metadata</h2>
+      <p class="sect-lede reveal"><code>fit</code> — and the same gate inside <code>pull</code> — reads
+        only a few KB of HuggingFace metadata (<code>config.json</code>, quant config, file tree) and
+        decides before a single weight byte moves.</p>
 
-      <div class="est-grid">
-        <div class="est-copy reveal">
-          <p>Decode on these models is <strong>bandwidth-bound</strong>: every generated token streams
-            the weights (plus the KV bytes for your context) through VRAM once. So the prediction is
-            just arithmetic:</p>
-          <div class="term term-flat formula">
-            <pre><code>tok/s ≈ effective bandwidth ÷ bytes read per token</code></pre>
-          </div>
-          <p>The constant is <strong>≈ 83.6&nbsp;GB/s effective bandwidth</strong>, calibrated to a
-            <strong>measured 42.7&nbsp;tok/s</strong> running SmolLM3-3B at 3.5&nbsp;bpw
-            (1,957,008,720&nbsp;B) on an RTX 3050 Laptop (4096&nbsp;MiB). That figure was derived two
-            independent ways, so it is the defensible baseline until calibration data lands.</p>
-          <p>A prediction is <strong>relative to the chosen context</strong>: a bigger ctx means more
-            KV bytes streamed per token, which lowers decode speed — two configs quoted at different
-            contexts are not directly comparable. Worked example from the ranking report: SmolLM3 at
-            a full 65,536-ctx Q4 cache reads up to 1152&nbsp;MiB of KV per token on top of the
-            1.957&nbsp;GB weights, a ≈&nbsp;26&nbsp;tok/s ceiling at full ctx <span class="est">[est]</span>.</p>
-          <p class="fine"><code>fit</code> prints both decode <em>and</em> prefill predictions, and
-            every one of them carries <code>[est]</code> until measured — the tool says
-            &ldquo;calibration pending&rdquo; out loud rather than hiding it.</p>
-        </div>
+      <div class="why-grid">
+        <article class="why-item reveal">
+          <h3>Auto-fit context</h3>
+          <p>stone-llama computes the largest safe context and cache mode from your GPU and the
+            model&rsquo;s own <code>config.json</code>, and prints the arithmetic. Flags
+            (<code>--ctx</code>, <code>--cache-mode</code>, <code>--no-autofit</code>) always win.
+            Cache cost per token: FP16 2&nbsp;B, Q8 1&nbsp;B, Q4 0.5&nbsp;B per element. If nothing
+            fits, you get the breakdown plus the largest context that <em>would</em> fit — before
+            anything downloads.</p>
+        </article>
 
-        <aside class="anchor reveal" aria-label="Calibration anchor facts">
-          <h3>The anchor</h3>
-          <dl>
-            <div><dt>Measured decode</dt><dd>42.7 tok/s</dd></div>
-            <div><dt>Anchor model</dt><dd>SmolLM3-3B · 3.5 bpw<br><span class="dim">1,957,008,720 B</span></dd></div>
-            <div><dt>GPU</dt><dd>RTX 3050 Laptop<br><span class="dim">4096 MiB · driver 580</span></dd></div>
-            <div><dt>Effective bandwidth</dt><dd>≈ 83.6 GB/s</dd></div>
-            <div><dt>Everything else</dt><dd><span class="est">[est]</span> · calibration pending</dd></div>
-          </dl>
+        <article class="why-item reveal">
+          <h3>Pre-download gate</h3>
+          <ol class="gate-list">
+            <li><span class="gate-k">Architecture</span> — <code>config.architectures[]</code> must be
+              one the installed exllamav3 declares; unknown &rarr; warned, never silently accepted.</li>
+            <li><span class="gate-k">Quant format</span> — <code>quant_method</code> must be
+              <code>exl3</code>; <code>exl2</code> &rarr; refused; GGUF-only repo &rarr; refused with
+              &ldquo;use ollama with GGUF&rdquo;.</li>
+            <li><span class="gate-k">Fit</span> — proceed, proceed-with-warning (smaller ctx), or
+              refuse — with numbers either way.</li>
+          </ol>
+          <p class="stat"><span class="stat-n">~2&nbsp;KB</span> of metadata is the cost of a caught
+            mistake instead of a wasted multi-GB download.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 03 PLATFORM LIMITS ============ -->
+  <section class="sect" id="platform" aria-labelledby="platform-title">
+    <div class="wrap">
+      <p class="eyebrow reveal">03 &mdash; platform limits</p>
+      <h2 id="platform-title" class="reveal">NVIDIA-CUDA only. Read this first.</h2>
+      <p class="sect-lede reveal">exllamav3 — the inference engine stone-llama wraps — has no CPU path,
+        no AMD/ROCm path, no Apple/Metal path. Not configurable.</p>
+
+      <div class="table-wrap reveal" role="region" aria-label="Platform support: which machines work" tabindex="0">
+        <table class="plat">
+          <thead>
+            <tr><th scope="col">Machine</th><th scope="col">Works?</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">NVIDIA GPU, Linux x86_64, driver &ge; 570</th><td><span class="ok">✓</span> runtime extra <code>cu12</code></td></tr>
+            <tr><th scope="row">NVIDIA GPU, Linux x86_64, driver &ge; 580</th><td><span class="ok">✓</span> runtime extra <code>cu13</code></td></tr>
+            <tr><th scope="row">NVIDIA GPU, driver &lt; 570</th><td><span class="bad">✗</span> upgrade the driver</td></tr>
+            <tr><th scope="row">AMD / Intel GPU</th><td><span class="bad">✗</span></td></tr>
+            <tr><th scope="row">CPU-only machine</th><td><span class="bad">✗</span></td></tr>
+            <tr><th scope="row">Apple Silicon / macOS</th><td><span class="bad">✗</span> can run <code>doctor</code>/<code>list</code>/<code>fit</code>, can <strong>never serve</strong> (no CUDA)</td></tr>
+            <tr><th scope="row">Windows</th><td><span class="warn">⚠</span> binary published but <strong>untested at runtime</strong> (daemonization differs)</td></tr>
+            <tr><th scope="row">Linux arm64</th><td><span class="bad">✗</span> not v1</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="plat-notes reveal">
+        <p><strong>Linux/amd64 is the only supported platform in v1.</strong>
+          On CPU/AMD/Apple, <a href="https://ollama.com">use ollama with GGUF instead</a>.
+          <code>stone-llama doctor</code> prints this verdict — with your GPU and driver numbers —
+          before anything gets installed.</p>
+
+        <aside class="caveat" aria-label="Prefill out-of-memory caveat">
+          <h3>Max context can OOM during prefill</h3>
+          <p>On a 4&nbsp;GB card a maxed-out <code>max_seq_len</code> can leave so little VRAM that
+            <strong>prefill</strong> OOMs on agent-sized prompts — measured failure at ~2.5k tokens
+            with ~20&nbsp;MiB free; 65536 context at Q4 KV reserves ~1.15&nbsp;GiB of the card before
+            a single token exists.</p>
+          <p>CUDA OOM <strong>before the first token</strong> is this caveat: lower <code>--ctx</code>
+            one tier (32768&nbsp;&rarr;&nbsp;16384). The ladder default is the safe context; explicitly
+            passing <code>--ctx 65536</code> buys the max context and prints what it costs.</p>
         </aside>
       </div>
     </div>
   </section>
 
-  <!-- ============ 04 MODELS ============ -->
+  <!-- ============ 04 MODEL COMPATIBILITY ============ -->
   <section class="sect" id="models" aria-labelledby="models-title">
     <div class="wrap">
       <p class="eyebrow reveal">04 &mdash; model compatibility</p>
-      <h2 id="models-title" class="reveal">What actually fits a 4&nbsp;GB card</h2>
-      <p class="sect-lede reveal">Metadata-only ranking from 2026-09-26 — HF API, <code>config.json</code>
-        and safetensors headers; <strong>zero weight bytes downloaded</strong>. Machine: RTX 3050 Laptop,
-        4096&nbsp;MiB, budget <code>weights + KV ≤ 3508&nbsp;MiB</code>. Ratings are 1&ndash;5 with
-        <strong>3 = SmolLM3-3B baseline</strong>. Every tok/s below is <span class="est">[est]</span>
-        except the measured anchor.</p>
+      <h2 id="models-title" class="reveal">What fits a 4&nbsp;GB card, and how fast</h2>
+      <p class="sect-lede reveal">Metadata-only ranking from 2026-09-26 — HF API, <code>config.json</code>,
+        safetensors headers; <strong>zero weight bytes downloaded</strong>. Machine: RTX 3050 Laptop,
+        4096&nbsp;MiB, budget <code>weights + KV &le; 3508&nbsp;MiB</code>. Ratings 1&ndash;5 with
+        <strong>3 = SmolLM3-3B baseline</strong>.</p>
 
-      <div class="table-wrap reveal" role="region" aria-label="Ranked EXL3 models table" tabindex="0">
+      <div class="est-lead reveal">
+        <p>Decode on these models is bandwidth-bound — each token streams the weights plus the KV bytes
+          for your context through VRAM once — so every predicted tok/s is arithmetic:</p>
+        <div class="term term-flat formula">
+          <pre><code>tok/s ≈ effective bandwidth ÷ bytes read per token</code></pre>
+        </div>
+        <p>The ≈83.6&nbsp;GB/s constant is calibrated to the measured 42.7&nbsp;tok/s SmolLM3-3B
+          3.5&nbsp;bpw point (1,957,008,720&nbsp;B) on this card — the one measured number here;
+          everything else carries <span class="est">[est]</span> until calibration lands. A prediction
+          is relative to the chosen context: bigger ctx streams more KV bytes per token (SmolLM3 at
+          65,536&nbsp;ctx Q4 reads ≈1152&nbsp;MiB of KV per token, ≈26&nbsp;tok/s ceiling
+          <span class="est">[est]</span>), so rows quoted at different contexts are not comparable.
+          <code>fit</code> prints both decode and prefill predictions.</p>
+      </div>
+
+      <div class="table-wrap reveal" role="region" aria-label="EXL3 models ranked for a 4 GB card" tabindex="0">
         <table>
           <thead>
             <tr>
@@ -370,58 +358,11 @@ async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
           </tbody>
         </table>
       </div>
-      <p class="fine reveal">ctx arithmetic shown by the source:
+      <p class="fine reveal">ctx arithmetic:
         <code>min(trained, (3508 − weights_MiB) × 1 048 576 / KV_bytes_per_tok)</code>.
-        <span class="est">[est]</span> = estimate from metadata + GPU spec, not measured — calibration
-        pending. Tool-call column is the consuming runtime&rsquo;s <em>server-side</em> parser registry;
-        models with no server-side parser were deducted even if a client-side scanner exists.</p>
-    </div>
-  </section>
-
-  <!-- ============ 05 PLATFORM ============ -->
-  <section class="sect" id="platform" aria-labelledby="platform-title">
-    <div class="wrap">
-      <p class="eyebrow reveal">05 &mdash; platform reality</p>
-      <h2 id="platform-title" class="reveal">NVIDIA-CUDA-only. Read this first.</h2>
-      <p class="sect-lede reveal">exllamav3 — the inference engine this project wraps — has
-        <strong>no CPU path, no AMD/ROCm path, no Apple/Metal path</strong>. That is not configurable:</p>
-
-      <div class="table-wrap reveal" role="region" aria-label="Platform support table" tabindex="0">
-        <table class="plat">
-          <thead>
-            <tr><th scope="col">Machine</th><th scope="col">Works?</th></tr>
-          </thead>
-          <tbody>
-            <tr><th scope="row">NVIDIA GPU, Linux x86_64, driver &ge; 570</th><td><span class="ok">✓</span> runtime extra <code>cu12</code></td></tr>
-            <tr><th scope="row">NVIDIA GPU, Linux x86_64, driver &ge; 580</th><td><span class="ok">✓</span> runtime extra <code>cu13</code></td></tr>
-            <tr><th scope="row">NVIDIA GPU, driver &lt; 570</th><td><span class="bad">✗</span> upgrade the driver</td></tr>
-            <tr><th scope="row">AMD / Intel GPU</th><td><span class="bad">✗</span></td></tr>
-            <tr><th scope="row">CPU-only machine</th><td><span class="bad">✗</span></td></tr>
-            <tr><th scope="row">Apple Silicon / macOS</th><td><span class="bad">✗</span> can run <code>doctor</code>/<code>list</code>/<code>fit</code>, can <strong>never serve</strong> (no CUDA)</td></tr>
-            <tr><th scope="row">Windows</th><td><span class="warn">⚠</span> binary published but <strong>untested at runtime</strong> (daemonization differs)</td></tr>
-            <tr><th scope="row">Linux arm64</th><td><span class="bad">✗</span> not v1</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="plat-notes reveal">
-        <p><strong>Linux/amd64 is the only supported platform in v1.</strong>
-          <strong>If you&rsquo;re on CPU/AMD/Apple, <a href="https://ollama.com">use ollama with GGUF
-          instead</a>.</strong> <code>stone-llama doctor</code> prints this verdict — with your actual
-          GPU and driver numbers — before anything gets installed.</p>
-
-        <aside class="caveat" aria-label="Prefill out-of-memory caveat">
-          <h3>The real caveat: max context can OOM during prefill</h3>
-          <p>On a 4&nbsp;GB card, a maxed-out <code>max_seq_len</code> can leave so little VRAM that
-            <strong>prefill</strong> OOMs on agent-sized prompts — measured failure at ~2.5k tokens with
-            ~20&nbsp;MiB free. 65536 context at Q4 KV reserves ~1.15&nbsp;GiB of a 4&nbsp;GiB card
-            before a single token exists.</p>
-          <p>If you see CUDA OOM <strong>before the first token</strong>, generating fewer tokens will
-            not help: lower <code>--ctx</code> one tier (32768&nbsp;→&nbsp;16384) or restart the model.
-            The ladder default is the <em>safe</em> context; explicitly passing
-            <code>--ctx 65536</code> buys the <em>max</em> context and prints exactly what it costs.</p>
-        </aside>
-      </div>
+        <span class="est">[est]</span> = from metadata + GPU spec, not measured — calibration pending.
+        Tool calls = the consuming runtime&rsquo;s <em>server-side</em> parser class; models without
+        one were deducted even if a client-side scanner exists.</p>
     </div>
   </section>
 
@@ -432,7 +373,7 @@ async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
     <div class="foot-brand">
       <img src="assets/icon.png" alt="" width="36" height="36">
       <p><strong>stone-llama</strong><br>
-        <span class="dim">Ollama-style CLI + local model server for ExLlamaV3 + TabbyAPI</span></p>
+        <span class="dim">Ollama-style CLI and local model server for ExLlamaV3 + TabbyAPI</span></p>
     </div>
     <nav aria-label="Footer links">
       <ul>

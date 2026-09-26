@@ -44,12 +44,11 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
         run: |
-          if [ -n "${GITHUB_EVENT_INPUT_VERSION:-}" ]; then
-            VERSION="${GITHUB_EVENT_INPUT_VERSION}"
-          else
-            VERSION="${GITHUB_REF_NAME}"
-          fi
+          # workflow_dispatch input takes priority; tag push falls back to ref_name
+          VERSION="${DISPATCH_VERSION:-${GITHUB_REF_NAME}}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -108,12 +107,10 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
         run: |
-          if [ -n "${GITHUB_EVENT_INPUT_VERSION:-}" ]; then
-            VERSION="${GITHUB_EVENT_INPUT_VERSION}"
-          else
-            VERSION="${GITHUB_REF_NAME}"
-          fi
+          VERSION="${DISPATCH_VERSION:-${GITHUB_REF_NAME}}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           v=${VERSION#v}
           echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
