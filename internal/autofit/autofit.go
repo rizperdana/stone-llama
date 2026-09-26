@@ -18,8 +18,11 @@
 // Both terms are tunable (autofit.workspace_mib / autofit.ctx_headroom_mib)
 // and should be replaced by measurements when someone can produce them.
 //
-// Bytes per element: FP16 = 2, Q8 = 1, Q6 = 0.75, Q4 = 0.5, Q2 = 0.25;
-// a "k,v" pair averages to (k+v)/16.
+// Bytes per element: exllamav3 quantises KV per token in groups of 32
+// channels after the H32 rotation, with an fp16 scale per group (engine
+// cache/quant.py storage_size = payload + 2 fp16 scale planes), so Qn
+// costs n/8 + 0.5/8 bytes/element and a "k,v" pair (k+v+1)/16 — FP16
+// stores no scales and stays 2.
 package autofit
 
 import (
@@ -335,8 +338,9 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 	// Nothing fits — arithmetic for the refusal message.
 	res.HeadroomMiB = opts.headroomFor(floor)
 	res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
-	res.LargestCtx = largestCtx(elems, 0.5, vramTotalMiB, res.WeightsMiB, res.OverheadMiB, opts)
-	setKV(floor, 0.5)
+	q4BPE, _ := BytesPerElement("Q4") // valid by construction (see ladder)
+	res.LargestCtx = largestCtx(elems, q4BPE, vramTotalMiB, res.WeightsMiB, res.OverheadMiB, opts)
+	setKV(floor, q4BPE)
 	res.Reason = refusalReason(res, opts, floor, "Q4")
 	return res, nil
 }
@@ -391,7 +395,14 @@ func align256(n int) int {
 	return n - n%256 // TabbyAPI cache_size must be a multiple of 256
 }
 
-// BytesPerElement converts a cache mode to bytes per KV element.
+// scaleBPE is the fp16 group-scale overhead per KV element for quantised
+// modes: one fp16 scale per group of 32 channels = 0.5 bit/element
+// (engine cache/quant.py: storage_size = payload + 2 fp16 scale planes).
+// FP16 stores no scales.
+const scaleBPE = 0.5 / 8
+
+// BytesPerElement converts a cache mode to the real bytes per KV element:
+// quantised modes carry their group scales on top of the payload.
 // Accepts legacy names (FP16, Q2..Q8) and TabbyAPI pair syntax (k,v), 2-8.
 func BytesPerElement(mode string) (float64, error) {
 	m := strings.ToUpper(strings.TrimSpace(mode))
@@ -403,13 +414,13 @@ func BytesPerElement(mode string) (float64, error) {
 		if err != nil || n < 2 || n > 8 {
 			return 0, invalidMode(mode)
 		}
-		return float64(n) / 8, nil
+		return float64(n)/8 + scaleBPE, nil
 	}
 	if parts := strings.Split(m, ","); len(parts) == 2 {
 		k, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 		v, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
 		if err1 == nil && err2 == nil && k >= 2 && k <= 8 && v >= 2 && v <= 8 {
-			return float64(k+v) / 16, nil
+			return float64(k+v+1) / 16, nil // each side's scales: (k+v)/16 + 1/16
 		}
 	}
 	return 0, invalidMode(mode)

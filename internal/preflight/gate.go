@@ -458,10 +458,12 @@ func OOMAdvice(res autofit.Result) string {
 	} else {
 		lines = append(lines, "reduce --ctx or pick a smaller quant: no context fits the current card state.")
 	}
-	if bpe, err := autofit.BytesPerElement(res.Mode); err == nil && bpe > 0.5 && res.ElemsPerTok > 0 && res.Ctx > 0 {
-		freed := float64(res.Ctx) * float64(res.ElemsPerTok) * (bpe - 0.5) / float64(1<<20)
-		lines = append(lines, fmt.Sprintf("or lower KV cost with --cache-mode Q4 (%s → Q4 frees ~%.0f MiB at %d) — current: %s",
-			res.Mode, freed, res.Ctx, res.Mode))
+	if bpe, err := autofit.BytesPerElement(res.Mode); err == nil && res.ElemsPerTok > 0 && res.Ctx > 0 {
+		if q4, qerr := autofit.BytesPerElement("Q4"); qerr == nil && bpe > q4 {
+			freed := float64(res.Ctx) * float64(res.ElemsPerTok) * (bpe - q4) / float64(1<<20)
+			lines = append(lines, fmt.Sprintf("or lower KV cost with --cache-mode Q4 (%s → Q4 frees ~%.0f MiB at %d) — current: %s",
+				res.Mode, freed, res.Ctx, res.Mode))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
