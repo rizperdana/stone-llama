@@ -680,8 +680,8 @@ func noAutostart() bool {
 	return os.Getenv("STONE_LLAMA_NO_AUTOSTART") == "1"
 }
 
-// backendStartHelp is the single, once-per-failure remedy block for
-// "the supervised backend could not start": least friction first —
+// backendStartHelp is the single, once-per-failure remedy block when
+// run/serve cannot reach a usable backend: least friction first —
 // attach an already-running server, adopt an existing local runtime,
 // provision with setup. Only flags that actually exist are named, and
 // it prints at most once per error (never as a repeating wall).
@@ -693,7 +693,8 @@ func backendStartHelp(msg string) string {
 	}
 	if !strings.Contains(msg, "runtime incomplete") &&
 		!strings.Contains(msg, "auto-start failed") &&
-		!strings.Contains(msg, "still starting after") {
+		!strings.Contains(msg, "still starting after") &&
+		!strings.Contains(msg, "no stone-llama daemon is running") {
 		return ""
 	}
 	return "\nremedies, least friction first:\n" +

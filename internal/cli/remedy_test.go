@@ -24,3 +24,18 @@ func TestRemedyBlockNeverPrintsTwice(t *testing.T) {
 		t.Errorf("fresh runtime-incomplete error got no remedies: %q", got)
 	}
 }
+
+// run with auto-start disabled hits the no-daemon error directly: it
+// must carry the same single remedy block (attach / adopt / setup).
+func TestNoDaemonErrorCarriesRemedies(t *testing.T) {
+	msg := "no stone-llama daemon is running (start one with 'stone-llama serve')"
+	got := backendStartHelp(msg)
+	for _, want := range []string{"remedies, least friction first", "serve --attach", "setup --adopt", "stone-llama setup"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("remedies missing %q: %q", want, got)
+		}
+	}
+	if strings.Count(got, "remedies, least friction first") != 1 {
+		t.Errorf("want exactly one block: %q", got)
+	}
+}
