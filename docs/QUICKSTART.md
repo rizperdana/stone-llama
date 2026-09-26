@@ -36,13 +36,25 @@ autofit arithmetic against *your* VRAM, then a predicted tok/s **[est]**:
 
 ```console
 $ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw
+gate: arch  ✓ Qwen3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
+      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
+estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — calibration pending
+
+$ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw          # too big for 4 GB
+gate: arch  ✓ Qwen3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ✗ no config fits: weights 4950 + KV (Q4 @ 4096) 144 + overhead 128 = 5222 MiB > 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
+      largest ctx that would fit: none — no context fits; pull a smaller quant or use a bigger GPU
+      reduce --ctx or pick a smaller quant
+fit: refused — no context fits this model in VRAM (see the gate report above)
+# fit exits 3 when refused, 0 otherwise
 ```
 
-(exit 0 = fits / fits-with-warning, exit 3 = refused with the full breakdown.)
-
-What that gate block looks like today, captured live from `pull` (which runs the
-same checks before any byte moves — this run declined the download, so nothing was
-fetched beyond metadata):
+exit 0 = fits / fits-with-warning, exit 3 = refused with the full breakdown.
+The same gate runs inside `pull` before any byte moves (this run declined the
+download, so nothing was fetched beyond metadata):
 
 ```console
 $ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw
@@ -101,6 +113,18 @@ stone-llama serve --attach 127.0.0.1:5002          # attach mode: proxy to a Tab
 
 Attach mode never restarts or stops the upstream server — it points stone-llama's
 OpenAI-compatible endpoint at an existing TabbyAPI.
+
+Status when this page was written (2026-09-26): `serve` ships with milestone M5
+and is not in the build yet — the command says so, verbatim:
+
+```console
+$ stone-llama serve
+stone-llama serve: not implemented yet (ships in M5)
+```
+
+The walkthrough below is the v1 surface; a live `serve` + `curl` capture is
+appended once M5 lands. (The measured autofit numbers in this doc were obtained
+in attach mode against a live TabbyAPI — zero downloads.)
 
 ```bash
 curl http://127.0.0.1:5111/v1/models

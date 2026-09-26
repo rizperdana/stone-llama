@@ -1,0 +1,6 @@
+$ stone-llama rank --file refs.txt
+REPO                              QUANT  VERDICT        EST T/S  EST PRE T/S  RATING
+async0x42/Qwen3-1.7B-exl3_4.0bpw  4bpw   warn:40960 Q4  31       582          -
+async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
+~ values are estimates [est] from metadata + GPU spec — not measured (calibration pending)
+EXIT=0

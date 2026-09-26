@@ -1,0 +1,4 @@
+$ stone-llama list --estimate
+NAME                    QUANT  SIZE      VERDICT  EST T/S  EST PRE T/S  SOURCE
+SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        33       465          imported
+~ values are estimates [est] from metadata — not measured (calibration pending)

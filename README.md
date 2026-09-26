@@ -120,9 +120,46 @@ NAME                    QUANT  SIZE      VERDICT  SOURCE
 SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported
 ```
 
-(`list` above shows a model linked in with `import` from a directory already on this
-machine — no download. More captures — `fit`, `serve` + `curl` — are added as those
-commands ship; model-download steps are deliberately omitted.)
+```console
+$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # download declined
+gate: arch  ✓ Qwen3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
+      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
+warnings above — review them before continuing
+pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 83.06 GiB free
+stone-llama pull: non-interactive pull requires --yes to confirm the download
+```
+
+```console
+$ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw      # metadata only — no download
+gate: arch  ✓ Qwen3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
+      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
+estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — calibration pending
+
+$ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw        # too big for 4 GB
+gate: arch  ✓ Qwen3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ✗ no config fits: weights 4950 + KV (Q4 @ 4096) 144 + overhead 128 = 5222 MiB > 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
+      largest ctx that would fit: none — no context fits; pull a smaller quant or use a bigger GPU
+      reduce --ctx or pick a smaller quant
+fit: refused — no context fits this model in VRAM (see the gate report above)
+# fit exits 3 when refused
+
+$ stone-llama rank --file refs.txt                          # two HF refs, metadata only
+REPO                              QUANT  VERDICT        EST T/S  EST PRE T/S  RATING
+async0x42/Qwen3-1.7B-exl3_4.0bpw  4bpw   warn:40960 Q4  31       582          -
+async0x42/Qwen3-8B-exl3_4.0bpw    4bpw   refuse         -        -            -
+~ values are estimates [est] from metadata + GPU spec — not measured (calibration pending)
+```
+
+The gate runs **before** any weight byte moves — the `pull` run above stopped at
+the consent prompt, so nothing was fetched beyond KB of metadata. `list` shows a
+model linked in with `import` from a directory already on this machine — also no
+download. A rendering of these captures: [docs/screenshots/cli.svg](docs/screenshots/cli.svg).
+Model-download steps are deliberately omitted from these captures.
 
 ## How autofit picks your context
 
