@@ -120,65 +120,56 @@ func runtimeUsable(runtimeDir string) bool {
 	return false
 }
 
-// resolveUpstreamKey discovers the upstream bearer token for auto-attach.
-// Order (flag > env > file > default):
-//  1. explicit --key-file (path)
-//  2. config file upstream_key_file (path) — a literal token is NOT stored in
-//     config.json by design; use STONE_LLAMA_UPSTREAM_KEY for that.
-//  3. env STONE_LLAMA_UPSTREAM_KEY_FILE (path) / STONE_LLAMA_UPSTREAM_KEY (value)
-//  4. <DataDir>/runtime/upstream_key (path)
-//  5. the discovered TabbyAPI checkout's api_tokens.yml (api_key/admin_key) —
-//     read-only; the path is handed to --key-file, never copied into our state.
+// resolveUpstreamTokens returns candidate bearer VALUES in precedence order
+// (flag > config > env > runtime key file > the discovered TabbyAPI
+// checkout's api_tokens.yml). Every source is collected, not just the
+// first: a stale <DataDir>/runtime/upstream_key must not shadow a live
+// checkout key — ResolveBackend walks the candidates and only stops when
+// the upstream stops answering 401/403 (the same order as before, tried
+// through). A path that cannot be read is skipped, never fatal.
 //
-// The return is a file path OR a literal value (exactly one non-empty). The
-// value is never printed; diagnostics redact it as <key>.
-func resolveUpstreamKey(dataDir string, cfg config.Config, keyFileFlag string) (keyFile, keyValue, source string) {
+// Values are never printed; diagnostics redact them as <key>.
+func resolveUpstreamTokens(dataDir string, cfg config.Config, keyFileFlag string) []string {
+	type src struct{ path, value string }
+	var srcs []src
 	if keyFileFlag != "" {
-		return keyFileFlag, "", "flag"
+		srcs = append(srcs, src{path: keyFileFlag})
 	}
 	if cfg.UpstreamKeyFile != "" {
-		return cfg.UpstreamKeyFile, "", "config"
+		srcs = append(srcs, src{path: cfg.UpstreamKeyFile})
 	}
 	if v := os.Getenv("STONE_LLAMA_UPSTREAM_KEY_FILE"); v != "" {
-		return v, "", "env"
+		srcs = append(srcs, src{path: v})
 	}
 	if v := os.Getenv("STONE_LLAMA_UPSTREAM_KEY"); v != "" {
-		return "", v, "env"
+		srcs = append(srcs, src{value: v})
 	}
-	stateKey := filepath.Join(dataDir, "runtime", "upstream_key")
-	if fi, err := os.Stat(stateKey); err == nil && !fi.IsDir() {
-		return stateKey, "", "state"
-	}
+	srcs = append(srcs, src{path: filepath.Join(dataDir, "runtime", "upstream_key")})
 	if co := discoverCheckoutFn(runtimeDirOf(cfg, dataDir)); co != "" {
 		if p := serve.TabbyAPITokensFile(co); fileExists(p) {
 			if k, err := serve.ParseTabbyAPIToken(p); err == nil && k != "" {
-				return "", k, "tabbyapi"
+				srcs = append(srcs, src{value: k})
 			}
 		}
 	}
-	return "", "", ""
+	var out []string
+	for _, s := range srcs {
+		v := s.value
+		if v == "" {
+			if b, err := os.ReadFile(s.path); err == nil {
+				v = strings.TrimSpace(string(b))
+			}
+		}
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
-}
-
-// resolveUpstreamToken is resolveUpstreamKey returning the bearer VALUE
-// (reading the file when the source was a path). Used by direct-stream mode,
-// which posts the token itself.
-func resolveUpstreamToken(dataDir string, cfg config.Config, keyFileFlag string) (token, source string) {
-	keyFile, keyValue, src := resolveUpstreamKey(dataDir, cfg, keyFileFlag)
-	if keyValue != "" {
-		return keyValue, src
-	}
-	if keyFile != "" {
-		b, err := os.ReadFile(keyFile)
-		if err == nil && strings.TrimSpace(string(b)) != "" {
-			return strings.TrimSpace(string(b)), src
-		}
-	}
-	return "", ""
 }
 
 // ResolveBackend implements the zero-config resolution order (see file doc).
@@ -196,11 +187,37 @@ func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir strin
 	if !noAttach {
 		pr := probeUpstreamFn(ctx, upstream, runReadyTimeout)
 		if pr.Ok && pr.Err == nil {
-			token, _ := resolveUpstreamToken(dataDir, cfg, keyFileFlag)
-			model := upstreamModelFn(ctx, upstream, token)
-			if model == "" {
-				return Decision{}, fmt.Errorf("attached upstream %s answers /v1/models but no model is loaded — load one at the upstream server, or restart `stone-llama serve` without --attach to load models locally", baseHostPort(upstream))
+			// The probe counts any HTTP answer as serving — a 401 there
+			// means "serving, wants a key", not "no model". Resolve the
+			// loaded model with the discovered bearer, walking candidates
+			// while the upstream keeps answering 401/403 (a stale runtime
+			// key must not shadow the checkout's live key).
+			tokens := resolveUpstreamTokens(dataDir, cfg, keyFileFlag)
+			if len(tokens) == 0 {
+				tokens = []string{""} // nothing discovered: ask unauthenticated
 			}
+			var model, token string
+			var merr error
+			for _, tok := range tokens {
+				token = tok
+				model, merr = upstreamModelFn(ctx, upstream, tok)
+				if !errors.Is(merr, serve.ErrUpstreamAuth) {
+					break // accepted, or a failure no other key can fix
+				}
+			}
+			if errors.Is(merr, serve.ErrUpstreamAuth) {
+				return Decision{}, fmt.Errorf(
+					"attached upstream %s refused the model query (401/403 — bearer key required or wrong); no model claim made — pass --key-file <path> or set STONE_LLAMA_UPSTREAM_KEY",
+					baseHostPort(upstream))
+			}
+			if merr == nil && model == "" {
+				return Decision{}, fmt.Errorf(
+					"attached upstream %s answered the model query with no model id — load one at the upstream server, or run `stone-llama run <model> --local` once a runtime is available",
+					baseHostPort(upstream))
+			}
+			// Unreadable (merr != nil): model stays "" — run keeps the name
+			// the user typed and lets the upstream answer it; its error is
+			// more honest than a guess about what is loaded.
 			fmt.Fprintf(stdout, "using the TabbyAPI already running on %s — nothing downloaded\n", baseHostPort(upstream))
 			return Decision{Kind: "direct", Base: upstream, Token: token, Model: model}, nil
 		}

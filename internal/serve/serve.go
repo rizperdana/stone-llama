@@ -44,6 +44,13 @@ var (
 	ErrAlreadyServing = errors.New("stone-llama is already serving here")
 	ErrPortInUse      = errors.New("the configured port is used by another process")
 	ErrStartBusy      = errors.New("another stone-llama process is starting the daemon")
+	// ErrUpstreamAuth: the upstream answered 401/403 to the model query —
+	// it wants a bearer we did not supply (or supplied wrong). Never
+	// "no model is loaded": the list was refused, not read.
+	ErrUpstreamAuth = errors.New("upstream refused the model query (401/403 — bearer key required)")
+	// ErrUpstreamUnreadable: the model query could not be read (transport,
+	// non-200 status, bad body) — the caller must not claim any model state.
+	ErrUpstreamUnreadable = errors.New("upstream model query unreadable")
 )
 
 // errCleanExit names awaitReady's (died, nil) outcome: the child
@@ -71,6 +78,7 @@ type Options struct {
 	Host            string // downstream bind host
 	Port            int    // downstream bind port
 	Attach          string // upstream base URL; "" = supervise a child
+	Model           string // optional positional: loaded via /-/load once the supervised backend is ready ("" = none; ignored in attach mode)
 	RuntimeDir      string // setup runtime root (venv + tabbyAPI checkout)
 	ModelsDir       string
 	DataDir         string         // daemon.json + flock + logs
@@ -294,34 +302,44 @@ func DaemonLive(dataDir string) (State, bool) {
 	return st, classifyListener(context.Background(), st) == probeLive
 }
 
-// UpstreamModel returns the model the attach upstream reports as loaded
-// (GET /v1/model, best-effort, display-only) or "" when unknown. Token is
-// the upstream Bearer when the upstream requires auth.
-func UpstreamModel(ctx context.Context, base, token string) string {
+// UpstreamModel asks the attach upstream which model it has loaded
+// (GET /v1/model) with the supplied bearer. Outcomes stay distinct so the
+// caller never turns an auth refusal or a transport hiccup into a claim
+// about what is loaded:
+//
+//	(id, nil)                   — upstream answered and reports that model id
+//	("", ErrUpstreamAuth)       — 401/403: bearer missing or wrong
+//	("", ErrUpstreamUnreadable) — any other non-200, transport error, or bad body
+//	("", nil)                   — 200 but no id: upstream answered, none reported
+func UpstreamModel(ctx context.Context, base, token string) (string, error) {
 	mctx, cancel := context.WithTimeout(ctx, 700*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(mctx, http.MethodGet, base+"/v1/model", nil)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("%w: %v", ErrUpstreamUnreadable, err)
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("%w: %v", ErrUpstreamUnreadable, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "", ErrUpstreamAuth
+	default:
+		return "", fmt.Errorf("%w: GET %s/v1/model → HTTP %d", ErrUpstreamUnreadable, base, resp.StatusCode)
 	}
 	var m struct {
 		ID string `json:"id"`
 	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m) != nil {
-		return ""
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUpstreamUnreadable, err)
 	}
-	return m.ID
+	return m.ID, nil
 }
 
 // classifyCrash turns a child exit into the error a user should act on:
@@ -536,6 +554,13 @@ func Serve(ctx context.Context, opts Options) error {
 		supCh = nil
 	}
 	go d.sampleVRAM(supCtx)
+	// `stone-llama serve <model>`: load the positional model through our own
+	// /-/load — the same supervised path `run` uses — once the listener is up.
+	// Attach mode never reaches this (the upstream owns loading there; the CLI
+	// printed the ignored-argument note already).
+	if opts.Model != "" && opts.Attach == "" {
+		go d.initialLoad(ctx, opts.Model)
+	}
 
 	fmt.Fprintf(opts.Stdout, "stone-llama listening on %s (OpenAI-compatible)\n", d.st.Addr())
 	if opts.Attach != "" {

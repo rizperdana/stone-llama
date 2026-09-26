@@ -339,10 +339,11 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// direct-to-upstream: the upstream owns its model. A name mismatch is
 		// a local alias; reuse the upstream's loaded model, never call /-/load.
 		if dec.Model == "" {
-			fmt.Fprintln(stderr, "stone-llama run: the upstream has no model loaded — load one at the upstream server, or run `stone-llama serve` to start a supervised runtime here")
-			return 1
-		}
-		if dec.Model != model {
+			// The model query was unreadable — proceed with the name the user
+			// asked for and let the upstream answer it (honest over guessing).
+			dec.Model = model
+			fmt.Fprintf(stdout, "note: model query at the upstream was unreadable — asking for %q directly\n", model)
+		} else if dec.Model != model {
 			fmt.Fprintf(stdout, "note: using %q (loaded upstream) — %q is a local alias\n", dec.Model, model)
 		}
 		return streamDirect(dec, prof, oneShot, stdin, stdout, stderr)
@@ -963,9 +964,9 @@ func backendStartHelp(msg string) string {
 // by default, or --attach against an existing OpenAI-compatible server
 // (schemeless host:port accepted). Ctrl-C/SIGTERM shuts down cleanly.
 func runServe(args []string, stdout, stderr io.Writer) int {
-	attach, keyFile := "", ""
+	attach, keyFile, model := "", "", ""
 	port := 0
-	usageLine := "usage: stone-llama serve [--attach <host:port|url>] [--port <n>] [--key-file <path>]"
+	usageLine := "usage: stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>]"
 	// the loop reassigns i when consuming flag values (explicit classic loop)
 	need := func(i *int, flag string) (string, bool) {
 		if *i+1 >= len(args) {
@@ -1009,9 +1010,17 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		default:
-			fmt.Fprintln(stderr, usageLine)
-			return 2
+			// optional positional: the model to load once the supervised
+			// backend is ready (attach mode ignores it — see note below).
+			if strings.HasPrefix(a, "-") || model != "" {
+				fmt.Fprintln(stderr, usageLine)
+				return 2
+			}
+			model = a
 		}
+	}
+	if model != "" && attach != "" {
+		fmt.Fprintf(stdout, "note: model %q ignored in attach mode — the upstream owns loading\n", model)
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -1030,6 +1039,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		Host:            cfg.Host,
 		Port:            port,
 		Attach:          attach,
+		Model:           model,
 		RuntimeDir:      cfg.RuntimeDir,
 		ModelsDir:       cfg.ModelsDir,
 		DataDir:         config.DataDir(),
@@ -1236,7 +1246,7 @@ Commands:
   rank        rank candidates by fit/speed (--collection|--file [--ratings])
   login       set a HuggingFace token
   setup       provision the pinned Python runtime (consent-gated) [--adopt <path>] [--provision]
-  serve       start the OpenAI-compatible API [--attach host:port] [--port n]
+  serve       start the OpenAI-compatible API [<model>] [--attach host:port] [--port n]
   ps          show the running daemon + loaded model
   stop        stop the daemon
   run <model> [--ctx N] [--max-tokens N] [--temperature F] [--system TEXT] [-p prompt]   chat (streams, auto-tuned)

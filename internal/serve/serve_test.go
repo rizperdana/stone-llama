@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -437,10 +439,32 @@ func daemonStandIn(t *testing.T, argv0 string) *standIn {
 	if err := proc.Start(); err != nil {
 		t.Skipf("needs sleep(1): %v", err)
 	}
+	waitExecCmdline(t, proc.Process.Pid, argv0)
 	exited := make(chan error, 1)
 	go func() { exited <- proc.Wait() }()
 	t.Cleanup(func() { proc.Process.Kill() }) // Wait belongs to the goroutine above
 	return &standIn{pid: proc.Process.Pid, exited: exited}
+}
+
+// waitExecCmdline blocks until /proc/<pid>/cmdline carries want. Right after
+// Start returns, the child may not have execve'd yet — /proc then shows OUR
+// argv, and Stop's identity gate would read the stand-in as a foreign pid,
+// drop the state without signalling, and flake under load (measured: ~9% of
+// starts read pre-exec). Other platforms: best effort, no /proc.
+func waitExecCmdline(t *testing.T, pid int, want string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err == nil && strings.Contains(string(b), want) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Skipf("stand-in pid %d never showed cmdline %q", pid, want)
 }
 
 // writeCorruptState writes unparseable daemon.json whose bytes still
@@ -818,5 +842,94 @@ func TestServeSpawnFailureCleansGeneratedSecrets(t *testing.T) {
 	}
 	if got, rerr := os.ReadFile(sentinel); rerr != nil || string(got) != "keep" {
 		t.Errorf("adopted venv TARGET destroyed: %q %v", got, rerr)
+	}
+}
+
+// Defect 2 (supervised branch): `serve <model>` loads through our own
+// /-/load — the same handler `run` uses — against the supervised backend,
+// drains the event stream to the end, and marks the model loaded on the
+// backend's "finished" event. Any failure would print once on stderr.
+func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
+	isolateConfig(t)
+	var mu sync.Mutex
+	var gotBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/model/load" {
+			http.NotFound(w, r)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotBody = b
+		mu.Unlock()
+		fl, _ := w.(http.Flusher)
+		io.WriteString(w, "data: {\"status\":\"finished\"}\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}))
+	t.Cleanup(backend.Close)
+
+	models := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(models, "m"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgJSON, err := os.ReadFile(filepath.Join("..", "autofit", "testdata", "smollm3-config.json"))
+	if err != nil {
+		t.Skipf("model config fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(models, "m", "config.json"), cfgJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var errBuf bytes.Buffer
+	d := &daemon{
+		opts: Options{
+			DataDir:   t.TempDir(),
+			ModelsDir: models,
+			Stderr:    &errBuf,
+			probeGPU: func() (doctor.Report, error) {
+				return doctor.Report{GPUs: []doctor.GPU{{VRAMMiB: 4096}}}, nil
+			},
+		},
+		conn: Conn{BaseURL: backend.URL},
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: d.authed(d.mux())}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	d.st = State{Host: "127.0.0.1", Port: port}
+
+	d.initialLoad(context.Background(), "m")
+
+	mu.Lock()
+	body := gotBody
+	mu.Unlock()
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("load payload %q: %v", body, err)
+	}
+	if payload["model_name"] != "m" {
+		t.Errorf("payload model_name = %v, want m (body %q)", payload["model_name"], body)
+	}
+	d.mu.Lock()
+	model := d.st.Model
+	d.mu.Unlock()
+	if model != "m" {
+		t.Errorf("st.Model = %q after the backend's finished event", model)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("initialLoad wrote stderr on success: %q", errBuf.String())
 	}
 }

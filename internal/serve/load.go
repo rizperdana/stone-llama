@@ -130,6 +130,37 @@ func (d *daemon) attachModel() string {
 	return m.ID
 }
 
+// initialLoad loads the `serve <model>` positional through our own /-/load —
+// the exact supervised path `run` uses (autofit, progress, state included).
+// The response is drained to the end so the backend load is never cut short;
+// a failure prints once on stderr and the daemon keeps serving.
+func (d *daemon) initialLoad(ctx context.Context, model string) {
+	body, _ := json.Marshal(map[string]any{"model": model})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+d.st.Addr()+loadPath, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if d.needToken {
+		req.Header.Set("Authorization", "Bearer "+d.token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(d.opts.Stderr, "stone-llama serve: load %q: %v\n", model, err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		fmt.Fprintf(d.opts.Stderr, "stone-llama serve: load %q: %s\n", model, extractMessage(b))
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body) // drain: let the load finish
+}
+
 // handleLoad loads a model through the backend (contract: the backend
 // owns load orchestration; we own fit, progress streaming, and state).
 // The stream is zero-buffer: every upstream event line is written and

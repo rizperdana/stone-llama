@@ -606,6 +606,7 @@ func TestStopRecoversFromCorruptState(t *testing.T) {
 	if err := proc.Start(); err != nil {
 		t.Skipf("needs sleep(1): %v", err)
 	}
+	waitExecCmdline(t, proc.Process.Pid, "stone-llama serve")
 	exited := make(chan error, 1)
 	go func() { exited <- proc.Wait() }() // owns the Wait: zombie-free
 	t.Cleanup(func() { proc.Process.Kill() })
@@ -651,6 +652,27 @@ func TestStopRecoversFromCorruptState(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); !os.IsNotExist(err) {
 		t.Errorf("corrupt state not cleared after stop: %v", err)
 	}
+}
+
+// waitExecCmdline blocks until /proc/<pid>/cmdline carries want. Right after
+// Start returns the child may not have execve'd yet — /proc then shows OUR
+// argv, Stop's identity gate reads the stand-in as a foreign pid, drops the
+// state without signalling, and the test flakes under load (measured ~9%).
+// Non-linux: best effort, no /proc.
+func waitExecCmdline(t *testing.T, pid int, want string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err == nil && strings.Contains(string(b), want) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Skipf("stand-in pid %d never showed cmdline %q", pid, want)
 }
 
 // H3 Case 2 (CLI): ps explains corrupt state — the live daemon is
@@ -699,5 +721,243 @@ func TestPsExplainsCorruptState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); err != nil {
 		t.Errorf("ps deleted the corrupt state file: %v", err)
+	}
+}
+
+// Defect 1: a stale runtime/upstream_key must not shadow the checkout's
+// live key — the model query walks candidates while the upstream answers
+// 401/403, so zero-flag run resolves the loaded model and chats against an
+// auth-required upstream. Alias typed, loaded id used.
+func TestRunWalksKeyCandidatesOn401(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY", "")
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY_FILE", "")
+	const liveKey = "live-key"
+	var mu sync.Mutex
+	var chatAuth, chatModel string
+	needKey := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") == "Bearer "+liveKey {
+			return true
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		return false
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if !needKey(w, r) {
+			return
+		}
+		io.WriteString(w, `{"object":"list","data":[{"id":"live-model"}]}`)
+	})
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, r *http.Request) {
+		if !needKey(w, r) {
+			return
+		}
+		io.WriteString(w, `{"id":"live-model"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if !needKey(w, r) {
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(b, &body)
+		mu.Lock()
+		chatAuth = r.Header.Get("Authorization")
+		chatModel = body.Model
+		mu.Unlock()
+		fl := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"2\"}}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+
+	// higher-precedence candidate: the stale state key (wrong on purpose)
+	dataDir := config.DataDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "runtime"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "runtime", "upstream_key"), []byte("stale-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// lower-precedence candidate: the discovered checkout's api_tokens.yml
+	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, "api_tokens.yml"),
+		[]byte("api_key: live-key\nadmin_key: admin-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origDiscover := discoverCheckoutFn
+	discoverCheckoutFn = func(string) string { return checkout }
+	t.Cleanup(func() { discoverCheckoutFn = origDiscover })
+
+	code, out, errb := run("run", "alias-model", "-p", "1+1")
+	if code != 0 {
+		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
+	}
+	for _, want := range []string{
+		"using the TabbyAPI already running on",
+		`note: using "live-model" (loaded upstream) — "alias-model" is a local alias`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("out missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out+errb, "no model is loaded") {
+		t.Errorf("401 misread as no-model:\n%s%s", out, errb)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if chatAuth != "Bearer "+liveKey {
+		t.Error("chat request did not carry the live key (stale candidate was not retried past)")
+	}
+	if chatModel != "live-model" {
+		t.Errorf("chat model = %q, want the upstream's loaded id (alias resolution)", chatModel)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(out), "2") {
+		t.Errorf("answer missing: %q", out)
+	}
+}
+
+// Defect 1b: when every candidate is refused (401/403) the error must name
+// the auth cause — never claim what is loaded.
+func TestRunAuthRefusalNamesKeyNotModel(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY", "")
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY_FILE", "")
+	mux := http.NewServeMux()
+	unauthorized := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	mux.HandleFunc("/v1/models", unauthorized)
+	mux.HandleFunc("/v1/model", unauthorized)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+	origDiscover := discoverCheckoutFn
+	discoverCheckoutFn = func(string) string { return "" }
+	t.Cleanup(func() { discoverCheckoutFn = origDiscover })
+
+	code, out, errb := run("run", "some-model", "-p", "hi")
+	if code != 1 {
+		t.Errorf("code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if !strings.Contains(errb, "401/403") {
+		t.Errorf("auth refusal not named: %q", errb)
+	}
+	for _, bad := range []string{"no model is loaded", "answers /v1/models"} {
+		if strings.Contains(out+errb, bad) {
+			t.Errorf("refusal misreported as %q: %q", bad, out+errb)
+		}
+	}
+}
+
+// Defect 1c: an unreadable model query (500 here) must not hard-fail — run
+// keeps the typed name and the upstream answers for it.
+func TestRunUnreadableModelListKeepsTypedName(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY", "")
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY_FILE", "")
+	var mu sync.Mutex
+	var chatModel string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"object":"list","data":[]}`) // probe: serving
+	})
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // unreadable
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(b, &body)
+		mu.Lock()
+		chatModel = body.Model
+		mu.Unlock()
+		fl := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+	origDiscover := discoverCheckoutFn
+	discoverCheckoutFn = func(string) string { return "" }
+	t.Cleanup(func() { discoverCheckoutFn = origDiscover })
+
+	code, out, errb := run("run", "typed-alias", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if !strings.Contains(out, `asking for "typed-alias" directly`) {
+		t.Errorf("no unreadable-note: %q", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if chatModel != "typed-alias" {
+		t.Errorf("chat model = %q, want the typed name", chatModel)
+	}
+}
+
+// Defect 2: `serve <model>` accepts an optional positional. Attach mode
+// prints one ignored-argument note (no fake load); flag errors keep usage.
+func TestServePositionalModelAttachNoteAndUsage(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	// (a) attach + model: note first, then attach attempt ends at the dead port
+	code, out, errb := run("serve", "mymodel", "--attach", "127.0.0.1:9")
+	if code != 1 {
+		t.Errorf("attach-dead code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if !strings.Contains(out, `note: model "mymodel" ignored in attach mode — the upstream owns loading`) {
+		t.Errorf("missing attach-ignored note: %q", out)
+	}
+	if !strings.Contains(errb, "not reachable") {
+		t.Errorf("attach failure missing: %q", errb)
+	}
+	// (b) unknown flag and a second positional still print usage
+	code, _, errb = run("serve", "--bogus")
+	if code != 2 || !strings.Contains(errb, "usage: stone-llama serve [<model>]") {
+		t.Errorf("flag error: code = %d, err = %q", code, errb)
+	}
+	code, _, errb = run("serve", "a", "b")
+	if code != 2 || !strings.Contains(errb, "usage: stone-llama serve") {
+		t.Errorf("second positional: code = %d, err = %q", code, errb)
+	}
+}
+
+// Defect 2, no-runtime branch: `serve <model>` with neither runtime nor
+// upstream ends in exactly one remedy block (attach/adopt/setup) — and
+// spawns nothing (spawn refuses at the missing venv python).
+func TestServeModelNoRuntimeOneRemedyBlock(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	code, out, errb := run("serve", "mymodel")
+	if code != 1 {
+		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if n := strings.Count(errb, "remedies, least friction first"); n != 1 {
+		t.Errorf("remedy block count = %d, want 1:\n%s", n, errb)
+	}
+	for _, want := range []string{"--attach", "setup --adopt", "stone-llama setup"} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("remedy missing %q:\n%s", want, errb)
+		}
 	}
 }
