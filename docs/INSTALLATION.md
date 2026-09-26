@@ -99,7 +99,8 @@ Safety properties:
 
 ```bash
 stone-llama setup          # shows sizes + free space, then one confirmation
-stone-llama setup --yes    # non-interactive consent
+stone-llama setup --yes    # non-interactive consent (required when non-TTY)
+stone-llama setup --cu12   # override the driver-derived extra (also --cu13)
 ```
 
 Real preflight on this machine (sizes are HTTP HEAD requests; without consent

@@ -1,2 +1,2 @@
 $ stone-llama version
-stone-llama dev (linux/amd64)
+stone-llama dev (linux/amd64) — app icon stone-llama.png embedded (1254528 bytes)

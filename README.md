@@ -89,11 +89,11 @@ already own instead of trusting the Hub to stay up.
 | `stone-llama fit <repo>` | gate + predicted tok/s from HF metadata — **no model download** | ✅ shipped |
 | `stone-llama list [--estimate]` | models with size, quant, gate verdict, source (+ tok/s estimates) | ✅ shipped |
 | `stone-llama rank --collection <owner/name>` | rank a HF collection by fit + predicted tok/s (also `--file`, `--ratings`) | ✅ shipped |
-| `stone-llama import <dir> --name <n>` | symlink an existing model dir in (zero copy) | ✅ shipped |
+| `stone-llama import <dir> [--name <n>]` | symlink an existing model dir in (zero copy; name defaults to the dir name) | ✅ shipped |
 | `stone-llama rm <model>` | remove a model (import symlinks: link only, target untouched) | ✅ shipped |
 | `stone-llama pull <model>[:tag]` | pre-download gate → consent → resumable download + sha256 verify | ✅ shipped |
 | `stone-llama login` | HuggingFace token for gated repos (stored 0600) | ✅ shipped |
-| `stone-llama setup` | provision the pinned Python runtime (consent-gated, resumable) | 🚧 M4 |
+| `stone-llama setup [--yes] [--cu12\|--cu13]` | provision the pinned Python runtime (consent-gated, resumable; extra picked from driver unless overridden) | ✅ shipped |
 | `stone-llama serve [--attach host:port]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream) | 🚧 M5 |
 | `stone-llama ps` | loaded model + live VRAM | 🚧 M5 |
 | `stone-llama stop` | stop the daemon | 🚧 M5 |
@@ -138,7 +138,7 @@ gate: arch  ✓ Qwen3ForCausalLM
 gate: quant ✓ exl3
 gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
       warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
-estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — calibration pending
+estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending
 
 $ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw        # too big for 4 GB
 gate: arch  ✓ Qwen3ForCausalLM
