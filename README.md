@@ -38,16 +38,16 @@ GPU and driver numbers — before anything gets installed.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh
-```
-
-or build from source (Go ≥ 1.24):
-
-```bash
 git clone https://github.com/rizperdana/stone-llama
 cd stone-llama
-go build -o stone-llama ./cmd/stone-llama
+go build -o stone-llama ./cmd/stone-llama   # Go ≥ 1.24
 install -Dm755 stone-llama ~/.local/bin/stone-llama
+```
+
+or, once published, install a release binary (sha256-verified):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh
 ```
 
 Full prerequisites, the consent-gated `setup` provisioning step (≈ 1 GB announced

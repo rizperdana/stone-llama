@@ -33,7 +33,8 @@ Releases are tagged `vX.Y.Z` and publish, per platform:
 Each has a `.sha256` sidecar (plus a combined `checksums.txt`).
 
 One-line install (resolves the latest release, verifies sha256, installs to
-`~/.local/bin`):
+`~/.local/bin`) — once `scripts/install.sh` is published on `main` (packaging
+milestone); until then use Option B:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh
