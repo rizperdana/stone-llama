@@ -1,18 +1,13 @@
 # Quickstart
 
 First run on a supported machine (Linux/amd64, NVIDIA GPU, driver ≥ 570).
-Outputs below are **real captures** from this machine (RTX 3050 Laptop, 4096 MiB,
+Every capture here is real output from this machine (RTX 3050 Laptop, 4096 MiB,
 driver 580.178.04) — raw files in [screenshots/](screenshots/).
 
 ## 1. `doctor` — environment check, no downloads, no changes
 
-```console
-$ stone-llama doctor
-GPU        NVIDIA GeForce RTX 3050 Laptop GPU
-VRAM       4096 MiB
-Driver     580.178.04
-Runtime    cu13 extra
-```
+Expected output on this machine (RTX 3050 Laptop, driver 580):
+[screenshots/doctor-list.txt](screenshots/doctor-list.txt).
 
 Driver decides the runtime extra: ≥ 580 → `cu13`, ≥ 570 → `cu12`, older → refusal
 with the upgrade hint. No NVIDIA GPU → hard refusal pointing you at ollama + GGUF.
@@ -42,37 +37,22 @@ gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344,
       warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
 estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending
 
-$ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw          # too big for 4 GB
+$ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw
 gate: arch  ✓ Qwen3ForCausalLM
 gate: quant ✓ exl3
 gate: fit   ✗ no config fits: weights 4950 + KV (Q4 @ 4096) 144 + overhead 128 = 5222 MiB > 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
       largest ctx that would fit: none — no context fits; pull a smaller quant or use a bigger GPU
       reduce --ctx or pick a smaller quant
 fit: refused — no context fits this model in VRAM (see the gate report above)
-# fit exits 3 when refused, 0 otherwise
+EXIT=3
 ```
 
 exit 0 = fits / fits-with-warning, exit 3 = refused with the full breakdown.
-The same gate runs inside `pull` before any byte moves (this run declined the
-download, so nothing was fetched beyond metadata):
 
-```console
-$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw
-gate: arch  ✓ Qwen3ForCausalLM
-gate: quant ✓ exl3
-gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
-      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
-warnings above — review them before continuing
-pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 83.06 GiB free
-stone-llama pull: non-interactive pull requires --yes to confirm the download
-```
-
-An EXL3-shaped layout is required — GGUF repos are refused outright:
-
-```console
-$ stone-llama pull ggml-org/SmolLM3-3B-GGUF
-stone-llama pull: repo ggml-org/SmolLM3-3B-GGUF has no config.json — not an EXL3 model layout
-```
+The same gate runs inside `pull` before any byte moves — this run declined the
+download, so nothing was fetched beyond KB of metadata — and an EXL3-shaped
+layout is required: a GGUF repo is refused with "not an EXL3 model layout".
+Both runs: [screenshots/gate.txt](screenshots/gate.txt).
 
 ## 4. `pull` — download (consent-gated, resumable)
 
@@ -85,16 +65,15 @@ Single-stream resumable download, sha256 verified before the file is renamed.
 Already own the weights? Skip the download: `stone-llama import <dir> --name <n>`
 symlinks them in, zero copy.
 
-> Model downloads are omitted from this walkthrough's captures — bandwidth is
-> constrained here and pulls are not authorized in this session.
+> Model downloads are omitted from this walkthrough's captures — no weights were
+> pulled while recording it.
 
 ## 5. `list` / `run`
 
-```console
-$ stone-llama list
-NAME                    QUANT  SIZE      VERDICT  SOURCE
-SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported
-```
+`stone-llama list` shows the imported model with size, quant, verdict and source
+([screenshots/doctor-list.txt](screenshots/doctor-list.txt)); `list --estimate`
+adds predicted decode/prefill tok/s columns
+([screenshots/list-estimate.txt](screenshots/list-estimate.txt)).
 
 ```bash
 stone-llama run Qwen3-1.7B-exl3_4.0bpw        # streaming CLI chat
@@ -102,7 +81,7 @@ stone-llama run Qwen3-1.7B-exl3_4.0bpw --ctx 16384   # override autofit
 ```
 
 `run` prints the autofit decision (ctx, cache mode, the arithmetic) before the
-first token. `list --estimate` adds predicted decode/prefill tok/s columns.
+first token.
 
 ## 6. `serve` + `curl` — OpenAI-compatible API
 
@@ -120,8 +99,10 @@ and `run` with M6 — neither is in the build yet; each says so, verbatim:
 ```console
 $ stone-llama serve
 stone-llama serve: not implemented yet (ships in M5)
+EXIT=2
 $ stone-llama run Qwen3-1.7B-exl3_4.0bpw
 stone-llama run: not implemented yet (ships in M6)
+EXIT=2
 ```
 
 The walkthrough below is the v1 surface; a live `serve` + `curl` capture is

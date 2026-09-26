@@ -1,17 +1,14 @@
 # Installation
 
-v1 supports **Linux/amd64 only**. Read the platform table in the
-[README](../README.md#platform-reality--nvidiacuda-only-read-this-first) first —
-exllamav3 is NVIDIA-CUDA-only, so on CPU/AMD/Apple machines nothing below will
-ever serve.
+v1 supports **Linux/amd64 only**. Read the
+[platform table](../README.md#platform-support) first — exllamav3 is
+NVIDIA-CUDA-only, so on CPU/AMD/Apple machines nothing below will ever serve.
 
 ## Prerequisites
 
 | Requirement | Detail |
 |---|---|
-| GPU | NVIDIA with CUDA. No CPU path, no AMD/ROCm, no Apple/Metal. |
-| Driver | ≥ **570** (installs the `cu12` runtime extra) or ≥ **580** (`cu13`). Older → `doctor` refuses with the upgrade hint. |
-| OS/arch | Linux x86_64 (amd64). |
+| Platform | NVIDIA CUDA GPU, Linux x86_64 (amd64), driver ≥ **570** (`cu12` runtime extra) or ≥ **580** (`cu13`). No CPU path, no AMD/ROCm, no Apple/Metal; older driver → `doctor` refuses with the upgrade hint. Full table: [README platform support](../README.md#platform-support). |
 | Disk (binary alone) | ~10–15 MB. |
 | Disk (`setup` runtime) | **≈ 1 GB of downloads** — measured here: torch+cu130 531 MB, exllamav3 419 MB, uv 24 MB (950 MB total, HEAD-announced per URL before consent), plus a pinned CPython and the TabbyAPI checkout; the unpacked venv takes more than the downloads. Free space is checked with `statfs` and the run refuses if short. |
 | Disk (models) | Whatever the weights are — e.g. `SmolLM3-3B-exl3` is 1.84 GiB. Checked per-pull before any byte moves. |
@@ -40,14 +37,13 @@ curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts
 ```
 
 `scripts/install.sh` lives on `main` and supports `--help` (prints usage, exits
-0). It resolves the latest tagged release, verifies the `.sha256` sidecar, then
-installs — so it needs at least one tag on `main` to download from. **This
-download path isn't exercised until a release is tagged**: a `v0.1.0-rc1`
-pre-release is currently being cut to prove the pipeline end-to-end, after
-which `curl … | sh` works as shown. Until then, **Option B (build from source)**
-is the path that needs no release.
+0). It resolves the latest published release, verifies the `.sha256` sidecar,
+then installs. **No release has been published yet** — the release pipeline
+exists and a pre-release is planned to prove it end-to-end, but until that lands
+the working install path is **Option B (build from source)**, which needs no
+release.
 
-Or from a checkout: `scripts/install.sh --version 0.1.0` pins a tag.
+Or from a checkout: `scripts/install.sh --version X.Y.Z` pins a release tag.
 
 ## Option B — build from source (always works)
 
@@ -69,13 +65,7 @@ stone-llama doctor
 ```
 
 Expected `doctor` output on a supported machine (RTX 3050 Laptop, driver 580):
-
-```
-GPU        NVIDIA GeForce RTX 3050 Laptop GPU
-VRAM       4096 MiB
-Driver     580.178.04
-Runtime    cu13 extra
-```
+[screenshots/doctor-list.txt](screenshots/doctor-list.txt).
 
 ## The `setup` provisioning step (separate from install)
 
@@ -114,9 +104,9 @@ Real preflight on this machine (sizes are HTTP HEAD requests; without consent
 nothing is downloaded — the run aborts at the prompt):
 
 ```console
-$ stone-llama setup
+$ stone-llama setup   # no --yes: plan only, refuses to download
 setup plan
-  dest:  /home/anon/.local/share/stone-llama/runtime
+  dest:  ~/.local/share/stone-llama/runtime
   free:  88926429184 bytes
   downloads (3):
     https://github.com/astral-sh/uv/releases/download/0.11.6/uv-x86_64-unknown-linux-gnu.tar.gz (24284812 bytes)
@@ -129,6 +119,7 @@ setup plan
     4. venv-deps — create venv and install requirements-cu13.lock (950356092 bytes)
     5. smoke — verify exllamav3 import (0 bytes)
 Proceed? [y/N] stone-llama setup: setup: aborted (plan not confirmed)
+EXIT=1
 ```
 
 Raw capture: [screenshots/setup-preflight.txt](screenshots/setup-preflight.txt).
@@ -142,7 +133,8 @@ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw   # metadata only — no downlo
 stone-llama list           # should show installed models (or the empty hint)
 ```
 
-If `doctor` reports the runtime as missing, run `setup` before `serve`/`run`.
+If `doctor` reports the runtime as missing, run `setup` before `run`/`serve`
+(both still landing in M6/M5).
 
 ## Uninstall
 

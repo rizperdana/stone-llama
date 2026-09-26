@@ -1,6 +1,6 @@
 $ stone-llama setup   # no --yes: plan only, refuses to download
 setup plan
-  dest:  /home/anon/.local/share/stone-llama/runtime
+  dest:  ~/.local/share/stone-llama/runtime
   free:  88926429184 bytes
   downloads (3):
     https://github.com/astral-sh/uv/releases/download/0.11.6/uv-x86_64-unknown-linux-gnu.tar.gz (24284812 bytes)

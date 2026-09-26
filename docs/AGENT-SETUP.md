@@ -109,7 +109,7 @@ Verify with:
 
 Then `stone-llama ps` (loaded model + live VRAM) and `stone-llama stop`.
 
-If `serve`/`ps`/`stop`/`run` print "not implemented yet (ships in M4/M5/M6)",
+If `serve`/`ps`/`stop`/`run` print "not implemented yet (ships in M5/M6)",
 they are not in the build you have — report that honestly as an unfinished
 step; do not improvise an alternative server. `doctor`, `fit`, `list`,
 `list --estimate`, `rank`, `import`, `rm`, `pull`, `login` are implemented.
