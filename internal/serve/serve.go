@@ -404,6 +404,7 @@ func Serve(ctx context.Context, opts Options) error {
 		// key file the proxy injects from — both 0600, never argv/log.
 		keyFile, _, terr := writeChildTokens(opts.RuntimeDir)
 		if terr != nil {
+			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
 			return fmt.Errorf("serve: write child keys: %w", terr)
 		}
 		d.upKey = loadUpstreamKey(keyFile)
@@ -420,10 +421,15 @@ func Serve(ctx context.Context, opts Options) error {
 			// load endpoint (no child restart on model switch).
 		})
 		if werr := writeSecret(d.cfgPath, yaml); werr != nil {
+			dropState(opts.DataDir, opts.RuntimeDir)
 			return fmt.Errorf("serve: write child config: %w", werr)
 		}
 		c, err = d.startReady(supCtx)
 		if err != nil {
+			// failed start = no daemon: drop the generated keys and
+			// config so a runtime-less machine never keeps secrets for
+			// a daemon that never ran.
+			dropState(opts.DataDir, opts.RuntimeDir)
 			return err
 		}
 	}
@@ -436,6 +442,7 @@ func Serve(ctx context.Context, opts Options) error {
 		if c != nil {
 			c.shutdownChild(killGrace)
 		}
+		dropState(opts.DataDir, opts.RuntimeDir)
 		return fmt.Errorf("serve: listen %s: %w", d.st.Addr(), lerr)
 	}
 	if err := WriteState(opts.DataDir, d.st); err != nil {
@@ -443,6 +450,7 @@ func Serve(ctx context.Context, opts Options) error {
 		if c != nil {
 			c.shutdownChild(killGrace)
 		}
+		dropState(opts.DataDir, opts.RuntimeDir)
 		return err
 	}
 
@@ -496,7 +504,9 @@ func Serve(ctx context.Context, opts Options) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	srv.Shutdown(shutdownCtx)
 	cancel()
-	RemoveState(opts.DataDir)
+	// Clean shutdown: state, the generated secrets, and the lock go
+	// together (ownership: dropState/cleanupGenerated).
+	dropState(opts.DataDir, opts.RuntimeDir)
 	return result
 }
 
