@@ -56,7 +56,7 @@ func dryOpts(cfg *config.Config, rep doctor.Report) pull.Options {
 // runFit answers "does this model fit here, at what context, how fast" —
 // HF metadata only, nothing written (exit 3 when the gate refuses).
 func runFit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(stderr, "usage: stone-llama fit <repo[@branch][:quant]>   fit verdict + ctx/cache pick + tok/s estimate, no download (exit 3 = refused)")
 		return 2
 	}
