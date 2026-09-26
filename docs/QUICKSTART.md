@@ -115,11 +115,13 @@ Attach mode never restarts or stops the upstream server — it points stone-llam
 OpenAI-compatible endpoint at an existing TabbyAPI.
 
 Status when this page was written (2026-09-26): `serve` ships with milestone M5
-and is not in the build yet — the command says so, verbatim:
+and `run` with M6 — neither is in the build yet; each says so, verbatim:
 
 ```console
 $ stone-llama serve
 stone-llama serve: not implemented yet (ships in M5)
+$ stone-llama run Qwen3-1.7B-exl3_4.0bpw
+stone-llama run: not implemented yet (ships in M6)
 ```
 
 The walkthrough below is the v1 surface; a live `serve` + `curl` capture is
