@@ -7,8 +7,13 @@ tree (`main` at 4f020dc, plus the brand-icon size patch), linux/amd64,
 `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`, resulting binary
 7,770,296 bytes.
 
-`dev` is what an UNTAGGED source build prints. The published
-`v0.1.0-rc1` release binary prints `stone-llama v0.1.0-rc1 (linux/amd64)`
-instead, and embeds the 1,254,528-byte app icon; the current source build
-embeds the 91,972-byte one (byte-identical to assets/stone-llama-256.png),
-which is where the size drop comes from.
+`dev` is the compiled-in default (`var version = "dev"` in
+`cmd/stone-llama/main.go`), printed because this build passed only
+`-ldflags "-s -w"` — no `-X main.version=…`. `make build` and the release
+workflow inject `-X main.version=$(git describe --tags)`, which resolves
+to `v0.1.0-rc1` in this tree (the tag is present), so a Makefile build of
+the same source prints `stone-llama v0.1.0-rc1 (linux/amd64)` — as the
+published release binary does. On the icon: this source build embeds the
+91,972-byte one (byte-identical to `assets/stone-llama-256.png`), down from
+1,254,528 bytes in builds made before the brand-icon patch — that swap is
+where the size drop comes from.

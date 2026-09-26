@@ -50,7 +50,8 @@ EXIT=3
 exit 0 = fits / fits-with-warning, exit 3 = refused with the full breakdown.
 
 The same gate runs inside `pull` before any byte moves — this run declined the
-download, so nothing was fetched beyond KB of metadata — and an EXL3-shaped
+download, so nothing was fetched beyond gate metadata (KB of config plus the
+safetensors-header format check, ≤ ~16 MiB worst case) — and an EXL3-shaped
 layout is required: a GGUF repo is refused with "not an EXL3 model layout".
 Both runs: [screenshots/gate.txt](screenshots/gate.txt).
 

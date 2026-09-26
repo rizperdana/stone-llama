@@ -143,9 +143,11 @@ stone-llama list           # should show installed models (or the empty hint)
 ```
 
 Expected `version` banner for this machine's source build:
-[screenshots/version.txt](screenshots/version.txt) — `dev` is what an untagged
-build prints; the published release binary prints its tag instead
-(`stone-llama v0.1.0-rc1 (linux/amd64)`).
+[screenshots/version.txt](screenshots/version.txt) — `dev` is the compiled-in
+default, printed because that build passed no `-X main.version=…`;
+`make build` and the release workflow inject `git describe --tags`, so a
+Makefile build prints `stone-llama v0.1.0-rc1 (linux/amd64)` — as the
+published release binary does.
 
 If `doctor` reports the runtime as missing, run `setup` before `run`/`serve`.
 

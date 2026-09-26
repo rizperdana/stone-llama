@@ -15,8 +15,8 @@ Two things it does that a stock config cannot:
 - **VRAM-aware autofit** — computes a safe context window and cache mode from your GPU and
   the model's own `config.json`, prints the arithmetic, and warns when the margin is thin.
 - **Pre-download fit gate** — `fit` and `pull` check architecture, EXL3 format and VRAM fit
-  from KB of metadata *before any gigabyte moves*, and refuse with the numbers when the
-  model will not run.
+  from metadata — KB of config, plus at most ~16 MiB of safetensors headers — *before any
+  gigabyte moves*, and refuse with the numbers when the model will not run.
 
 **Not a better ollama.** exllamav3 — the engine stone-llama wraps — has no CPU, AMD/ROCm or
 Apple path. On CPU/AMD/Apple, use ollama with GGUF; see [Platform support](#platform-support).
@@ -143,7 +143,9 @@ stone-llama pull: non-interactive pull requires --yes to confirm the download
 ```
 
 The second run was refused (non-interactive stdin without `--yes`), so nothing was fetched
-beyond KB of metadata; `list` above shows a model linked in with `import`, also no download.
+beyond gate metadata — KB of config plus, for the format verdict, the safetensors headers
+(see the gate section below); `list` above shows a model linked in with `import`, also no
+download.
 Model-download steps are deliberately omitted from the captures. The rest — `fit` on a model
 that fits and one that does not, `rank`, `list --estimate`, `setup` preflight, plus the live
 [`serve`](docs/screenshots/serve.txt) and [`run`](docs/screenshots/run.txt) transcripts and
@@ -199,8 +201,15 @@ Long version: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## The pre-download fit gate
 
 `fit` (and the same gate inside `pull`) reads only small metadata first — `config.json`,
-`quantization_config.json`, the file tree; KB, not weights — and checks three things
-**before a single weight byte moves**:
+`quantization_config.json`, the file tree; KB, not weights — and, for the format verdict,
+the **safetensors headers**: at most 4 files, one ranged `GET` each, `header_size`
+validated and capped at 4 MiB before anything is allocated (≤ ~16 MiB worst case per repo),
+bodies closed as soon as the header is parsed. The header is the engine's own test: the
+per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3
+storage, and the quant-group dtypes checked against the installed engine's supported set.
+A header that cannot be read (gated, missing, oversize, transport error) yields
+**warn / "unverified"** — never a silent pass, and never a refusal because we could not
+look. It then checks three things **before a single weight byte moves**:
 
 1. **Architecture** — is `config.architectures[]` one of the architectures the installed
    exllamav3 declares (reconciled from `architecture/*.py`)? Unknown → warned with the
@@ -219,7 +228,13 @@ spec), calibrated to one measured point (42.7 tok/s, SmolLM3-3B 3.5bpw); every o
 number is `[est]` until calibration lands.
 
 The verdict is saved to the model's `manifest.json` and shown by `stone-llama list`.
-Cost of a caught mistake: ~2 KB of metadata instead of a wasted multi-GB download.
+Cost of a caught mistake: KB of config plus, worst case, ~16 MiB of safetensors headers
+(4 files × the 4 MiB cap) — three orders of magnitude below the smallest candidates, whose
+weights are gigabytes — instead of a wasted multi-GB download. Concretely: a live 1.68 GB
+repo whose quant tensors are a dtype the installed engine cannot load (unsigned int16
+`.trellis`) is refused before the consent prompt — `fit` reports that refusal as `exit 3` —
+naming the dtype and the engine limitation, where the previous gate accepted it as
+`gate: quant ✓ exl3` and would have fetched the whole thing.
 
 Model repos on the Hub churn — quant converters routinely delete or move weights (the
 original example here, `turboderp/SmolLM3-3B-exl3`, now serves only a README). That is
@@ -228,9 +243,11 @@ already own instead of trusting the Hub to stay up.
 
 ## Third-party components
 
-stone-llama **redistributes none** of them; `setup` fetches each from its upstream source
-on your machine, sizes announced and confirmation required. Verified licenses (per-package
-evidence in [THIRD-PARTY.md](THIRD-PARTY.md)):
+The binary itself has **zero third-party Go dependencies** — standard library only
+(`go.mod` carries no `require` block, and there is no `go.sum`). Everything in this
+section is a *runtime* component: stone-llama **redistributes none** of them; `setup`
+fetches each from its upstream source on your machine, sizes announced and confirmation
+required. Verified licenses (per-package evidence in [THIRD-PARTY.md](THIRD-PARTY.md)):
 
 | Component | How it arrives | License |
 |---|---|---|
