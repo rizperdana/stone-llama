@@ -3,11 +3,16 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -370,4 +375,199 @@ func TestRunOneShotStreams(t *testing.T) {
 	}
 	cancel()
 	<-errCh
+}
+
+// freeLocalPort returns a loopback port that was free a moment ago —
+// for tests that probe the configured port (A3 diagnosis).
+func freeLocalPort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+}
+
+// isolateConfig points config at a file-less scratch location so no
+// test can resolve a real machine config — never spawn against, or
+// clean, a production runtime dir.
+func isolateConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if v, ok := os.LookupEnv("STONE_LLAMA_CONFIG"); ok {
+		os.Unsetenv("STONE_LLAMA_CONFIG")
+		t.Cleanup(func() { os.Setenv("STONE_LLAMA_CONFIG", v) })
+	}
+}
+
+// H4: run must honour STONE_LLAMA_NO_AUTOSTART=1 (exactly "1", the
+// same contract ps uses) — a missing daemon is reported, not
+// auto-started. The base run hardcoded auto-start = true.
+func TestRunHonoursNoAutostart(t *testing.T) {
+	if os.Getenv("SL_H4_CHILD") == "1" {
+		// The base implementation re-execs this test binary as `serve`
+		// for auto-start; the env guard stops that child re-entering
+		// the suite. The fixed tree never spawns here at all.
+		t.Skip("recursive starter guard (base re-execs the test binary)")
+	}
+	t.Setenv("SL_H4_CHILD", "1")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	code, _, errb := run("run", "somemodel", "-p", "hi")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (no daemon, autostart off)", code)
+	}
+	if !strings.Contains(errb, "no stone-llama daemon is running") {
+		t.Errorf("STONE_LLAMA_NO_AUTOSTART ignored by run: %q", errb)
+	}
+	if _, err := os.Stat(filepath.Join(config.DataDir(), "logs", "daemon.log")); err == nil {
+		t.Errorf("auto-start attempted despite NO_AUTOSTART=1 (daemon.log created)")
+	}
+}
+
+// Item 3: a supervised-backend start failure prints the cause once and
+// exactly one remedy block (attach → setup → adoption-not-supported),
+// naming only flags that exist; a failed start keeps no secrets.
+func TestServeStartFailurePrintsRemediesOnce(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	code, _, errb := run("serve", "--port", freeLocalPort(t))
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; err = %q", code, errb)
+	}
+	if !strings.Contains(errb, "runtime incomplete") {
+		t.Fatalf("want runtime-incomplete cause, got %q", errb)
+	}
+	for _, want := range []string{
+		"stone-llama serve --attach",
+		"--key-file",
+		"stone-llama setup",
+		"not supported yet",
+	} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("remedy %q missing from %q", want, errb)
+		}
+	}
+	if n := strings.Count(errb, "remedies, least friction first"); n != 1 {
+		t.Errorf("remedy block appears %d times, want exactly 1: %q", n, errb)
+	}
+	if n := strings.Count(errb, "runtime incomplete"); n != 1 {
+		t.Errorf("cause line appears %d times, want exactly 1: %q", n, errb)
+	}
+	if _, err := os.Lstat(filepath.Join(config.DataDir(), "runtime", "upstream_key")); !os.IsNotExist(err) {
+		t.Errorf("generated upstream key left behind by failed serve")
+	}
+}
+
+// H3 Case 2 (CLI): stop works through corrupt state — salvage, then the
+// identification gates — instead of exiting 1 without signalling
+// anything (base behaviour).
+func TestStopRecoversFromCorruptState(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if runtime.GOOS == "windows" {
+		t.Skip("stop is refused on windows")
+	}
+	proc := exec.Command("sleep", "30")
+	proc.Args = []string{"stone-llama serve", "30"}
+	if err := proc.Start(); err != nil {
+		t.Skipf("needs sleep(1): %v", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- proc.Wait() }() // owns the Wait: zombie-free
+	t.Cleanup(func() { proc.Process.Kill() })
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Stone-Llama", "1")
+		io.WriteString(w, "stone-llama\n")
+	})
+	mux.HandleFunc("/-/status", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "{}")
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// corrupt state (truncated write) salvaging pid/host/port
+	dataDir := config.DataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := fmt.Sprintf(`{"child_pid":7,"pid":%d,"host":"127.0.0.1","port":%d,"token":"tok-abc"`, proc.Process.Pid, port)
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.json"), []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := run("stop")
+	if code != 0 {
+		t.Fatalf("stop through corrupt state: code=%d out=%q err=%q", code, out, errb)
+	}
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Error("daemon stand-in survived stop")
+	}
+	if !strings.Contains(out, "stopped") {
+		t.Errorf("stop output: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); !os.IsNotExist(err) {
+		t.Errorf("corrupt state not cleared after stop: %v", err)
+	}
+}
+
+// H3 Case 2 (CLI): ps explains corrupt state — the live daemon is
+// still shown, the corruption is reported on stderr, and the file is
+// neither deleted nor hidden.
+func TestPsExplainsCorruptState(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Stone-Llama", "1")
+		io.WriteString(w, "stone-llama\n")
+	})
+	mux.HandleFunc("/-/status", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "{}")
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := config.DataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := fmt.Sprintf(`{"child_pid":7,"pid":%d,"host":"127.0.0.1","port":%d,"token":"tok-abc"`, os.Getpid(), port)
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.json"), []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := run("ps")
+	if code != 0 {
+		t.Fatalf("ps through corrupt state: code=%d out=%q err=%q", code, out, errb)
+	}
+	if !strings.Contains(out, "running") {
+		t.Errorf("status missing: %q", out)
+	}
+	if !strings.Contains(errb, "corrupt") {
+		t.Errorf("corruption not reported: %q", errb)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); err != nil {
+		t.Errorf("ps deleted the corrupt state file: %v", err)
+	}
 }

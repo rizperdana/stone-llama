@@ -151,8 +151,8 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	dataDir := config.DataDir()
 	_, prevErr := serve.ReadState(dataDir)
 	started := errors.Is(prevErr, serve.ErrNoDaemon)
-	if _, err := serve.EnsureDaemon(dataDir, true, 30*time.Second); err != nil {
-		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
+	if _, err := serve.EnsureDaemon(dataDir, !noAutostart(), 30*time.Second); err != nil {
+		fmt.Fprintf(stderr, "stone-llama run: %v%s\n", err, backendStartHelp(err.Error()))
 		return 1
 	}
 	if started {
@@ -165,7 +165,8 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	token := ""
-	if state, serr := serve.ReadState(dataDir); serr == nil {
+	if state, serr := serve.ReadState(dataDir); serr == nil ||
+		(errors.Is(serr, serve.ErrCorruptState) && state.Token != "") {
 		token = state.Token
 	}
 	if st.Model != model {
@@ -633,6 +634,35 @@ func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// noAutostart is the STONE_LLAMA_NO_AUTOSTART contract (ARCHITECTURE
+// §2): exactly "1" opts out. Shared by every auto-starting command so
+// the semantics cannot drift (run silently ignored it — H4).
+func noAutostart() bool {
+	return os.Getenv("STONE_LLAMA_NO_AUTOSTART") == "1"
+}
+
+// backendStartHelp is the single, once-per-failure remedy block for
+// "the supervised backend could not start": least friction first —
+// attach an already-running server, provision with setup, adoption
+// (not yet supported). Only flags that actually exist are named, and
+// it prints at most once per error (never as a repeating wall).
+func backendStartHelp(msg string) string {
+	// the captured auto-start tail can already carry the child's own
+	// remedy block — never print a second copy (live demo caught this).
+	if strings.Contains(msg, "remedies, least friction first") {
+		return ""
+	}
+	if !strings.Contains(msg, "runtime incomplete") &&
+		!strings.Contains(msg, "auto-start failed") &&
+		!strings.Contains(msg, "still starting after") {
+		return ""
+	}
+	return "\nremedies, least friction first:\n" +
+		"  1. attach to a running OpenAI-compatible server: stone-llama serve --attach host:port --key-file <file> ('stone-llama run' works against an attached daemon)\n" +
+		"  2. provision the pinned runtime: stone-llama setup\n" +
+		"  3. adopting an existing local install (a working tabbyAPI checkout/venv) is not supported yet"
+}
+
 // runServe runs the daemon in the foreground (M5): a supervised child
 // by default, or --attach against an existing OpenAI-compatible server
 // (schemeless host:port accepted). Ctrl-C/SIGTERM shuts down cleanly.
@@ -714,7 +744,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		Stderr:          stderr,
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
-		fmt.Fprintf(stderr, "stone-llama serve: %v\n", err)
+		fmt.Fprintf(stderr, "stone-llama serve: %v%s\n", err, backendStartHelp(err.Error()))
 		return 1
 	}
 	return 0
@@ -729,10 +759,14 @@ func runPs(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	dataDir := config.DataDir()
-	start := os.Getenv("STONE_LLAMA_NO_AUTOSTART") != "1"
-	if _, err := serve.EnsureDaemon(dataDir, start, 30*time.Second); err != nil {
-		fmt.Fprintf(stderr, "stone-llama ps: %v\n", err)
+	if _, err := serve.EnsureDaemon(dataDir, !noAutostart(), 30*time.Second); err != nil {
+		fmt.Fprintf(stderr, "stone-llama ps: %v%s\n", err, backendStartHelp(err.Error()))
 		return 1
+	}
+	// corrupt state that still reached a live daemon (H3): show the
+	// anomaly alongside the status instead of hiding the daemon.
+	if _, serr := serve.ReadState(dataDir); errors.Is(serr, serve.ErrCorruptState) {
+		fmt.Fprintf(stderr, "stone-llama ps: warning: %v — pid/port salvaged; restart the daemon (stop, then start) to rewrite the file\n", serr)
 	}
 	st, err := serve.Query(dataDir)
 	if err != nil {
@@ -773,10 +807,13 @@ func runStop(args []string, stdout, stderr io.Writer) int {
 	if _, err := serve.ReadState(dataDir); errors.Is(err, serve.ErrNoDaemon) {
 		fmt.Fprintln(stdout, "stone-llama: not running")
 		return 0
-	} else if err != nil {
+	} else if err != nil && !errors.Is(err, serve.ErrCorruptState) {
 		fmt.Fprintf(stderr, "stone-llama stop: %v\n", err)
 		return 1
 	}
+	// corrupt state still reaches Stop (H3): it salvages pid/port and
+	// the H2 gates decide whether signalling is safe; unusable corrupt
+	// state errors there with the file kept and explained.
 	if err := serve.Stop(dataDir, 8*time.Second); err != nil {
 		fmt.Fprintf(stderr, "stone-llama stop: %v\n", err)
 		return 1
