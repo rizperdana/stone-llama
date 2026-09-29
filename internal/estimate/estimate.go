@@ -2,19 +2,22 @@
 // models on a given NVIDIA GPU from metadata alone (weights, quant, KV
 // geometry, context) — no model on disk required.
 //
-// Calibration status: PLACEHOLDER. The calibration note in the project's
-// research notes was still in progress when this package was written,
-// so the constants below are fitted to the single
-// measured anchor recorded in this project's evidence log:
+// Calibration status: decode is fitted to the single measured anchor below;
+// prefill is unfitted (the research note exists, but Predict cannot use its
+// prompt-length curve — see prefillEfficiency). Source:
 //
 //	decode anchor: SmolLM3-3B-exl3 3.5bpw, 1,957,008,720 B weights,
 //	               42.7 tok/s on an RTX 3050 Laptop (spec 224 GB/s)
 //
-// decodeEfficiency = 42.7 × 1,957,008,720 / 224e9 ≈ 0.373.
-// Replace decodeEfficiency / prefillEfficiency / the card table when the
-// research note lands — recalibration must stay a one-line change here.
-// Everything this package produces is an estimate and must be labelled [est]
-// by callers.
+// decodeEfficiency = 42.7 × 1,957,008,720 / 224e9 ≈ 0.373 — the note's
+// §1 "Alt. (224 GB/s assumption)" row (K ≈ 83.6 GB/s either way).
+// Prefill in the note is prompt-length-dependent (two measured anchors,
+// 1,224 tok/s @ 15,797 prompt tokens and 691 tok/s @ 60,076, fitted by
+// 1689 / (1 + L/41608)); Predict has no prompt-length input, so the
+// prefillEfficiency constant cannot reproduce that curve — see its
+// comment. Recalibration must stay a one-line change here. Everything
+// this package produces is an estimate and must be labelled [est] by
+// callers.
 package estimate
 
 import (
@@ -28,12 +31,23 @@ const (
 	// decodeEfficiency is the fraction of the card's spec memory bandwidth
 	// actually achieved during autoregressive decode: each generated token
 	// streams the full weights plus the live KV cache once.
-	// [est] placeholder — fitted to the anchor above; pending toks-estimator.md.
+	// [est] — derived from the research note (toks-estimator.md §1/§3):
+	// K = 42.7 × 1,957,008,720 ≈ 83.57 GB/s ≈ 0.373 × 224 GB/s.
 	decodeEfficiency = 0.373
 
 	// prefillEfficiency is the fraction of spec'd FP16 tensor throughput
-	// achieved during a dense prefill GEMM. [est] placeholder — NO prefill
-	// anchor has been measured yet; pending toks-estimator.md.
+	// achieved during a dense prefill GEMM. [est] placeholder — NOT
+	// calibrated. The research note (toks-estimator.md §3) has two measured
+	// prefill anchors — 1,224 tok/s @ L=15,797 and 691 tok/s @ L=60,076,
+	// reproduced by 1689 / (1 + L/41608) — but Predict is prompt-length-
+	// independent (there is no L input; the value below is a constant), so
+	// it cannot reproduce that curve: for SmolLM3-3B it emits ~407 tok/s at
+	// any prompt length, against a measured 1,224 already at L=15,797.
+	// Wiring a prompt-length term in would need per-arch C/L_char
+	// validation against BOTH anchors plus a caller-chosen default L that
+	// keeps every documented fit/list figure consistent — neither exists
+	// today, so behaviour is deliberately left alone. Not a pending task;
+	// an honest limitation until someone measures per-arch anchors.
 	prefillEfficiency = 0.40
 
 	// defaultBits is assumed when the quant label carries no bpw number.
