@@ -126,7 +126,7 @@
     <div class="wrap">
       <p class="eyebrow">02 &mdash; terminal</p>
       <h2 id="output-title">Four captures from a live run</h2>
-      <p class="sect-lede">2026-09-26, RTX 3050 Laptop 4096&nbsp;MiB, Linux/amd64.
+      <p class="sect-lede">2026-09-26 (fit/gate re-captured 2026-09-29), RTX 3050 Laptop 4096&nbsp;MiB, Linux/amd64.
         Raw files in <a href="https://github.com/rizperdana/stone-llama/tree/main/docs/screenshots">docs/screenshots/</a>.</p>
 
       <div class="term-grid">
@@ -148,12 +148,12 @@ SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported</code></pre>
           <pre tabindex="0"><code><span class="cmd">$ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
 gate: quant <span class="ok">✓</span> exl3
-gate: fit   <span class="warn">⚠</span> weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
+gate: fit   <span class="warn">⚠</span> weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)
 <span class="c">[…]</span>
 <span class="cmd">$ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
 gate: quant <span class="ok">✓</span> exl3
-gate: fit   <span class="bad">✗</span> no config fits: weights 4950 + KV (Q4 @ 4096) 144 + overhead 128 = 5222 MiB &gt; 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
+gate: fit   <span class="bad">✗</span> no config fits: weights 4950 + KV (Q4 @ 4096) 162 + overhead 128 = 5240 MiB &gt; 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
       largest ctx that would fit: none — no context fits; pull a smaller quant or use a bigger GPU
 fit: refused — no context fits this model in VRAM (see the gate report above)
 <span class="c">EXIT=3</span></code></pre>
@@ -167,9 +167,9 @@ stone-llama pull: repo ggml-org/SmolLM3-3B-GGUF has no config.json — not an EX
 <span class="cmd">$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # declined: non-interactive, --yes required, 'n' never read</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
 gate: quant <span class="ok">✓</span> exl3
-gate: fit   <span class="warn">⚠</span> weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
+gate: fit   <span class="warn">⚠</span> weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)
 <span class="c">[…]</span>
-pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 83.05 GiB free
+pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 76.05 GiB free
 stone-llama pull: non-interactive pull requires --yes to confirm the download</code></pre>
         </figure>
 
@@ -358,7 +358,7 @@ stone-llama: stopped
     <div class="wrap">
       <p class="eyebrow">05 &mdash; models</p>
       <h2 id="models-title">What fits a 4&nbsp;GB card</h2>
-      <p class="sect-lede">Metadata-only ranking, 2026-09-26 &mdash; <strong>zero weight bytes
+      <p class="sect-lede">Metadata-only ranking, 2026-09-29 &mdash; <strong>zero weight bytes
         downloaded</strong>. RTX 3050 Laptop, 4096&nbsp;MiB.</p>
 
       <div class="table-wrap" role="region" aria-label="EXL3 models ranked for a 4 GB card" tabindex="0">
@@ -377,7 +377,7 @@ stone-llama: stopped
               <th scope="row"><span class="m-name">Qwen3-4B-Instruct-2507</span>
                 <span class="m-repo">ArtusDev/Qwen_Qwen3-4B-Instruct-2507-EXL3 @ 2.5bpw_H6</span></th>
               <td class="num">2.06 GiB</td>
-              <td class="num">39,842 <span class="est">[est]</span></td>
+              <td class="num">35,415 <span class="est">[est]</span></td>
               <td><span class="ok">✓</span></td>
               <td><span class="tag tag-tight">fits-tight</span></td>
             </tr>
@@ -393,7 +393,7 @@ stone-llama: stopped
               <th scope="row"><span class="m-name">Ministral-3B</span>
                 <span class="m-repo">UnstableLlama/Ministral-3-3B-Instruct-2512-exl3 @ 2.10bpw</span></th>
               <td class="num">2.55 GiB</td>
-              <td class="num">35,214 <span class="est">[est]</span></td>
+              <td class="num">31,301 <span class="est">[est]</span></td>
               <td><span class="ok">✓</span></td>
               <td><span class="tag tag-tight">fits-tight</span></td>
             </tr>
@@ -426,8 +426,17 @@ stone-llama: stopped
       </div>
       <p class="fine"><span class="est">[est]</span> = computed from metadata + your VRAM, not
         measured. Tool calls = the runtime&rsquo;s server-side parser.
-        <code>fit</code> speed estimates anchor to one measured point: 42.7&nbsp;tok/s
-        (SmolLM3-3B, this card).</p>
+        <strong>Max ctx here uses the budget rule</strong> &mdash;
+        <code>weights + KV ≤ 3508 MiB</code> (4096 − 88 overhead − 500 headroom allowance, the
+        research note&rsquo;s config rule) &mdash; which prices cache only.
+        <code>stone-llama fit</code> applies the stricter <strong>headroom rule</strong>
+        (<code>weights + KV + overhead ≤ 4096 − headroom(ctx)</code>; headroom grows with ctx), so
+        its picks on this card are smaller: Qwen3-4B Q4&nbsp;16384, LFM2.5 Q4&nbsp;15872, Ministral
+        Q4&nbsp;8192, SmolLM3 Q4&nbsp;32768, Qwen3.5-2B Q8&nbsp;32768; Qwen2.5-7B&nbsp;@2.0bpw is
+        <em>refused</em> there (3182&nbsp;MiB &gt; 3040&nbsp;MiB budget at ctx&nbsp;4096). Both figures
+        are true of their own rule &mdash; the table above is the budget rule, <code>fit</code> is the
+        headroom rule. <code>fit</code> speed estimates anchor to one measured decode point:
+        42.7&nbsp;tok/s (SmolLM3-3B, this card); prefill estimates are unfitted.</p>
     </div>
   </section>
 

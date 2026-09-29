@@ -82,13 +82,13 @@ verdict — with your actual GPU and driver numbers — before anything gets ins
 | `fit <repo>` | gate + predicted tok/s `[est]` from metadata — **no model download** |
 | `list [--estimate]` | models with size, quant, gate verdict, source |
 | `rank --collection <owner/name>` | rank a HF collection by fit + predicted tok/s `[est]` |
-| `pull <model>[:tag]` | gate → consent → resumable download, sha256-verified |
+| `pull <repo[@branch][:quant>] [--force] [--quiet] [--yes]` | gate → consent → resumable download, sha256-verified |
 | `import <dir>` | symlink an existing model dir in (zero copy) |
 | `rm <model>` | remove a model (import symlinks: link only, target untouched) |
 | `login` | HuggingFace token for gated repos (stored 0600) |
-| `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; extra picked from the driver unless overridden) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
+| `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
 | `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream; the model positional is ignored in attach mode) |
-| `ps` / `stop` | loaded model + live VRAM / stop the daemon |
+| `ps` / `stop` | loaded model + sampled VRAM peak of the supervised child (line omitted in attach mode — no child to sample) / stop the daemon |
 | `run <model>` | streaming CLI chat |
 | `version` | version |
 | `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
@@ -101,8 +101,9 @@ State (`models/`, `runtime/`, `daemon.json`, logs) is `$XDG_DATA_HOME/stone-llam
 config `$XDG_CONFIG_HOME/stone-llama/config.json`. **Testing? Point `XDG_DATA_HOME` at
 an empty directory** or `ps`/`run`/`serve` will find the live daemon.
 
-`[est]` = computed from metadata + your VRAM, not measured. The one measured anchor:
-42.7 tok/s (SmolLM3-3B, reference card).
+`[est]` = computed from metadata + your VRAM, not measured. The one measured anchor
+feeding these numbers: 42.7 tok/s decode (SmolLM3-3B, reference card); prefill has
+no fitted anchor (see `internal/estimate`).
 
 ## Real terminal output
 
@@ -123,11 +124,17 @@ Every capture — `doctor`, `fit` (one that fits, one that does not), `rank`,
 
 Everything comes from the model's own `config.json` plus your VRAM: the ladder tries
 `ctx` = trained max, halves it down to 4096, and prefers better cache quality at each
-tier (FP16 → Q8 → Q4). It never exceeds `max_position_embeddings`, the arithmetic is
-always printed, and a thin margin warns. If prefill OOMs (CUDA OOM *before* the first
-token), drop `--ctx` one tier; if nothing fits you get the full breakdown plus the
-largest ctx that *would* fit. Derivation, headroom terms and a worked example:
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+tier (FP16 → Q8 → Q4 → `"4,2"`; Q6 skipped, Q2 manual-only). It never exceeds
+`max_position_embeddings`, and the rule it applies is the **headroom rule**:
+`weights + KV + overhead ≤ VRAM − headroom(ctx)` — headroom grows with ctx, so on the
+4 GB card SmolLM3-3B lands at Q4 ctx 32768, *not* Q4 @ 65536. (The site's model table
+uses the other, **budget rule** — `weights + KV ≤ 3508 MiB`, a static
+4096 − 88 overhead − 500 headroom allowance from the project's research note — where
+65536 Q4 *does* fit; both figures are true of their own rule and are labelled as
+such.) The arithmetic is always printed, and a thin margin warns. If prefill OOMs
+(CUDA OOM *before* the first token), drop `--ctx` one tier; if nothing fits you get
+the full breakdown plus the largest ctx that *would* fit. Derivation, headroom terms
+and a worked example: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## The pre-download fit gate
 

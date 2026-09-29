@@ -28,9 +28,12 @@ checksums.txt
 `ollama-darwin.tgz`, `ollama-windows-amd64.zip`, their installer scripts, and a
 single `sha256sum.txt` — no version in the filenames, one combined checksum
 file. We mirror that pattern so users and CI use consistent, predictable names
-regardless of the release tag. The binary itself carries the version via
-`main.version` ldflags (`-X main.version=vX.Y.Z`), so `stone-llama version`
-always reports the tag.
+regardless of the release tag. The release build injects the tag into
+`main.version` (`-X main.version=<tag>`: Makefile `VERSION_TAG` = `git describe`,
+release.yml `${VERSION}`), so a published binary's `stone-llama version` reports
+the tag. Builds that pass no `-X` print the default `dev` (`var version = "dev"`
+in `cmd/stone-llama/main.go` — e.g. a plain `go build`, observed `stone-llama dev`),
+and the CI smoke build prints `ci` (`ci.yml` passes `-X main.version=ci`).
 
 **Why not per-file `.sha256` sidecars?** They duplicate `checksums.txt` and
 force `install.sh` to know the exact filename. With a single combined file,
@@ -292,8 +295,8 @@ sh scripts/install.sh --uninstall --prefix /tmp/sl-install-test   # removes it
       end-to-end (published asset size matched, sha256 matched, binary ran)
 - [ ] **CI green** on all 5 targets (compile + smoke test) — verify at tag time
 - [ ] **Release-notes template summary** reviewed for this tag
-- [ ] **README/docs install claims match the published artifacts** (see
-      "Known doc drift" below)
+- [x] **README/docs install claims match the published artifacts** — the four
+      "Known doc drift" items below were fixed in their files; re-verified 2026-09-29
 - [ ] **Provenance verified** — `gh attestation verify <asset> -o rizperdana/stone-llama`
       passes for this tag's assets (first provable on the first tag pushed
       after this workflow change lands)
@@ -366,22 +369,13 @@ rejected:
 | Per-file `.sha256` sidecars | Duplicate `checksums.txt` (see artifact naming). |
 | Root `CHANGELOG.md` | The history contains merge commits and duplicate subjects from merged branches; curating it by hand invites invented entries. Per-tag notes are generated verbatim from `git log` instead. |
 
-## Known doc drift (found while doing release work, NOT fixed here)
+## Known doc drift (found while doing release work — resolved)
 
-These files are owned by other writers — reported, not edited:
-
-- `README.md` — "No release is published yet … a sha256-verifying install.sh
-  lands with the first release" is stale: `v0.1.0-rc1` is published and
-  `scripts/install.sh` exists. Also claims `run`/`serve` print "ships in M5/M6".
-- `docs/INSTALLATION.md` — Option A shows old artifact names
-  (`stone-llama_X.Y.Z_linux_amd64.tar.gz`), `.sha256` sidecars, and "No
-  release has been published yet"; actual names are
-  `stone-llama-<os>-<arch>.tgz` with a single combined `checksums.txt`, and
-  rc1 is published.
-- `docs/ARCHITECTURE.md` — artifact example `stone-llama-vX.Y.Z-linux-amd64.tar.gz`
-  does not match the published naming scheme.
-- `site/index.html` — "Release pending" install note is stale now that rc1
-  exists.
+Previously reported here: README "no release published / install.sh lands later",
+INSTALLATION old artifact names + `.sha256` sidecars, ARCHITECTURE artifact
+example, and the site's "Release pending" note. All four were fixed in their
+files and re-verified 2026-09-29 — no stale claim survives outside this
+historical section.
 
 ## Action name audit
 

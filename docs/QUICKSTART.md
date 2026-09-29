@@ -33,14 +33,14 @@ autofit arithmetic against *your* VRAM, then a predicted tok/s **[est]**:
 $ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw
 gate: arch  ✓ Qwen3ForCausalLM
 gate: quant ✓ exl3
-gate: fit   ⚠ weights 1491 + KV 1120 + overhead 128 = 2739 MiB (headroom 1344, budget 2752)
-      warning: only 13 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
-estimate: ~31 tok/s decode, ~582 tok/s prefill [est] at Q4 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending
+gate: fit   ⚠ weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)
+      warning: only 153 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
+estimate: ~32 tok/s decode, ~582 tok/s prefill [est] at 4,2 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending
 
 $ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw
 gate: arch  ✓ Qwen3ForCausalLM
 gate: quant ✓ exl3
-gate: fit   ✗ no config fits: weights 4950 + KV (Q4 @ 4096) 144 + overhead 128 = 5222 MiB > 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
+gate: fit   ✗ no config fits: weights 4950 + KV (Q4 @ 4096) 162 + overhead 128 = 5240 MiB > 3040 MiB budget (4096 MiB VRAM − 1056 headroom: 512 base + 512 prefill workspace [est] + 32 ctx margin [est])
       largest ctx that would fit: none — no context fits; pull a smaller quant or use a bigger GPU
       reduce --ctx or pick a smaller quant
 fit: refused — no context fits this model in VRAM (see the gate report above)
@@ -61,7 +61,7 @@ Both runs: [screenshots/gate.txt](screenshots/gate.txt).
 stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw
 ```
 
-Gate first (above), then exact HEAD-measured size + free space, then one `y/N`.
+Gate first (above), then exact size (from the HuggingFace file tree) + free space, then one `y/N`.
 Single-stream resumable download, sha256 verified before the file is renamed.
 Already own the weights? Skip the download: `stone-llama import <dir> --name <n>`
 symlinks them in, zero copy.
@@ -196,8 +196,8 @@ exit=0
 marker header. Measured on that same daemon: a non-streaming completion
 returned 200 in 0.344 s, and a streaming request had TTFB 0.0105 s against a
 total of 1.4166 s across 56 SSE events — per-chunk passthrough, not buffering.
-(The measured autofit numbers in this doc were obtained in attach mode against
-a live TabbyAPI — zero downloads.)
+(The gate/autofit numbers in this doc come from `fit` — HuggingFace metadata only,
+zero downloads; the serve/ps captures were taken in attach mode against a live TabbyAPI.)
 
 ```bash
 curl http://127.0.0.1:5111/v1/models
@@ -208,7 +208,9 @@ curl http://127.0.0.1:5111/v1/chat/completions -d '{
 }'
 ```
 
-Then `stone-llama ps` (loaded model + live VRAM) and `stone-llama stop`.
+Then `stone-llama ps` (loaded model + sampled VRAM peak of the supervised child;
+no child in attach mode, so that line is omitted — see the attach `ps` capture
+above) and `stone-llama stop`.
 
 With no daemon the two commands differ in exit code — scripts will care. Both
 lines below are observed at revision 4f020dc, where `ps` finds the daemon only

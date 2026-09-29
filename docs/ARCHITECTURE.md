@@ -21,13 +21,13 @@
 | Architecture support matrix | the embedded arch list (`internal/preflight/archlist.go`) — built from installed `architecture/*.py` + upstream README + TabbyAPI templates (A5 source) |
 | GPU | RTX 3050 Laptop, **4096 MiB**, driver 580.178.04 |
 | Measured model | `SmolLM3-3B-exl3`: `model.safetensors` = 1,957,008,720 B (**1866 MiB**) |
-| Measured load | Q4 @ 65536 → **peak 3105 MiB** (1866 weights + 1152 KV + ≈ 87 overhead) — the *old* default; under A10's headroom it is refused and the ladder lands Q4@32768 |
-| KV arithmetic | `layers × 2 × kv_heads × head_dim` = 36 × 2 × 4 × 128 = **36,864 elems/token** → FP16 72 KiB, Q8 36 KiB, Q4 18 KiB per token; @65536: 4608 / 2304 / 1152 MiB. **Verified against `config.json`.** |
+| Measured load | historical live run at Q4 @ 65536 peaked at **3105 MiB** (the *old* default, pre-A10); autofit's *reservation* for that config is 1866 weights + 1296 KV + 128 overhead = **3290 MiB**, which the headroom rule refuses (budget 2560 @ 65536) → the ladder lands Q4@32768 |
+| KV arithmetic | `layers × 2 × kv_heads × head_dim` = 36 × 2 × 4 × 128 = **36,864 elems/token** → per token FP16 72 KiB, Q8 38.25 KiB, Q4 20.25 KiB, `"4,2"` 15.75 KiB (0.0625 B/elem of scales included); @65536: 4608 / 2448 / 1296 / 1008 MiB, @32768: 2304 / 1224 / 648 / 504 MiB. **Verified against `config.json` and live `fit`.** |
 | Go | go1.24.4 linux/amd64 installed |
 | `gh` | **active account `rizperdana`** (verified this session; two other logged-in accounts exist but are inactive — this check gated repo creation per A8) |
 | Bootstrap pain (known) | missing `aiofiles`, no `pip` in uv venv, `--gpu-lib` = install-time extra selection, API key auto-generated to `api_tokens.yml` |
 
-**Correction to the brief (kept from v1):** the "2909 MiB used" figure must not calibrate the heuristic. Weights (1866) + full Q4 KV (1152) = 3018 ≈ measured **peak** 3105. Autofit models **peak**, with a 128 MiB overhead term — reproduces 3105 within 4 MiB.
+**Correction to the brief (kept from v1):** the "2909 MiB used" figure must not calibrate the heuristic. Autofit models **peak**: weights + full-cache KV + 128 MiB measured overhead. The historical observed peak at Q4@65536 was 3105 MiB, but full Q4 KV there is 1296 MiB (§5 — scales priced in), so the model's reservation for that config is 3290 MiB; an observed peak below it only means that run never filled the cache [est]. The earlier decomposition here (1152 KV + ≈87 ≈ 3105) priced Q4 KV at 0.5 B/elem without scales and is superseded by §5.
 
 ---
 
@@ -59,11 +59,11 @@ New amendments A5–A8, A10: §4 (A5 gate), §6 (A6 licensing + A7 setup preflig
 | Criterion | Go | Rust | Python control plane |
 |---|---|---|---|
 | Install | one static binary, measured 7,770,296 B ≈ 7.41 MiB (`-s -w -trimpath` — release builds are already stripped; `-buildvcs=false` measured 0 bytes saved) | same | needs the multi-GB venv before the UI works |
-| Cold start | `version`/`list` ~4–6 ms, `doctor` ~24 ms median because it spawns `nvidia-smi` and probes the GPU (hardware-probe latency, not binary init); measured warm-cache on a quiet host — a loaded host taxes every process equally | < 10 ms | 0.5–2 s (torch import alone is seconds) |
-| Idle daemon RSS | ~15–30 MB | ~5–15 MB | 100–300 MB |
+| Cold start | `version`/`list` ~4–6 ms, `doctor` ~24 ms median because it spawns `nvidia-smi` and probes the GPU (hardware-probe latency, not binary init); measured warm-cache on a quiet host — a loaded host taxes every process equally | < 10 ms [est] (no Rust build exists in this project — unverified) | 0.5–2 s (torch import alone is seconds) |
+| Idle daemon RSS | ~15–30 MB [est] | ~5–15 MB [est] | 100–300 MB [est] |
 | Stdlib fit | `net/http`, `httputil.ReverseProxy`, `encoding/json`, `os/exec` — all of it | no HTTP in stdlib | native, but competes with inference venv for deps |
 
-The "low potato" constraint targets **memory and startup**; inference speed is Python/GPU regardless. A Python control plane adds ~150 MB RSS and a startup tax to every command — on an 8 GB laptop that steals from the KV cache. Rust saves ~10 MB over Go and costs weeks plus a hand-rolled HTTP stack. **Tradeoff accepted:** Go's GC (irrelevant here); `nvidia-smi` shell-out instead of NVML cgo.
+The "low potato" constraint targets **memory and startup**; inference speed is Python/GPU regardless. A Python control plane adds ~150 MB RSS [est] and a startup tax to every command — on an 8 GB laptop that steals from the KV cache. Rust saves ~10 MB over Go [est] and costs weeks plus a hand-rolled HTTP stack. **Tradeoff accepted:** Go's GC (irrelevant here); `nvidia-smi` shell-out instead of NVML cgo.
 
 **Dependencies:** zero third-party Go modules — standard library only (`go.mod` is just the
 `module` line plus `go 1.24`, with no `require` block, and there is no `go.sum`). HTTP, SSE,
@@ -147,15 +147,21 @@ Verdict recorded in `manifest.json`; `list` shows it. **Residual risk:** G13.
 ```
 head_dim  = hidden_size / num_attention_heads                    # 2048/16 = 128; else head_dim key
 elems/tok = num_hidden_layers × 2 × num_key_value_heads × head_dim  # 36×2×4×128 = 36,864
-kv_bytes(ctx, mode) = ctx × elems/tok × {FP16: 2.0, Q8: 1.0, Q4: 0.5}
+kv_bytes(ctx, mode) = ctx × elems/tok × {FP16: 2.0, Q8: 1.0625, Q4: 0.5625, "4,2": 0.4375}   # + 0.0625 B/elem of scales
 weights_mib = Σ safetensors sizes / 2²⁰                          # 1866 for SmolLM3-3B-3.5bpw
 load_mib(mode, ctx) = weights_mib + kv/2²⁰ + 128                 # 128 = measured fixed overhead
 headroom_mib(ctx) = 512 base + 512 prefill workspace [est] + 512 × ctx/65536 [est]   # A10
 fit ⟺ load_mib ≤ vram_total_mib − headroom_mib(ctx)
 ```
 
-Calibration: `1866 + 576 + 128 = 2570 ≤ 4096 − 1280 = 2816` ✓ → **Q4@32768**; 65536/Q4 is refused
-(`3146 + 1536 = 4682 > 4096`); at 32768 FP16 → 4298 ✗, Q8 → 3146 ✗.
+Calibration (live `fit`, 2026-09-29): `1866 + 648 + 128 = 2642 ≤ 4096 − 1280 = 2816` ✓ → **Q4@32768**
+(174 MiB slack → thin-margin warning); at 32768 FP16 → 4298 ✗, Q8 → 3218 ✗; 65536/Q4 refused
+(`1866 + 1296 + 128 = 3290 > 4096 − 1536 = 2560`), 65536/`"4,2"` too (3002 > 2560).
+> **Rule labelling:** this gate uses the **headroom rule** above — `load ≤ vram_total − headroom(ctx)`,
+> headroom = 512 base + 512 prefill workspace [est] + 512×ctx/65536 [est] (1536 @ 65536, 1280 @ 32768).
+> The website's model table uses a different, static **budget rule** — `weights + KV ≤ 3508 MiB`
+> (= 4096 − 88 overhead − 500 allowance, the research note's config rule), where SmolLM3 Q4 @65536
+> (1866 + 1296 = 3162) fits. Both figures are true of their own rule; each is labelled where shown.
 
 **A10 — prefill workspace (live evidence, 2026-09-26).** Every failure at ≥~1.8k prompt tokens on
 the live 4 GB stack was **CUDA OOM during prefill-workspace allocation** (`reconstruct_hgemm`,
@@ -178,19 +184,20 @@ stack untouched) — which validates the A9 attach seam as the intended live-tes
 target = min(model.max_position_embeddings, user --ctx)     # (a) HARD CLAMP: never exceed trained ctx,
                                                             #     even when the user asks for more (warn)
 for ctx in [target, target/2, target/4, … down to 4096]:
-    for mode in [FP16, Q8, Q4]:                             # quality preferred within a ctx tier
+    for mode in [FP16, Q8, Q4, "4,2"]:                     # quality preferred within a ctx tier
         if fit(ctx, mode): pick
 # (b) explicit --ctx / --cache-mode BYPASS the ladder entirely and are used as-is
 #     (--cache-mode accepts any TabbyAPI value incl. Q6 and pair formats like "2,2";
-#      the ladder itself ships FP16/Q8/Q4 only — Q6/Q2 ladder candidates after M5 calibration)
+#      the ladder runs FP16/Q8/Q4/"4,2" only — Q6 is skipped: Q4 is ~lossless for KV
+#      and Q6 @65536 measured OOM on this 4 GB card; Q2/"2,2" is override-only)
 # (c) the pick + projection is ALWAYS printed, never silent:
 ```
 
 ```
-autofit: SmolLM3-3B-exl3 → cache Q4, max_seq_len 32768
-  weights 1866 + KV 576 + overhead 128 = 2570 MiB   (headroom 1280, budget 2816) ✓
-  warning: only 246 MiB margin … drop --ctx if prompts OOM during prefill
-  (at 32768: FP16 4298, Q8 3146 → both exceed budget; 65536 refused: 3146 + 1536 > 4096)
+autofit: cache Q4, max_seq_len 32768
+  weights 1866 + KV 648 + overhead 128 = 2642 MiB (headroom 1280, budget 2816)
+warning: only 174 MiB margin above the 1280 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
+  (the ladder's rejected alternatives, from the arithmetic above: 32768 FP16 4298, Q8 3218; 65536/Q4 3290 > 2560)
 ```
 
 Failure path prints the full breakdown (weights / per-token / ctx / required vs free) + the largest ctx that *would* fit. VRAM from `nvidia-smi` shell-out. `gpu_split`: not computed (single-GPU v1; `gpu_split_auto` passthrough).
@@ -233,7 +240,7 @@ stone-llama rank --collection <id> | --file <path> [--ratings <file>]  # fit-ord
 stone-llama rm <model>
 stone-llama import <path> [--name N]     # symlink (zero-copy); name defaults to base dir
 stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]   # shipped (M6)
-stone-llama serve [--attach <url>]       # OpenAI-compatible API (shipped M5)
+stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>]   # OpenAI-compatible API (shipped M5)
 stone-llama ps
 stone-llama stop
 stone-llama login
@@ -243,41 +250,58 @@ stone-llama version
 Stdlib `flag` dispatch (no cobra). Sample output:
 
 ```
-$ stone-llama pull SmolLM3-3B-exl3
-resolving… found 1 quant (3.5bpw)
-gate: arch SmolLM3ForCausalLM ✓   quant exl3 ✓
-gate: fit ⚠ fits only at reduced ctx: Q4 @ 32768 (trained max)
-      weights 1866 + KV 576 + overhead 128 = 2570 MiB (headroom 1280, budget 2816)
-      warning: only 246 MiB margin … drop --ctx if prompts OOM during prefill
-preflight: 1.84 GiB download (HEAD-measured), 412.6 GiB free → ~/.local/share/stone-llama/models
-Download? [y/N] y
-pulling SmolLM3-3B-exl3: model.safetensors ━━━━━━━━━━━ 100% 1.8/1.8 GiB
-verifying sha256… ok
-pulled SmolLM3-3B-exl3:3.5bpw (1.84 GiB)
+$ stone-llama pull turboderp/SmolLM3-3B-exl3@3.5bpw
+gate: arch  ✓ SmolLM3ForCausalLM
+gate: quant ✓ exl3
+gate: fit   ⚠ fits only at reduced ctx: Q4 @ 32768 (trained max)
+      weights 1866 + KV 648 + overhead 128 = 2642 MiB (headroom 1280, budget 2816)
+      warning: only 174 MiB margin … drop --ctx if prompts OOM during prefill
+warnings above — review them before continuing
+pulling turboderp/SmolLM3-3B-exl3 → SmolLM3-3B-exl3: 8 files, 1.84 GiB (sha256-verified), 76.07 GiB free
+Proceed? [y/N] y
+pulled SmolLM3-3B-exl3 (1.84 GiB) — verdict warn:32768 Q4
+```
 
+Between `Proceed?` and `pulled`, each file prints its own progress line
+`  [1/8] model.safetensors   100.0%  <rate>/s` (sha256 verified per file, silently) — verified
+against `internal/pull` and a live declined run (the gate, warnings, sizes and free-space
+lines above are verbatim output; nothing was downloaded).
+```
 $ stone-llama list
 NAME                  QUANT    SIZE      VERDICT       SOURCE
 SmolLM3-3B-exl3       3.5bpw   1.84 GiB  warn:32768 Q4 turboderp/SmolLM3-3B-exl3
 mistral-7B-exl3       4.0bpw   4.21 GiB  -             imported
 
 $ stone-llama run SmolLM3-3B-exl3
-starting runtime…
 autofit: cache Q4, max_seq_len 32768
-  weights 1866 + KV 576 + overhead 128 = 2570 MiB (headroom 1280, budget 2816) ✓
-  warning: only 246 MiB margin … drop --ctx if prompts OOM during prefill
+  weights 1866 + KV 648 + overhead 128 = 2642 MiB (headroom 1280, budget 2816)
+warning: only 174 MiB margin … drop --ctx if prompts OOM during prefill
 >>> hello
 Hi! …                                          (streamed)
 >>> /bye
 unloaded.
 
 $ stone-llama ps
-NAME                  CTX     CACHE  VRAM PEAK   UPTIME
-SmolLM3-3B-exl3       32768   Q4     2529 MiB    4m12s
+stone-llama: running (pid 419204)
+  address:  127.0.0.1:5111
+  mode:     supervised (child pid 419210)
+  ready:    yes
+  model:    SmolLM3-3B-exl3
+  ctx:      32768  cache: Q4
+  vram peak: 2529 MiB
+  uptime:   4m12s
 
 $ stone-llama serve
 stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
   runtime: TabbyAPI f07131c (internal port hidden)
 ```
+
+**Sample provenance.** The `pull` gate/consent lines are verbatim live output (2026-09-29,
+stopped at the consent prompt — nothing downloaded); the `fit` arithmetic matches the
+verbatim captures in `docs/screenshots/fit.txt`. The `list` rows and the supervised
+`run`/`ps`/`serve` lines are illustrative, rendered from the print paths in `internal/cli`
+and `internal/serve` — this machine never ran `setup`, so supervised mode was never
+exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *are* live).
 
 **Config** `~/.config/stone-llama/config.json` (stdlib JSON; no comments; no secrets):
 
@@ -375,6 +399,6 @@ All v1 §13 questions are answered (decision log, top). Residual points with sta
 
 1. **Arch-list entries where the research doc elided the exact class string** (e.g. DeepSeek V4, GLM5Next, Step 3.7) → default: omit from the embedded list; those land on the warn path (safe by design). Reconcile against `architecture/*.py` at M2.
 2. **`list` output gains a `VERDICT` column** (A5) → default: always shown, `-` when absent (shown in §7 sample).
-3. **Ladder modes remain FP16/Q8/Q4**; Q6 and `"2,2"`-style pairs are override-only until M5 calibration proves them fit-safe → default: as stated.
+3. **Ladder modes are FP16/Q8/Q4/`"4,2"`**; Q6 is skipped deliberately (Q4 ≈ lossless for KV; Q6 @65536 measured OOM on this 4 GB card) and Q2/`"2,2"` pairs stay override-only → default: as stated.
 4. **GitHub repo creation** → **done**: the public repo exists under `rizperdana` (the A8 gate — verified `gh` account — was satisfied first).
 5. **Real provisioning run (blocked step, Q6)** → default: when authorized, run to a throwaway `runtime_dir` first (prove installer), then real paths only on second authorization.
