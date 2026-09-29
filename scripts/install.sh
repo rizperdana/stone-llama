@@ -248,7 +248,7 @@ esac
 # ---- uninstall hint --------------------------------------------------------
 
 printf 'Uninstall: sh scripts/install.sh --uninstall --prefix %s\n' "$PREFIX"
-printf '  (piped: curl -fsSL https://raw.githubusercontent.com/%s/%s/scripts/install.sh | sh -s -- --uninstall --prefix %s)\n' \
+printf '  (piped: curl -fsSL https://raw.githubusercontent.com/%s/%s/main/scripts/install.sh | sh -s -- --uninstall --prefix %s)\n' \
 	"${REPO%%/*}" "${REPO#*/}" "$PREFIX"
 
 printf 'Done.\n'
