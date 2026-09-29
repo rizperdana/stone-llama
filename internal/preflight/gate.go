@@ -73,7 +73,7 @@ func Evaluate(in Input) Report {
 		r.Checks = append(r.Checks, Check{Name: "fit", Status: StatusRefuse,
 			Detail: "fit projection failed: " + fitErr.Error()})
 	} else {
-		r.Checks = append(r.Checks, Check{Name: "fit", Status: fitStatus(fitRes), Detail: fitDetail(fitRes)})
+		r.Checks = append(r.Checks, Check{Name: "fit", Status: fitStatus(fitRes), Detail: fitDetail(fitRes, in.Spec.MaxCtx)})
 	}
 
 	var notes []string
@@ -383,13 +383,17 @@ func fitStatus(res autofit.Result) string {
 	}
 }
 
-func fitDetail(res autofit.Result) string {
+// fitDetail renders the fit check detail. The reduced branch reports a
+// ctx BELOW the trained max — VRAM is what forced the ladder down — so
+// it names VRAM as the limiting factor and states the trained max as a
+// fact, never labels the reduced ctx itself "(trained max)".
+func fitDetail(res autofit.Result, trainedMax int) string {
 	switch {
 	case !res.Fits:
 		return res.Reason + "\nreduce --ctx or pick a smaller quant"
 	case res.Reduced:
-		return fmt.Sprintf("fits only at reduced ctx: %s @ %d (trained max)\n%s",
-			res.Mode, res.Ctx, res.Summary())
+		return fmt.Sprintf("fits only at reduced ctx: %s @ %d (VRAM-limited; trained max %d)\n%s",
+			res.Mode, res.Ctx, trainedMax, res.Summary())
 	default:
 		return res.Summary()
 	}
