@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -202,6 +203,59 @@ func writeChildTokens(runtimeDir string) (string, string, error) {
 		return "", "", err
 	}
 	return upKeyFile, admin, nil
+}
+
+// EnsureFirstRunMarker guarantees TabbyAPI's first-run marker exists in
+// the checkout stone-llama owns, before anything spawns the child (Serve
+// calls it pre-spawn; setup calls it right after the clone lands).
+//
+// start.py decides first-run purely from start_options.json in its CWD
+// (runtime/tabbyAPI, because spawnChild sets cmd.Dir to the checkout):
+//
+//	start_options_path = pathlib.Path("start_options.json")        start.py:188
+//	first_run = not start_options.get("first_run_done")            start.py:201
+//	if first_run or args.update_deps:  → pip install -U .[cu12]    start.py:219
+//
+// On a fresh clone the file does not exist, so the self-installer ran
+// against whatever interpreter it found ("error: No virtual environment
+// found for Python 3.11.10"), failed 3×, and the supervised child exited
+// with status 1 — the CLI could not serve. The tool owns the clone and
+// supplies its own venv, so TabbyAPI's self-installer must never run: it
+// would pip install into the wrong interpreter. Hence the marker,
+// written BEFORE spawn so the install path is unreachable.
+//
+// Shape: exactly what start.py itself persists after a first run
+// (start.py:241, start_options["first_run_done"] = True) — the single
+// boolean {"first_run_done": true}; no other key is read unless
+// --update-deps runs (never passed by spawnChild). Atomic 0600 write,
+// same discipline as every file the daemon generates.
+//
+// Ownership: only the checkout under runtime/ is written. An existing
+// marker is never touched (rewriting would drop keys a user added, e.g.
+// gpu_lib); if runtime/tabbyAPI is a symlink the checkout is NOT ours —
+// adoption links only runtime/venv, a linked checkout points into a
+// user's own TabbyAPI — so we refuse instead of mutating it. A missing
+// checkout is a no-op: there is nothing to guard and spawnChild's own
+// stat reports the real problem.
+func EnsureFirstRunMarker(runtimeDir string) error {
+	dir := filepath.Join(runtimeDir, "tabbyAPI")
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink — refusing to write a first-run marker into a TabbyAPI checkout stone-llama does not own (remove the link and run 'stone-llama setup' to clone one)", dir)
+	}
+	marker := filepath.Join(dir, "start_options.json")
+	if _, err := os.Lstat(marker); err == nil {
+		return nil // already present — never rewritten
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return writeSecret(marker, `{"first_run_done": true}`)
 }
 
 // tabbyCfgPath is the generated child config — stone-llama owns this

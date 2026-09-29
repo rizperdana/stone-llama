@@ -503,6 +503,14 @@ func Serve(ctx context.Context, opts Options) error {
 		}
 		d.port = port
 		d.cfgPath = tabbyCfgPath(opts.RuntimeDir)
+		// TabbyAPI's first-run marker in OUR clone must exist before
+		// the child starts: without it start.py runs its self-installer
+		// (pip into whatever interpreter it finds) and dies — see
+		// EnsureFirstRunMarker for the start.py contract.
+		if merr := EnsureFirstRunMarker(opts.RuntimeDir); merr != nil {
+			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
+			return fmt.Errorf("serve: %w", merr)
+		}
 		// Backend keys pre-created in the child's CWD (it reads ours
 		// instead of generating/logging its own) plus the raw upstream
 		// key file the proxy injects from — both 0600, never argv/log.

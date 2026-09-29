@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/rizperdana/stone-llama/internal/serve"
 )
 
 // adoptKind classifies the detection outcome.
@@ -160,6 +162,13 @@ func runAdoption(opts Options, rep Report) error {
 			}
 			mark(cloneStep, "done")
 		}
+	}
+
+	// first-run marker in OUR clone (no-op when no clone exists): start.py's
+	// self-installer must never run against the wrong interpreter — see
+	// serve.EnsureFirstRunMarker for the start.py contract.
+	if err := serve.EnsureFirstRunMarker(opts.RuntimeDir); err != nil {
+		return fmt.Errorf("setup: %w", err)
 	}
 
 	// symlink runtime/venv -> their venv (spawnChild's path check passes unchanged)

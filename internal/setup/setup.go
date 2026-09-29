@@ -32,6 +32,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/rizperdana/stone-llama/internal/serve"
 )
 
 //go:embed runtime.lock.json
@@ -577,7 +579,16 @@ func (r *runner) stepTabby() ([]byte, error) {
 		return out1, err
 	}
 	out2, err := r.exec("tabby", "git", "-C", tabbyDir, "checkout", r.lock.TabbyAPI.Commit)
-	return append(append([]byte{}, out1...), out2...), err
+	out := append(append([]byte{}, out1...), out2...)
+	if err != nil {
+		return out, err
+	}
+	// first-run marker in our fresh clone: start.py's self-installer must
+	// never run — see serve.EnsureFirstRunMarker for the start.py contract.
+	if merr := serve.EnsureFirstRunMarker(r.runtimeDir); merr != nil {
+		return out, fmt.Errorf("setup: first-run marker: %w", merr)
+	}
+	return out, nil
 }
 
 func (r *runner) stepVenvDeps() ([]byte, error) {

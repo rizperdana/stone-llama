@@ -997,3 +997,140 @@ func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
 		t.Errorf("initialLoad wrote stderr on success: %q", errBuf.String())
 	}
 }
+
+// Bug: a fresh clone has no start_options.json, so start.py ran its
+// self-installer (pip into whatever interpreter it found — "No virtual
+// environment found for Python 3.11.10"), failed 3×, and the supervised
+// child exited: no serve. The marker must be written in TabbyAPI's own
+// shape — exactly what start.py persists itself (start.py:241).
+func TestEnsureFirstRunMarkerWritesTabbyShape(t *testing.T) {
+	runtimeDir := t.TempDir()
+	checkout := filepath.Join(runtimeDir, "tabbyAPI")
+	if err := os.MkdirAll(checkout, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureFirstRunMarker(runtimeDir); err != nil {
+		t.Fatalf("EnsureFirstRunMarker: %v", err)
+	}
+	marker := filepath.Join(checkout, "start_options.json")
+	fi, err := os.Lstat(marker)
+	if err != nil {
+		t.Fatalf("marker not written: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("marker mode = %o, want 600", perm)
+	}
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("marker is not JSON start.py can load: %v (%s)", err, b)
+	}
+	if v, ok := got["first_run_done"].(bool); !ok || !v {
+		t.Errorf("marker = %s, want first_run_done=true (start.py:201 reads this key)", b)
+	}
+	if len(got) != 1 {
+		t.Errorf("marker carries keys start.py never wrote here: %s", b)
+	}
+}
+
+// An existing marker is never rewritten: it may carry keys a user
+// added (gpu_lib) or an explicit first_run_done=false choice.
+func TestEnsureFirstRunMarkerKeepsExistingFile(t *testing.T) {
+	runtimeDir := t.TempDir()
+	checkout := filepath.Join(runtimeDir, "tabbyAPI")
+	if err := os.MkdirAll(checkout, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(checkout, "start_options.json")
+	original := `{"first_run_done":true,"gpu_lib":"cu12"}`
+	if err := os.WriteFile(marker, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureFirstRunMarker(runtimeDir); err != nil {
+		t.Fatalf("EnsureFirstRunMarker: %v", err)
+	}
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != original {
+		t.Errorf("existing marker rewritten: %q → %q", original, b)
+	}
+}
+
+// A linked checkout is not ours (adoption links only runtime/venv; a
+// linked tabbyAPI points into a user's own TabbyAPI): refuse instead of
+// mutating it, target byte-identical.
+func TestEnsureFirstRunMarkerRefusesLinkedCheckout(t *testing.T) {
+	runtimeDir := t.TempDir()
+	target := t.TempDir() // the user's own checkout
+	if err := os.Symlink(target, filepath.Join(runtimeDir, "tabbyAPI")); err != nil {
+		t.Skipf("needs symlink(2): %v", err)
+	}
+	err := EnsureFirstRunMarker(runtimeDir)
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("linked checkout: err = %v, want refusal", err)
+	}
+	if !strings.Contains(err.Error(), "does not own") {
+		t.Errorf("refusal must state ownership: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "start_options.json")); !os.IsNotExist(err) {
+		t.Errorf("marker written into a checkout we do not own: %v", err)
+	}
+}
+
+// No checkout: nothing to guard — and never fabricate a tabbyAPI dir
+// (spawnChild's own stat owns that diagnosis).
+func TestEnsureFirstRunMarkerWithoutCheckoutIsNoop(t *testing.T) {
+	runtimeDir := t.TempDir()
+	if err := EnsureFirstRunMarker(runtimeDir); err != nil {
+		t.Fatalf("EnsureFirstRunMarker: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(runtimeDir, "tabbyAPI")); !os.IsNotExist(err) {
+		t.Errorf("phantom tabbyAPI dir created: %v", err)
+	}
+}
+
+// The call-site contract: inside Serve the marker exists BEFORE spawn
+// runs (the spy reads it mid-sequence), and a failed start keeps it —
+// it is clone state, not a per-daemon secret.
+func TestServeWritesFirstRunMarkerBeforeSpawn(t *testing.T) {
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	runtimeDir := filepath.Join(dataDir, "runtime")
+	checkout := filepath.Join(runtimeDir, "tabbyAPI")
+	if err := os.MkdirAll(checkout, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "start.py"), []byte("# fake checkout"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	atSpawn := []byte("never read")
+	serr := Serve(context.Background(), Options{
+		Host:       "127.0.0.1",
+		Port:       p,
+		DataDir:    dataDir,
+		ModelsDir:  t.TempDir(),
+		RuntimeDir: runtimeDir,
+		Stderr:     io.Discard,
+		spawn: func(_, _, _ string, _ int) (*child, error) {
+			atSpawn, _ = os.ReadFile(filepath.Join(checkout, "start_options.json"))
+			return nil, errors.New("runtime missing")
+		},
+	})
+	if serr == nil || !strings.Contains(serr.Error(), "runtime missing") {
+		t.Fatalf("Serve = %v, want spawn failure propagated", serr)
+	}
+	if !strings.Contains(string(atSpawn), `"first_run_done": true`) {
+		t.Errorf("spawn ran without the first-run marker (start.py would self-install): %q", atSpawn)
+	}
+	if _, err := os.Lstat(filepath.Join(checkout, "start_options.json")); err != nil {
+		t.Errorf("failed start must keep the marker (clone state, not a secret): %v", err)
+	}
+}
