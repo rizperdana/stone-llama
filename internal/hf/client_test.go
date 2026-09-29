@@ -81,6 +81,43 @@ func TestRepoMetaParsesBlobsAndDetectsAuthHeader(t *testing.T) {
 	}
 }
 
+// The hub ignores ?revision= and answers with the default branch, so
+// the revision must ride in the path as /revision/<rev> — no
+// revision= query param may survive.
+func TestRepoMetaRevUsesRevisionPath(t *testing.T) {
+	var gotURI string
+	_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		w.Write([]byte(metaJSON))
+	}))
+	if _, err := c.RepoMetaRev("org/repo", "3.5bpw"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(gotURI, "/api/models/org/repo/revision/3.5bpw?") {
+		t.Errorf("request = %q, want path /api/models/org/repo/revision/3.5bpw", gotURI)
+	}
+	if strings.Contains(gotURI, "revision=") {
+		t.Errorf("request = %q, must not carry a revision= query param", gotURI)
+	}
+}
+
+// A revision containing "/" (a legal branch like "feature/foo") must be
+// percent-encoded into ONE path segment, not split across segments.
+func TestRepoMetaRevEncodesSlashInRevision(t *testing.T) {
+	var gotURI string
+	_, c := newTestServer(t, "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		w.Write([]byte(metaJSON))
+	}))
+	if _, err := c.RepoMetaRev("org/repo", "feature/foo"); err != nil {
+		t.Fatal(err)
+	}
+	want := "/api/models/org/repo/revision/feature%2Ffoo?"
+	if !strings.HasPrefix(gotURI, want) {
+		t.Errorf("request = %q, want prefix %q", gotURI, want)
+	}
+}
+
 func TestRepoMetaStatusMapping(t *testing.T) {
 	for _, tc := range []struct {
 		code int

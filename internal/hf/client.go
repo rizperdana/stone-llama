@@ -254,15 +254,19 @@ func (c *Client) RepoMeta(repoID string) (Repo, error) {
 }
 
 // RepoMetaRev is RepoMeta for an explicit branch or tag; revision ""
-// means the repo's default ref.
+// means the repo's default ref. The revision is a path segment
+// (/api/models/<repo>/revision/<rev>) — the hub ignores a ?revision=
+// query and silently answers with the default branch — and it is
+// percent-encoded so a branch like "feature/foo" stays one segment.
 func (c *Client) RepoMetaRev(repoID, revision string) (Repo, error) {
 	if !ValidRepoID(repoID) {
 		return Repo{}, fmt.Errorf("invalid repository id %q", repoID)
 	}
-	rawurl := c.BaseURL + "/api/models/" + repoID + "?blobs=true"
+	rawurl := c.BaseURL + "/api/models/" + repoID
 	if revision != "" {
-		rawurl += "&revision=" + url.QueryEscape(revision)
+		rawurl += "/revision/" + url.PathEscape(revision)
 	}
+	rawurl += "?blobs=true"
 	resp, err := c.get(rawurl)
 	if err != nil {
 		return Repo{}, err
@@ -363,12 +367,14 @@ func (c *Client) Search(query string) ([]string, error) {
 	return ids, nil
 }
 
-// ResolveURL is the byte URL for a file at a revision.
+// ResolveURL is the byte URL for a file at a revision. The revision is
+// one path segment, percent-encoded like the official hub client
+// (quote(revision, safe="")) so a slash-bearing branch stays unambiguous.
 func (c *Client) ResolveURL(repoID, rev, file string) string {
 	if rev == "" {
 		rev = "main"
 	}
-	return c.BaseURL + "/" + repoID + "/resolve/" + rev + "/" + file
+	return c.BaseURL + "/" + repoID + "/resolve/" + url.PathEscape(rev) + "/" + file
 }
 
 // FetchFile downloads one small metadata file (config.json etc.), capped
