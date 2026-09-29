@@ -333,6 +333,70 @@ func TestServeSpawnFailureNoState(t *testing.T) {
 	}
 }
 
+// TestServeForeignPortHint: a foreign process holding the configured
+// port fails fatally naming the exact --port remedy with a probed-free
+// port (ARCHITECTURE §2 "foreign process → fatal with --port hint").
+func TestServeForeignPortHint(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serr := Serve(context.Background(), Options{
+		Host:      "127.0.0.1",
+		Port:      port,
+		DataDir:   t.TempDir(),
+		ModelsDir: t.TempDir(),
+	})
+	if !errors.Is(serr, ErrPortInUse) {
+		t.Fatalf("Serve = %v, want ErrPortInUse", serr)
+	}
+	msg := serr.Error()
+	for _, want := range []string{
+		fmt.Sprintf("127.0.0.1:%d", port),
+		"stone-llama serve --port ",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("foreign-port refusal missing %q: %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "stone-llama stop") {
+		t.Errorf("foreign-port refusal suggests our own stop remedy: %q", msg)
+	}
+}
+
+// TestServeOwnDaemonHint: our own daemon holding the port is a
+// different refusal — reuse or stop, never a "pick another port"
+// suggestion (the remedies must stay distinct).
+func TestServeOwnDaemonHint(t *testing.T) {
+	ts := markerHealthzServer(t)
+	port := serverPort(t, ts)
+	serr := Serve(context.Background(), Options{
+		Host:      "127.0.0.1",
+		Port:      port,
+		DataDir:   t.TempDir(),
+		ModelsDir: t.TempDir(),
+	})
+	if !errors.Is(serr, ErrAlreadyServing) {
+		t.Fatalf("Serve = %v, want ErrAlreadyServing", serr)
+	}
+	msg := serr.Error()
+	if !strings.Contains(msg, fmt.Sprintf("127.0.0.1:%d", port)) || !strings.Contains(msg, "stone-llama stop") {
+		t.Errorf("own-daemon refusal missing addr or stop remedy: %q", msg)
+	}
+	if strings.Contains(msg, "--port") {
+		t.Errorf("own-daemon refusal suggests the foreign-process remedy: %q", msg)
+	}
+}
+
 // TestStopRefusesForeignPid: recycled pid is never signalled; stale
 // state is dropped.
 func TestStopRefusesForeignPid(t *testing.T) {

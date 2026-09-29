@@ -181,6 +181,26 @@ func freePort() (int, error) {
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
+// alreadyServingErr / portInUseErr carry the remedy each bind refusal
+// needs (ARCHITECTURE §2 "foreign process → fatal with --port hint"):
+// ours → reuse or stop (never a second daemon); foreign → a concrete
+// free port, freshly probed from the kernel. One short line each — the
+// CLI prints the sentinel prefix plus this suffix, once.
+func alreadyServingErr(host string, port int) error {
+	return fmt.Errorf("%w on %s:%d — reuse it, or 'stone-llama stop' first",
+		ErrAlreadyServing, host, port)
+}
+
+func portInUseErr(host string, port int) error {
+	free, err := freePort()
+	if err != nil {
+		return fmt.Errorf("%w on %s:%d — pick a free port and rerun: stone-llama serve --port <n>",
+			ErrPortInUse, host, port)
+	}
+	return fmt.Errorf("%w on %s:%d — pick a free port and rerun: stone-llama serve --port %d",
+		ErrPortInUse, host, port, free)
+}
+
 func generateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -410,17 +430,17 @@ func Serve(ctx context.Context, opts Options) error {
 		return err
 	}
 	if ours {
-		return ErrAlreadyServing
+		return alreadyServingErr(opts.Host, opts.Port)
 	}
 	if listening {
-		return ErrPortInUse
+		return portInUseErr(opts.Host, opts.Port)
 	}
 
 	lock, err := fslock.TryAcquire(LockPath(opts.DataDir))
 	if err != nil {
 		if errors.Is(err, fslock.ErrBusy) {
 			if ours, _, perr := probeDownstream(ctx, opts.Host, opts.Port); perr == nil && ours {
-				return ErrAlreadyServing
+				return alreadyServingErr(opts.Host, opts.Port)
 			}
 			return ErrStartBusy
 		}
