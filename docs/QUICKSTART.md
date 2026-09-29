@@ -35,7 +35,7 @@ gate: arch  ✓ Qwen3ForCausalLM
 gate: quant ✓ exl3
 gate: fit   ⚠ weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)
       warning: only 153 MiB margin above the 1344 MiB headroom (prefill workspace [est] included): multi-KB prompts can OOM during prefill on a used card — if you see CUDA OOM before the first token, drop --ctx
-estimate: ~32 tok/s decode, ~582 tok/s prefill [est] at 4,2 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending
+estimate: ~32 tok/s decode, ~582 tok/s prefill [est] at 4,2 ctx 40960 (NVIDIA GeForce RTX 3050 Laptop GPU) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; prefill has no fitted anchor
 
 $ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw
 gate: arch  ✓ Qwen3ForCausalLM

@@ -253,7 +253,7 @@ Stdlib `flag` dispatch (no cobra). Sample output:
 $ stone-llama pull turboderp/SmolLM3-3B-exl3@3.5bpw
 gate: arch  ✓ SmolLM3ForCausalLM
 gate: quant ✓ exl3
-gate: fit   ⚠ fits only at reduced ctx: Q4 @ 32768 (trained max)
+gate: fit   ⚠ fits only at reduced ctx: Q4 @ 32768 (VRAM-limited; trained max 65536)
       weights 1866 + KV 648 + overhead 128 = 2642 MiB (headroom 1280, budget 2816)
       warning: only 174 MiB margin … drop --ctx if prompts OOM during prefill
 warnings above — review them before continuing

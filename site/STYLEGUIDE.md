@@ -142,7 +142,7 @@ dots/traffic lights — the `.term-bar` filename label is the only chrome.
 **Capture figure (`figure.term > figcaption.term-bar + pre`)** — use for the
 four live captures (`doctor-list`, `fit`, `gate`, `serve`). What not to do: no
 `screenshot` images of terminals, no paraphrasing capture text, no removing
-`[est]`/`calibration pending` markers, no `reveal`/fade classes (content is
+`[est]`/`prefill has no fitted anchor` markers, no `reveal`/fade classes (content is
 never hidden pending JS). Length is cut only by eliding a contiguous block:
 one `<span class="c">[…]</span>` line replacing the cut lines; every
 displayed line stays byte-identical to `docs/screenshots/*.txt`.
