@@ -526,9 +526,9 @@ func isolateConfig(t *testing.T) {
 	}
 }
 
-// H4: run must honour STONE_LLAMA_NO_AUTOSTART=1 (exactly "1", the
-// same contract ps uses) — a missing daemon is reported, not
-// auto-started. The base run hardcoded auto-start = true.
+// H4: run must honour STONE_LLAMA_NO_AUTOSTART=1 (exactly "1") — a
+// missing daemon is reported, not auto-started. The base run hardcoded
+// auto-start = true. (ps never consults the env: it is read-only.)
 func TestRunHonoursNoAutostart(t *testing.T) {
 	if os.Getenv("SL_H4_CHILD") == "1" {
 		// The base implementation re-execs this test binary as `serve`
@@ -721,6 +721,131 @@ func TestPsExplainsCorruptState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); err != nil {
 		t.Errorf("ps deleted the corrupt state file: %v", err)
+	}
+}
+
+// Read-only contract: with no daemon, plain ps must not spawn — no
+// re-exec (daemon.log), no daemon.json, no listener — and
+// STONE_LLAMA_NO_AUTOSTART=1 must now be byte-identical: the env can no
+// longer be the difference.
+func TestPsNeverSpawns(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "")
+	port := freeLocalPort(t)
+	t.Setenv("STONE_LLAMA_PORT", port)
+
+	plainCode, plainOut, plainErr := run("ps")
+	if plainCode != 1 {
+		t.Fatalf("ps with no daemon: code=%d out=%q err=%q", plainCode, plainOut, plainErr)
+	}
+	if !strings.Contains(plainErr, "no stone-llama daemon is running (start one with 'stone-llama serve')") {
+		t.Errorf("ps must state absence + remedy in one line: %q", plainErr)
+	}
+	dataDir := config.DataDir()
+	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); !os.IsNotExist(err) {
+		t.Errorf("ps created daemon.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "logs", "daemon.log")); !os.IsNotExist(err) {
+		t.Errorf("ps spawned a daemon (daemon.log exists): %v", err)
+	}
+	if ln, lerr := net.Listen("tcp", "127.0.0.1:"+port); lerr != nil {
+		t.Errorf("ps left a listener on %s: %v", port, lerr)
+	} else {
+		ln.Close()
+	}
+
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	if code, out, errb := run("ps"); code != plainCode || out != plainOut || errb != plainErr {
+		t.Errorf("NO_AUTOSTART=1 ps differs from plain ps:\n plain: %d %q %q\n env:   %d %q %q",
+			plainCode, plainOut, plainErr, code, out, errb)
+	}
+}
+
+// A live daemon is reported, read-only: daemon.json stays
+// byte-identical and no daemon.log appears (ps started nothing).
+func TestPsReportsLiveDaemonWithoutSpawning(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Stone-Llama", "1")
+		io.WriteString(w, "stone-llama\n")
+	})
+	mux.HandleFunc("/-/status", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"mode":"supervised","pid":`+strconv.Itoa(os.Getpid())+`,"child_pid":77,"model":"qwen-test","uptime_s":12,"ready":true}`)
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := config.DataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := fmt.Sprintf(`{"child_pid":77,"pid":%d,"host":"127.0.0.1","port":%s,"token":"tok-abc","started_at":%d}`, os.Getpid(), portStr, time.Now().Unix())
+	statePath := filepath.Join(dataDir, "daemon.json")
+	if err := os.WriteFile(statePath, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errb := run("ps")
+	if code != 0 {
+		t.Fatalf("ps with live daemon: code=%d out=%q err=%q", code, out, errb)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("running (pid %d)", os.Getpid()),
+		"supervised (child pid 77)",
+		"model:    qwen-test",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ps output missing %q: %q", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "logs", "daemon.log")); !os.IsNotExist(err) {
+		t.Errorf("ps spawned a daemon (daemon.log exists): %v", err)
+	}
+	after, rerr := os.ReadFile(statePath)
+	if rerr != nil || string(after) != state {
+		t.Errorf("ps rewrote daemon.json: %q %v", after, rerr)
+	}
+}
+
+// A foreign process on the configured port is named — ps may never
+// claim "no daemon exists" while something else answers (A3), and it
+// must not try to start one either.
+func TestPsNamesForeignPortHolderWithoutSpawning(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "")
+	// answers HTTP but carries no stone-llama identity → probeForeign
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STONE_LLAMA_PORT", portStr)
+
+	code, out, errb := run("ps")
+	if code != 1 {
+		t.Fatalf("ps with foreign holder: code=%d out=%q err=%q", code, out, errb)
+	}
+	if !strings.Contains(errb, "another process holds") {
+		t.Errorf("ps must name the foreign holder: %q", errb)
+	}
+	if strings.Contains(errb, "no stone-llama daemon is running") {
+		t.Errorf("ps claimed absence while a foreign process answered: %q", errb)
+	}
+	dataDir := config.DataDir()
+	if _, err := os.Stat(filepath.Join(dataDir, "daemon.json")); !os.IsNotExist(err) {
+		t.Errorf("ps created daemon.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "logs", "daemon.log")); !os.IsNotExist(err) {
+		t.Errorf("ps spawned a daemon (daemon.log exists): %v", err)
 	}
 }
 

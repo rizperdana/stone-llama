@@ -931,8 +931,8 @@ func runSetup(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 }
 
 // noAutostart is the STONE_LLAMA_NO_AUTOSTART contract (ARCHITECTURE
-// §2): exactly "1" opts out. Shared by every auto-starting command so
-// the semantics cannot drift (run silently ignored it — H4).
+// §2): exactly "1" opts out. It now gates only run's supervised-spawn
+// fallback (resolve step 3); ps never consults it — ps is read-only.
 func noAutostart() bool {
 	return os.Getenv("STONE_LLAMA_NO_AUTOSTART") == "1"
 }
@@ -1056,16 +1056,22 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runPs shows the running daemon (M5). Auto-starts one detached unless
-// STONE_LLAMA_NO_AUTOSTART=1; the status round trip carries readiness,
-// model, and the VRAM peak sample.
+// runPs reports what exists — read-only by contract: it never spawns a
+// daemon. Auto-start is reserved for commands whose purpose is to serve:
+// `serve` (it IS the daemon) and `run` (a working backend is the point —
+// ResolveBackend auto-attaches first, then falls back to a supervised
+// spawn). ps and stop only observe/control. start=false gives the same
+// A3 diagnosis in either env spelling (a foreign holder on the port is
+// named, never "no daemon"; state is never deleted), so
+// STONE_LLAMA_NO_AUTOSTART=1 can no longer change ps. The status round
+// trip carries readiness, model, and the VRAM peak sample.
 func runPs(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		fmt.Fprintln(stderr, "stone-llama ps: takes no arguments")
 		return 2
 	}
 	dataDir := config.DataDir()
-	if _, err := serve.EnsureDaemon(dataDir, !noAutostart(), 30*time.Second); err != nil {
+	if _, err := serve.EnsureDaemon(dataDir, false, 30*time.Second); err != nil {
 		fmt.Fprintf(stderr, "stone-llama ps: %v%s\n", err, backendStartHelp(err.Error()))
 		return 1
 	}
