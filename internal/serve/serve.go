@@ -727,8 +727,9 @@ func (d *daemon) supervise(ctx context.Context, c *child) error {
 	}
 }
 
-// sampleVRAM tracks the child's GPU memory for ps's VRAM PEAK column.
-// No child (attach) or no nvidia-smi → skips silently; ps then shows -.
+// sampleVRAM tracks the child's GPU memory for ps's "vram peak" line.
+// No child (attach) or no nvidia-smi → skips silently; ps then omits
+// the line entirely (it prints only when a peak was sampled).
 func (d *daemon) sampleVRAM(ctx context.Context) {
 	t := time.NewTicker(vramSampleEvery)
 	defer t.Stop()
