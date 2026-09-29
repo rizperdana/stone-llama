@@ -94,7 +94,7 @@ func estimateLine(res pull.Result, gpuName string) string {
 	if !p.Known {
 		return "estimate: unavailable — " + p.Note
 	}
-	line := fmt.Sprintf("estimate: ~%.0f tok/s decode, ~%.0f tok/s prefill [est] at %s ctx %d (%s) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; calibration pending",
+	line := fmt.Sprintf("estimate: ~%.0f tok/s decode, ~%.0f tok/s prefill [est] at %s ctx %d (%s) — low confidence, anchored to the measured 42.7 tok/s SmolLM3-3B 3.5bpw point (1866 MiB) on this GPU; prefill has no fitted anchor",
 		p.DecodeTokPerS, p.PrefillTokPerS, res.Verdict.CacheMode, res.Verdict.MaxCtx, gpuName)
 	if p.Note != "" {
 		line += "; " + p.Note

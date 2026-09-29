@@ -145,7 +145,7 @@ func runRank(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.repo, r.quant, r.verdict, r.est, r.estPre, r.rating)
 	}
 	w.Flush()
-	fmt.Fprintln(stdout, "~ values are estimates [est] from metadata + GPU spec — not measured (calibration pending)")
+	fmt.Fprintln(stdout, "~ values are estimates [est] from metadata + GPU spec — not measured")
 	if *ratingsPath != "" {
 		fmt.Fprintf(stdout, "* RATING values from %s are external estimates, not measurements by stone-llama\n", *ratingsPath)
 	}

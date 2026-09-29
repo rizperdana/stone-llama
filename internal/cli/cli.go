@@ -643,7 +643,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		}
 		w.Flush()
 		if estGPU != "" {
-			fmt.Fprintln(stdout, "~ values are estimates [est] from metadata — not measured (calibration pending)")
+			fmt.Fprintln(stdout, "~ values are estimates [est] from metadata — not measured")
 		}
 		return 0
 	}
