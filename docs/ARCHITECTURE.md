@@ -90,7 +90,7 @@ scalars", so no YAML library is involved either.
 
 **Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; contract test (§10) against the pin gates any pin bump. Never fork (Q11).
 
-**Lifecycle:** `serve` = foreground daemon. Other commands auto-start it detached if absent (re-exec self, `setsid`, log → `logs/daemon.log`, state → `daemon.json` 0600) unless `STONE_LLAMA_NO_AUTOSTART=1`. `stop` shuts down cleanly. Singleton guard: **flock** on `data_dir/stone-llama.lock` around daemon spawn and downloads (A7; primitive lands with its first consumer in M2, daemon-spawn usage in M5).
+**Lifecycle:** `serve` = foreground daemon (it *is* the daemon). `run` auto-starts a detached daemon if none is reachable (re-exec self, `setsid`, log → `logs/daemon.log`, state → `daemon.json` 0600), unless `STONE_LLAMA_NO_AUTOSTART=1` (then it reports + remedies instead). `ps` observes only — read-only, never spawns or deletes state; `stop` controls only — clean shutdown. Singleton guard: **flock** on `data_dir/stone-llama.lock` around daemon spawn and downloads (A7; primitive lands with its first consumer in M2, daemon-spawn usage in M5).
 
 ## 3. Storage layout (approved; A6/A7 hygiene folded in)
 

@@ -212,11 +212,10 @@ Then `stone-llama ps` (loaded model + sampled VRAM peak of the supervised child;
 no child in attach mode, so that line is omitted — see the attach `ps` capture
 above) and `stone-llama stop`.
 
-With no daemon the two commands differ in exit code — scripts will care. Both
-lines below are observed at revision 4f020dc, where `ps` finds the daemon only
-through `daemon.json` and auto-starts one by default (that behaviour is being
-reworked upstream; do not read the auto-start as the intended long-term
-design):
+With no daemon `ps` is read-only: it never auto-starts, prints the one-line
+message above, and exits 1. `STONE_LLAMA_NO_AUTOSTART=1` no longer changes `ps`
+(plain and env-pinned `ps` are byte-identical); `stop` is a friendly no-op
+(exit 0). The two commands still differ in exit code — scripts will care:
 
 ```console
 $ STONE_LLAMA_NO_AUTOSTART=1 stone-llama ps

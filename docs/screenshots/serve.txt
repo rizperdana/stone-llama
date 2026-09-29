@@ -53,12 +53,7 @@ Notes on the shared block
 * `/healthz` is the daemon's own health route and carries
   `X-Stone-Llama: 1`. The literal `/health` path is an upstream
   passthrough (Server: uvicorn) and carries NO marker header — see §2.
-* `ps` and `stop` are shown exactly as OBSERVED at this revision
-  (4f020dc). They are not a statement of final semantics: at this
-  revision `ps` is not read-only (with no daemon it auto-starts a
-  detached one, and a failed /healthz probe can remove `daemon.json`).
-  That behaviour was reported by the independent verification run and is
-  under active fix — treat the block above as observed-at-revision.
+* `ps` and `stop` are shown exactly as OBSERVED at this revision (4f020dc).
 
 §2 — further evidence from the same session
 -------------------------------------------
