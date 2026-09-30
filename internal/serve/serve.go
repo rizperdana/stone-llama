@@ -1211,6 +1211,77 @@ func missingStateErr(dataDir string, rerr error) error {
 	return fmt.Errorf("no stone-llama daemon is running (start one with 'stone-llama serve')")
 }
 
+// ProbeNoState is `stop`'s missing-state gate: daemon.json is written
+// only after the listener binds (Serve), so a daemon that is mid-start
+// is invisible to ReadState. It classifies the configured port with the
+// same healthz-marker probe EnsureDaemon uses, then re-reads state —
+// the bind→write window closes while the probe runs — and watches the
+// spawn lock, the pre-listen marker of a starting stone-llama serve.
+// (true, nil) means state has appeared: the caller runs the normal
+// Stop, whose two gates identify and signal the pid it recorded.
+// (false, nil) means genuinely nothing to stop. A holder that cannot be
+// signalled from here (no pid recorded) returns an error — never a
+// claim that nothing is running (A3).
+func ProbeNoState(dataDir string, wait time.Duration) (bool, error) {
+	// A config we cannot load leaves no port to probe; missingStateErr
+	// makes the same call for ps/serve — ErrNoDaemon is all there is.
+	cfg, cerr := config.Load()
+	if cerr != nil {
+		return false, nil
+	}
+	cfgSt := State{Host: cfg.Host, Port: cfg.Port}
+	deadline := time.Now().Add(wait)
+	for {
+		class := classifyListener(context.Background(), cfgSt)
+		// State first AFTER the probe: a daemon that bound while we
+		// classified has usually written daemon.json by now.
+		st, rerr := ReadState(dataDir)
+		if rerr == nil || (errors.Is(rerr, ErrCorruptState) && st.usable()) {
+			return true, nil
+		}
+		// No listener yet, or bound but not yet serving: a starting
+		// daemon owns the spawn lock until it exits — give the state
+		// file its moment to land, then either stop it or say why not.
+		if (class == probeDown || class == probeUnconfirmed) && spawnLockHeld(dataDir) {
+			if time.Now().After(deadline) {
+				return false, fmt.Errorf("a stone-llama process is starting the daemon on %s, but its state has not appeared in %s yet — retry shortly", cfgSt.Addr(), StatePath(dataDir))
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		switch class {
+		case probeLive:
+			return false, fmt.Errorf("a stone-llama daemon is serving on %s, but its state is not in %s (state file missing or another data dir) — refusing to signal a pid that was never recorded", cfgSt.Addr(), StatePath(dataDir))
+		case probeForeign:
+			return false, fmt.Errorf("another process holds %s (not a stone-llama daemon) — nothing to stop from here", cfgSt.Addr())
+		case probeUnconfirmed:
+			return false, fmt.Errorf("a listener on %s would not identify itself (booting or wedged?) and %s has no state file — nothing to signal", cfgSt.Addr(), StatePath(dataDir))
+		}
+		return false, nil // nothing listening, no starter: not running
+	}
+}
+
+// spawnLockHeld reports whether another process holds the daemon spawn
+// lock — held by serve from spawn until exit, so busy + probeDown is a
+// daemon that has not bound yet. Read-only: a missing data dir means
+// nothing we could stop has started (fslock.open would create it).
+// ponytail: the probe briefly takes the lock itself; the microsecond
+// hold can race a concurrent stop (self-correcting on the next loop
+// tick) and is vanishingly rare against a serve's own TryAcquire —
+// a non-acquiring query (fslock.Held) is the upgrade path if a spurious
+// ErrStartBusy ever shows up.
+func spawnLockHeld(dataDir string) bool {
+	if _, err := os.Stat(dataDir); err != nil {
+		return false
+	}
+	lk, err := fslock.TryAcquire(LockPath(dataDir))
+	if err != nil {
+		return errors.Is(err, fslock.ErrBusy)
+	}
+	lk.Release()
+	return false
+}
+
 // startFailed diagnoses one failed auto-start: what the configured
 // port answers now (competition, foreign holder, boot window), else
 // this attempt's own log lines — A5-scoped, so history never repeats.

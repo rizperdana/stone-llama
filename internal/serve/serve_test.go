@@ -1134,3 +1134,102 @@ func TestServeWritesFirstRunMarkerBeforeSpawn(t *testing.T) {
 		t.Errorf("failed start must keep the marker (clone state, not a secret): %v", err)
 	}
 }
+
+// --- ProbeNoState: stop's missing-state gate (daemon.json lands only
+// after the listener binds) ---
+
+func TestProbeNoStateNotRunning(t *testing.T) {
+	isolateConfig(t)
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STONE_LLAMA_PORT", strconv.Itoa(p))
+	landed, perr := ProbeNoState(t.TempDir(), 500*time.Millisecond)
+	if perr != nil || landed {
+		t.Fatalf("ProbeNoState(down) = %v, %v; want false, nil", landed, perr)
+	}
+}
+
+// Marker answers but no state exists in this data dir: name the
+// holder, refuse to signal an unrecorded pid (never "not running").
+func TestProbeNoStateNamesMarkerHolder(t *testing.T) {
+	isolateConfig(t)
+	ts := markerHealthzServer(t)
+	t.Setenv("STONE_LLAMA_PORT", strconv.Itoa(serverPort(t, ts)))
+	landed, perr := ProbeNoState(t.TempDir(), 500*time.Millisecond)
+	if landed || perr == nil || !strings.Contains(perr.Error(), "serving") {
+		t.Fatalf("ProbeNoState(marker) = %v, %v; want serving-holder error", landed, perr)
+	}
+}
+
+// A listener that answers without our identity is reported as foreign —
+// never signalled, never called "nothing".
+func TestProbeNoStateNamesForeignHolder(t *testing.T) {
+	isolateConfig(t)
+	ts := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_PORT", strconv.Itoa(serverPort(t, ts)))
+	landed, perr := ProbeNoState(t.TempDir(), 500*time.Millisecond)
+	if landed || perr == nil || !strings.Contains(perr.Error(), "another process") {
+		t.Fatalf("ProbeNoState(foreign) = %v, %v; want foreign-holder error", landed, perr)
+	}
+}
+
+// Pre-listen boot window: spawn lock held, port still free. A state
+// file that lands during the wait hands the pid to the normal Stop.
+func TestProbeNoStateWaitsForStartingDaemon(t *testing.T) {
+	isolateConfig(t)
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STONE_LLAMA_PORT", strconv.Itoa(p))
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := os.Create(LockPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lk.Close()
+	if err := syscall.Flock(int(lk.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("hold spawn lock: %v", err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		WriteState(dataDir, State{PID: os.Getpid(), Host: "127.0.0.1", Port: p})
+	}()
+	landed, perr := ProbeNoState(dataDir, 5*time.Second)
+	if perr != nil || !landed {
+		t.Fatalf("ProbeNoState(booting) = %v, %v; want landed=true, nil", landed, perr)
+	}
+}
+
+// A boot that never lands state must time out with an honest error —
+// not a claim that nothing is running.
+func TestProbeNoStateStartingTimeout(t *testing.T) {
+	isolateConfig(t)
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STONE_LLAMA_PORT", strconv.Itoa(p))
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := os.Create(LockPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lk.Close()
+	if err := syscall.Flock(int(lk.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("hold spawn lock: %v", err)
+	}
+	landed, perr := ProbeNoState(dataDir, 50*time.Millisecond)
+	if landed || perr == nil || !strings.Contains(perr.Error(), "starting the daemon") {
+		t.Fatalf("ProbeNoState(stuck boot) = %v, %v; want starting-daemon error", landed, perr)
+	}
+}

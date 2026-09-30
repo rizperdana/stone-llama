@@ -1109,7 +1109,12 @@ func runPs(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runStop terminates the daemon (M5); absent state is a friendly no-op.
+// runStop terminates the daemon (M5). Absent state is no longer a bare
+// no-op: daemon.json lands only after the listener binds, so a daemon
+// mid-start is invisible to ReadState. The configured port and the
+// spawn lock are probed first — "not running" is printed only when
+// nothing answers and no starter holds the lock; a holder we cannot
+// identify is reported (exit 1), never signalled blind.
 func runStop(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		fmt.Fprintln(stderr, "stone-llama stop: takes no arguments")
@@ -1117,8 +1122,17 @@ func runStop(args []string, stdout, stderr io.Writer) int {
 	}
 	dataDir := config.DataDir()
 	if _, err := serve.ReadState(dataDir); errors.Is(err, serve.ErrNoDaemon) {
-		fmt.Fprintln(stdout, "stone-llama: not running")
-		return 0
+		landed, perr := serve.ProbeNoState(dataDir, stopStateWait)
+		if perr != nil {
+			fmt.Fprintf(stderr, "stone-llama stop: %v\n", perr)
+			return 1
+		}
+		if !landed {
+			fmt.Fprintln(stdout, "stone-llama: not running")
+			return 0
+		}
+		// State landed during the probe (the mid-start window): fall
+		// through to Stop, whose two gates identify and signal it.
 	} else if err != nil && !errors.Is(err, serve.ErrCorruptState) {
 		fmt.Fprintf(stderr, "stone-llama stop: %v\n", err)
 		return 1
@@ -1133,6 +1147,10 @@ func runStop(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "stone-llama: stopped")
 	return 0
 }
+
+// stopStateWait bounds how long stop waits for a starting daemon's
+// state file to appear. Test seam, like serve's startDetached.
+var stopStateWait = 10 * time.Second
 
 // runUpdate self-updates from the latest GitHub release (or a pinned
 // --version tag). --check reports without downloading; every download

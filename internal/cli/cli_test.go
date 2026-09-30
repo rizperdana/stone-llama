@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1084,5 +1085,75 @@ func TestServeModelNoRuntimeOneRemedyBlock(t *testing.T) {
 		if !strings.Contains(errb, want) {
 			t.Errorf("remedy missing %q:\n%s", want, errb)
 		}
+	}
+}
+
+// stop must never print "not running" while the configured port
+// answers the healthz marker but daemon.json has not landed yet (the
+// bind→write window): the holder is named and the exit code is 1.
+func TestStopReportsMarkerHolderWithoutState(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Stone-Llama", "1")
+		io.WriteString(w, "stone-llama\n")
+	})
+	mux.HandleFunc("/-/status", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "{}")
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STONE_LLAMA_PORT", portStr)
+
+	code, out, errb := run("stop")
+	if code == 0 && strings.Contains(out, "not running") {
+		t.Fatalf("stop claimed not-running while the port answers the marker: out=%q err=%q", out, errb)
+	}
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; out=%q err=%q", code, out, errb)
+	}
+	if !strings.Contains(errb, "serving") {
+		t.Errorf("holder not named: %q", errb)
+	}
+}
+
+// A daemon that spawned but has not bound yet (spawn lock held, port
+// free) is reported as starting: stop exits 1 and says so — never
+// "not running" while its boot is in flight.
+func TestStopReportsStartingDaemon(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	prev := stopStateWait
+	stopStateWait = 50 * time.Millisecond
+	t.Cleanup(func() { stopStateWait = prev })
+
+	dataDir := config.DataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := os.Create(filepath.Join(dataDir, "stone-llama.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lk.Close() })
+	if err := syscall.Flock(int(lk.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("hold spawn lock: %v", err)
+	}
+
+	code, out, errb := run("stop")
+	if code == 0 && strings.Contains(out, "not running") {
+		t.Fatalf("stop claimed not-running during boot: out=%q err=%q", out, errb)
+	}
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; out=%q err=%q", code, out, errb)
+	}
+	if !strings.Contains(errb, "starting") {
+		t.Errorf("starting daemon not named: %q", errb)
 	}
 }
