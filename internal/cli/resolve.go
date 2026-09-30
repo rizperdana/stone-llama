@@ -229,7 +229,9 @@ func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir strin
 		rt := runtimeDirOf(cfg, dataDir)
 		if runtimeUsable(rt) {
 			if _, err := startSupervisedFn(dataDir, runReadyTimeout); err != nil {
-				return Decision{}, fmt.Errorf("auto-start failed: %v%s", err, backendStartRemedy(err.Error(), upstream))
+				// K1: the single "auto-start failed:" prefix comes from
+				// serve's startFailed — never re-wrap it here (G2).
+				return Decision{}, fmt.Errorf("%v%s", err, backendStartRemedy(err.Error(), upstream))
 			}
 			if st, qerr := queryStatusFn(dataDir); qerr == nil {
 				return Decision{Kind: "daemon", Status: st, Model: st.Model}, nil
@@ -243,18 +245,39 @@ func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir strin
 }
 
 // backendStartRemedy is the single, once-per-error remedy block for a
-// supervised start that failed: least friction first — attach a live
-// upstream (auto-discoverable), adopt an existing checkout, provision the
-// pinned runtime. It returns "" when errMsg already carries a remedy block
-// (the child's own log tail), so the block prints at most once.
+// supervised start that failed: least friction first — a busy/starting
+// daemon gets "wait and retry" first; otherwise the upstream is probed
+// before "attach to the running server" is offered (an upstream that is
+// down is never described as running — H1). It returns "" when errMsg
+// already carries a remedy block (the child's own log tail), so the
+// block prints at most once.
 func backendStartRemedy(errMsg, upstream string) string {
 	if strings.Contains(errMsg, "remedies, least friction first") {
 		return ""
 	}
-	return "\nremedies, least friction first:\n" +
-		"  1. attach to the running server on " + baseHostPort(upstream) + ": stone-llama run <model> --attach " + baseHostPort(upstream) + " --key-file <path>\n" +
-		"  2. adopt an existing local TabbyAPI: stone-llama setup --adopt <checkout>\n" +
+	host := baseHostPort(upstream)
+	adopt := "  2. adopt an existing local TabbyAPI: stone-llama setup --adopt <checkout>\n" +
 		"  3. provision the pinned runtime: stone-llama setup\n"
+	var block string
+	switch {
+	case strings.Contains(errMsg, "still starting after") || strings.Contains(errMsg, "is starting the daemon"):
+		// busy: a start is already in flight — waiting beats reconfiguring (H2).
+		block = "\nremedies, least friction first:\n" +
+			"  1. wait a few seconds and retry — a stone-llama start is already in flight\n" +
+			adopt
+	case probeUpstreamFn(context.Background(), upstream, runReadyTimeout).Ok:
+		block = "\nremedies, least friction first:\n" +
+			"  1. attach to the running server on " + host + ": stone-llama run <model> --attach " + host + " --key-file <path>\n" +
+			adopt
+	default:
+		// the upstream is down — lead with adopt/setup, never a phantom
+		// "running server" (H1).
+		block = "\nremedies, least friction first:\n" +
+			"  1. adopt an existing local TabbyAPI: stone-llama setup --adopt <checkout>\n" +
+			"  2. provision the pinned runtime: stone-llama setup\n" +
+			"  3. if you have a server at " + host + ", start it, then attach: stone-llama run <model> --attach " + host + " --key-file <path>\n"
+	}
+	return block
 }
 
 // nothingAvailableErr is the single message for "nothing is available" (step 4).
@@ -280,5 +303,5 @@ func nothingAvailableErr(upstream, dataDir string) error {
 	parts = append(parts,
 		"  3. attach to a running server: stone-llama run <model> --attach "+baseHostPort(upstream)+" --key-file <path>",
 	)
-	return errors.New("stone-llama run: " + strings.Join(parts, "\n"))
+	return errors.New(strings.Join(parts, "\n"))
 }

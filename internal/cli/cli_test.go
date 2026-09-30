@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/rizperdana/stone-llama/internal/config"
 	"github.com/rizperdana/stone-llama/internal/serve"
@@ -1192,5 +1193,296 @@ func TestStopReportsStartingDaemon(t *testing.T) {
 	}
 	if !strings.Contains(errb, "starting") {
 		t.Errorf("starting daemon not named: %q", errb)
+	}
+}
+
+// B: rm must refuse to delete the model the running daemon has loaded
+// (serve.LoadedModel was a promised-but-dead guard); --force bypasses it.
+func TestRmRefusesLoadedModelUnlessForced(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	modelsDir := filepath.Join(t.TempDir(), "models")
+	t.Setenv("STONE_LLAMA_MODELS_DIR", modelsDir)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	code, _, errOut := run("rm")
+	if code != 2 || !strings.Contains(errOut, "usage: stone-llama rm <model> [--force]") {
+		t.Errorf("usage: code/err = %d/%q", code, errOut)
+	}
+
+	// an installed model the daemon state reports as loaded
+	ext := filepath.Join(t.TempDir(), "ext-model")
+	if err := os.MkdirAll(ext, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ext, "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ext, "w.bin"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := run("import", ext, "--name", "ext-model"); code != 0 {
+		t.Fatalf("import: code/err = %d/%q", code, errOut)
+	}
+	dataDir := config.DataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"pid":4242,"host":"127.0.0.1","port":5111,"model":"ext-model"}`
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.json"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := run("rm", "ext-model")
+	if code != 1 {
+		t.Fatalf("rm loaded model: code = %d, want 1; out/err = %q/%q", code, out, errOut)
+	}
+	for _, want := range []string{`"ext-model" is loaded by the running daemon`, "(pid 4242)", "--force"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("refusal missing %q: %q", want, errOut)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(modelsDir, "ext-model")); err != nil {
+		t.Errorf("model removed despite the guard: %v", err)
+	}
+
+	code, out, errOut = run("rm", "ext-model", "--force")
+	if code != 0 || !strings.Contains(out, "removed ext-model") {
+		t.Errorf("force rm: code/out/err = %d/%q/%q", code, out, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(modelsDir, "ext-model")); !os.IsNotExist(err) {
+		t.Errorf("link still present after --force: %v", err)
+	}
+}
+
+// C: Ctrl-C during a streaming generation cancels the in-flight request
+// and returns to the prompt — it must not kill the REPL (signal 2). The
+// chat handler blocks until the client aborts, so the SIGINT lands with a
+// request in flight and the handler registered. On the base tree there was
+// NO signal.Notify around the ask (grep: cli.go's only signal use was
+// runServe's NotifyContext) — this SIGINT killed the process.
+func TestRunSigintMidStreamReturnsToPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT semantics are unix-only")
+	}
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY", "")
+	t.Setenv("STONE_LLAMA_UPSTREAM_KEY_FILE", "")
+	started := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"object":"list","data":[{"id":"m"}]}`)
+	})
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"m"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		fl := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		fl.Flush()
+		close(started)
+		<-r.Context().Done() // blocked until the CLI cancels (Ctrl-C)
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+
+	type res struct {
+		code        int
+		out, errOut string
+	}
+	done := make(chan res, 1)
+	go func() {
+		var out, errb bytes.Buffer
+		code := Run([]string{"run", "m"}, "v9.9.9", strings.NewReader("hi\n/bye\n"), &out, &errb)
+		done <- res{code, out.String(), errb.String()}
+	}()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("chat request never arrived")
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.code != 0 {
+			t.Errorf("code = %d, want 0 (REPL survived Ctrl-C); err = %q", r.code, r.errOut)
+		}
+		if strings.Contains(r.errOut, "stone-llama run: signal") {
+			t.Errorf("SIGINT surfaced as an ask error: %q", r.errOut)
+		}
+		if n := strings.Count(r.out, ">>> "); n < 2 {
+			t.Errorf("prompt not re-printed after the interrupt (%d prompts): %q", n, r.out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return after SIGINT — Ctrl-C killed the flow")
+	}
+}
+
+// D: login hides paste echo with stty; a SIGINT used to kill the process
+// before the deferred restore ran, leaving the shell echo-less. The
+// handler must restore echo then exit 130. A subprocess plus a fake stty
+// on PATH proves the SIGINT path calls the restore (no PTY harness): the
+// log must read -echo then echo, and the child exit status must be 130.
+func TestLoginSigintRestoresEcho(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stty is unix-only")
+	}
+	if os.Getenv("SL_LOGIN_SIGINT_CHILD") == "1" {
+		// child: the parent holds the pipe open, so the token read blocks
+		Run([]string{"login"}, "v9.9.9", os.Stdin, io.Discard, io.Discard)
+		os.Exit(3) // the handler should have exited 130 first
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "stty"),
+		[]byte("#!/bin/sh\necho \"$@\" >> \"$STTY_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "stty.log")
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pw.Close() // never written: the child's token read blocks
+	cmd := exec.Command(os.Args[0], "-test.run=TestLoginSigintRestoresEcho")
+	cmd.Env = append(os.Environ(),
+		"SL_LOGIN_SIGINT_CHILD=1",
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"STTY_LOG="+logPath,
+		"HOME="+t.TempDir(),
+		"XDG_DATA_HOME="+t.TempDir(),
+	)
+	cmd.Stdin = pr
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pr.Close()
+	// "-echo" in the log proves echo is hidden — and, with the handler
+	// registered before -echo, that the SIGINT handler is live before we send it.
+	waitLog := func(want string) error {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if b, rerr := os.ReadFile(logPath); rerr == nil && strings.Contains(string(b), want) {
+				return nil
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return fmt.Errorf("%q never appeared in %s", want, logPath)
+	}
+	if err := waitLog("-echo"); err != nil {
+		_ = cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	werr := make(chan error, 1)
+	go func() { werr <- cmd.Wait() }()
+	select {
+	case err := <-werr:
+		if err == nil || !strings.Contains(err.Error(), "exit status 130") {
+			t.Errorf("child exit = %v, want exit status 130 (SIGINT restore path)", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("child never exited after SIGINT — restore handler missing")
+	}
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(b))
+	if len(lines) != 2 || lines[0] != "-echo" || lines[1] != "echo" {
+		t.Errorf("stty calls = %q, want [-echo echo] (hide, then restore on SIGINT)", lines)
+	}
+}
+
+// D: real PTY test — proves ECHO bit is restored after SIGINT, not just
+// that stty was called. Parent opens /dev/ptmx, spawns a child whose
+// stdin is the slave side, watches TIOCGPTN for the slave's ECHO bit
+// via TCGETS, sends SIGINT, asserts ECHO is back and exit status 130.
+func TestLoginSigintRestoresEchoOnPTY(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty is not available on Windows")
+	}
+	if os.Getenv("STONE_LLAMA_PTY_CHILD") == "1" {
+		// child: real login against a pty slave (blocks on token read)
+		Run([]string{"login"}, "v9.9.9", os.Stdin, io.Discard, io.Discard)
+		os.Exit(130)
+	}
+	// open master + slave
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("open ptmx: %v", err)
+	}
+	defer master.Close()
+	var unlock int32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(),
+		uintptr(syscall.TIOCSPTLCK), uintptr(unsafe.Pointer(&unlock))); errno != 0 {
+		t.Fatalf("TIOCSPTLCK: %v", errno)
+	}
+	var ptn uint32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(),
+		uintptr(syscall.TIOCGPTN), uintptr(unsafe.Pointer(&ptn))); errno != 0 {
+		t.Fatalf("TIOCGPTN: %v", errno)
+	}
+	slavePath := fmt.Sprintf("/dev/pts/%d", ptn)
+	slave, err := os.OpenFile(slavePath, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatalf("open slave %s: %v", slavePath, err)
+	}
+	defer slave.Close()
+	// parent keeps its own slave handle to read the ECHO bit
+	readEcho := func() bool {
+		var term syscall.Termios
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, slave.Fd(),
+			uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&term))); errno != 0 {
+			t.Fatalf("TCGETS: %v", errno)
+		}
+		return term.Lflag&syscall.ECHO != 0
+	}
+	// spawn child with slave as its stdin
+	cmd := exec.Command(os.Args[0], "-test.run=TestLoginSigintRestoresEchoOnPTY")
+	cmd.Env = append(os.Environ(), "STONE_LLAMA_PTY_CHILD=1")
+	cmd.Stdin = slave
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	werr := make(chan error, 1)
+	go func() { werr <- cmd.Wait() }()
+	// wait for ECHO off (child reached stty -echo)
+	deadline := time.After(10 * time.Second)
+	for readEcho() {
+		select {
+		case <-deadline:
+			_ = cmd.Process.Kill()
+			t.Fatal("ECHO never went off — stty -echo not executed")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	// SIGINT mid-read: handler must restore ECHO then exit 130
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-werr:
+		if err == nil || !strings.Contains(err.Error(), "exit status 130") {
+			t.Errorf("child exit = %v, want exit status 130", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("child never exited after SIGINT")
+	}
+	if !readEcho() {
+		t.Error("ECHO bit still off after SIGINT — termios not restored")
 	}
 }

@@ -397,9 +397,9 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // zero-config auto-attach path, no daemon spawned). Chat completions with
 // the bounded profile; the discovered bearer is forwarded; /bye exits.
 func streamDirect(dec Decision, prof runProfile, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
-	ask := func(prompt string) error {
+	ask := func(ctx context.Context, prompt string) error {
 		body := chatBody(dec.Model, prompt, prof)
-		req, rerr := http.NewRequest(http.MethodPost, dec.Base+"/v1/chat/completions", bytes.NewReader(body))
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, dec.Base+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
 		}
@@ -416,9 +416,9 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, stdin io.Reader
 // (supervised path). Unloads after /bye; attach mode leaves the upstream
 // model alone.
 func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
-	ask := func(prompt string) error {
+	ask := func(ctx context.Context, prompt string) error {
 		body := chatBody(st.Model, prompt, prof)
-		req, rerr := http.NewRequest(http.MethodPost, "http://"+st.Addr()+"/v1/chat/completions", bytes.NewReader(body))
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+st.Addr()+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
 		}
@@ -496,14 +496,42 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) error
 	}
 }
 
+// errInterrupted marks an interactive ask cancelled by Ctrl-C: the prompt
+// returns instead of an error line.
+var errInterrupted = errors.New("interrupted")
+
 // repl runs one-shot or interactive, flushing tokens live. /bye ends it.
-func repl(ask func(string) error, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+//
+// Interactive mode catches SIGINT only while a request is in flight: the
+// ask's context is cancelled, the prompt returns, and the default
+// disposition is restored — so a Ctrl-C at the idle prompt still exits.
+// The one-shot path installs no handler: -p keeps default signal
+// behaviour (C).
+func repl(ask func(context.Context, string) error, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if oneShot != "" {
-		if err := ask(oneShot); err != nil {
+		if err := ask(context.Background(), oneShot); err != nil {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 			return 1
 		}
 		return 0
+	}
+	askGuarded := func(text string) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt)
+		defer signal.Stop(sig) // restores default: idle Ctrl-C exits again
+		done := make(chan error, 1)
+		go func() { done <- ask(ctx, text) }()
+		select {
+		case err := <-done:
+			return err
+		case <-sig:
+			cancel() // abort the in-flight request (ctx-bound HTTP call)
+			<-done   // drain: nothing left writing to the terminal
+			fmt.Fprintln(stdout)
+			return errInterrupted
+		}
 	}
 	in := bufio.NewReader(stdin)
 	for {
@@ -523,7 +551,7 @@ func repl(ask func(string) error, oneShot string, stdin io.Reader, stdout, stder
 			fmt.Fprintln(stdout, "unknown command (try /bye to quit)")
 			continue
 		}
-		if err := ask(text); err != nil {
+		if err := askGuarded(text); err != nil && !errors.Is(err, errInterrupted) {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 		}
 		if rerr != nil {
@@ -675,8 +703,18 @@ func formatVerdict(v *store.Verdict) string {
 }
 
 func runRm(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: stone-llama rm <model>")
+	force := false
+	var pos []string
+	for _, a := range args {
+		switch a {
+		case "--force", "-force":
+			force = true
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) != 1 {
+		fmt.Fprintln(stderr, "usage: stone-llama rm <model> [--force]")
 		return 2
 	}
 	cfg, err := config.Load()
@@ -684,11 +722,25 @@ func runRm(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "stone-llama rm: %v\n", err)
 		return 1
 	}
-	if err := store.Remove(cfg.ModelsDir, args[0]); err != nil {
+	if !force {
+		// B: never silently delete the model the live daemon has loaded.
+		// LoadedModel reports ("",false) for no state / attach mode /
+		// empty model — the guard then does not trigger and rm proceeds.
+		dataDir := config.DataDir()
+		if loaded, ok := serve.LoadedModel(dataDir); ok && loaded == pos[0] {
+			pid := 0
+			if st, serr := serve.ReadState(dataDir); serr == nil {
+				pid = st.PID
+			}
+			fmt.Fprintf(stderr, "stone-llama rm: %q is loaded by the running daemon (pid %d) — unload it first ('stone-llama stop'), or pass --force to remove it anyway\n", pos[0], pid)
+			return 1
+		}
+	}
+	if err := store.Remove(cfg.ModelsDir, pos[0]); err != nil {
 		fmt.Fprintf(stderr, "stone-llama rm: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "removed %s\n", args[0])
+	fmt.Fprintf(stdout, "removed %s\n", pos[0])
 	return 0
 }
 
@@ -814,14 +866,31 @@ func runLogin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if f, ok := stdin.(*os.File); ok {
-		// hide paste echo when stdin is a real terminal
+		// hide paste echo when stdin is a real terminal. A SIGINT would
+		// kill the process before the deferred restore runs, leaving the
+		// shell echo-less — the handler restores echo first, then exits
+		// 130 (D). Registered before -echo so there is no window where
+		// echo is off under the default disposition.
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt)
+		go func() {
+			<-sig
+			c := exec.Command("stty", "echo")
+			c.Stdin = f
+			_ = c.Run()
+			os.Exit(130)
+		}()
 		cmd := exec.Command("stty", "-echo")
 		cmd.Stdin = f
 		_ = cmd.Run()
 		defer func() {
+			// restore before Stop: while the handler is live a stray
+			// SIGINT re-runs stty echo (harmless) instead of killing
+			// mid-restore.
 			c := exec.Command("stty", "echo")
 			c.Stdin = f
 			_ = c.Run()
+			signal.Stop(sig)
 		}()
 	}
 	fmt.Fprint(stdout, "Paste a HuggingFace token (input hidden): ")
@@ -956,7 +1025,8 @@ func backendStartHelp(msg string) string {
 	if !strings.Contains(msg, "runtime incomplete") &&
 		!strings.Contains(msg, "auto-start failed") &&
 		!strings.Contains(msg, "still starting after") &&
-		!strings.Contains(msg, "no stone-llama daemon is running") {
+		!strings.Contains(msg, "no stone-llama daemon is running") &&
+		!strings.Contains(msg, "backend not ready") {
 		return ""
 	}
 	return "\nremedies, least friction first:\n" +
@@ -1268,7 +1338,7 @@ Commands:
   version     print version
   doctor      check GPU, driver, and runtime readiness
   list        list installed models (--estimate: fit + tok/s columns)
-  rm          remove a model
+  rm          remove a model [--force]
   import      symlink an existing model dir into the store
   pull        download a model <repo[@branch][:quant]>
   fit         fit verdict + ctx/cache pick + tok/s estimate (no download)
