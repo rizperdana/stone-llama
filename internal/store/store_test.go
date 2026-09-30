@@ -26,7 +26,7 @@ func makeModel(t *testing.T, parent, name string, weightBytes int) string {
 }
 
 func TestScanMissingDirIsEmptyNotError(t *testing.T) {
-	models, err := Scan(filepath.Join(t.TempDir(), "nope"))
+	models, _, err := Scan(filepath.Join(t.TempDir(), "nope"))
 	if err != nil || models != nil {
 		t.Errorf("Scan = %v, %v; want nil, nil", models, err)
 	}
@@ -72,7 +72,7 @@ func TestScanClassifiesAndSorts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	models, err := Scan(modelsDir)
+	models, _, err := Scan(modelsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,14 +109,24 @@ func TestScanClassifiesAndSorts(t *testing.T) {
 	}
 }
 
-func TestScanCorruptManifestIsError(t *testing.T) {
+// A corrupt manifest skips THAT entry with a warning instead of
+// aborting the whole listing — one bad dir must not hide the others.
+func TestScanCorruptManifestSkippedWithWarning(t *testing.T) {
 	modelsDir := t.TempDir()
+	makeModel(t, modelsDir, "good", 8)
 	dir := makeModel(t, modelsDir, "bad", 8)
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("{oops"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Scan(modelsDir); err == nil || !strings.Contains(err.Error(), "manifest") {
-		t.Errorf("err = %v, want manifest parse error", err)
+	models, warns, err := Scan(modelsDir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(models) != 1 || models[0].Name != "good" {
+		t.Errorf("models = %+v, want only good", models)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "bad") || !strings.Contains(warns[0], "manifest") {
+		t.Errorf("warnings = %q, want the bad entry named", warns)
 	}
 }
 

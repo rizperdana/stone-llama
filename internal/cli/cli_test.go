@@ -143,6 +143,43 @@ func TestListEmptyShowsHint(t *testing.T) {
 	}
 }
 
+// One corrupt manifest must not hide every other model: list skips the
+// bad entry, names it on stderr, and still shows the healthy ones (a
+// single bad dir used to abort the whole listing with rc=1).
+func TestListSkipsCorruptManifest(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	modelsDir := filepath.Join(t.TempDir(), "models")
+	t.Setenv("STONE_LLAMA_MODELS_DIR", modelsDir)
+
+	good := filepath.Join(modelsDir, "good")
+	if err := os.MkdirAll(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "config.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(modelsDir, "bad")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "manifest.json"), []byte("{oops"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := run("list")
+	if code != 0 {
+		t.Fatalf("list with one corrupt manifest: code/err = %d/%q", code, errOut)
+	}
+	if !strings.Contains(out, "good") {
+		t.Errorf("healthy model hidden by the corrupt one:\n%s", out)
+	}
+	if !strings.Contains(errOut, "bad") || !strings.Contains(errOut, "manifest") {
+		t.Errorf("corrupt entry not named on stderr: %q", errOut)
+	}
+}
+
 func TestImportListRmWiring(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("STONE_LLAMA_CONFIG", "")

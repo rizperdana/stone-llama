@@ -27,16 +27,20 @@ type Model struct {
 }
 
 // Scan lists model entries in modelsDir sorted by name. A missing
-// modelsDir means "no models yet", not an error. A corrupt manifest is
-// an error: surface it, don't silently misreport provenance.
-func Scan(modelsDir string) ([]Model, error) {
+// modelsDir means "no models yet", not an error. A corrupt manifest
+// skips THAT entry and comes back in warnings instead of aborting the
+// whole listing — one damaged dir must not hide every healthy model;
+// the warning names it so the user can repair or rm it.
+func Scan(modelsDir string) ([]Model, []string, error) {
 	entries, err := os.ReadDir(modelsDir)
 	if os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	var warnings []string
 
 	var models []Model
 	for _, e := range entries {
@@ -66,7 +70,8 @@ func Scan(modelsDir string) ([]Model, error) {
 
 		m, err := LoadManifest(path)
 		if err != nil {
-			return nil, err
+			warnings = append(warnings, err.Error())
+			continue
 		}
 		// Qualify: a model dir carries a manifest or a config.json.
 		if m == nil && !fileExists(filepath.Join(path, "config.json")) {
@@ -83,7 +88,7 @@ func Scan(modelsDir string) ([]Model, error) {
 
 		size, err := dirSize(path)
 		if err != nil {
-			return nil, fmt.Errorf("size of %s: %w", name, err)
+			return nil, nil, fmt.Errorf("size of %s: %w", name, err)
 		}
 
 		model := Model{
@@ -101,7 +106,7 @@ func Scan(modelsDir string) ([]Model, error) {
 	}
 
 	sort.Slice(models, func(i, j int) bool { return models[i].Name < models[j].Name })
-	return models, nil
+	return models, warnings, nil
 }
 
 // Import symlink-joins an existing model directory into modelsDir

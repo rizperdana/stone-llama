@@ -612,13 +612,18 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "stone-llama list: %v\n", err)
 		return 1
 	}
-	models, err := store.Scan(cfg.ModelsDir)
+	models, warns, err := store.Scan(cfg.ModelsDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "stone-llama list: %v\n", err)
 		return 1
 	}
+	for _, wmsg := range warns {
+		fmt.Fprintf(stderr, "stone-llama list: warning: %s (skipped)\n", wmsg)
+	}
 	if len(models) == 0 {
-		fmt.Fprintln(stdout, "no models — pull one with 'stone-llama pull <model>'")
+		if len(warns) == 0 {
+			fmt.Fprintln(stdout, "no models — pull one with 'stone-llama pull <model>'")
+		}
 		return 0
 	}
 	estGPU, estVRAM := "", 0
