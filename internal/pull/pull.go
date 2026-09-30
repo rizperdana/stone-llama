@@ -243,6 +243,14 @@ func Run(opts Options) (Result, error) {
 
 	final := filepath.Join(opts.ModelsDir, name)
 	staging := filepath.Join(opts.ModelsDir, "."+name+".staging")
+	// A .<name>.old only exists when a previous swap crashed after
+	// staging went live but before the set-aside copy was deleted:
+	// reclaim it on this run even if the run then refuses. When final
+	// is absent the swap died before installing, so .old still holds
+	// the old model and swapIntoPlace reclaims it on success.
+	if _, err := os.Stat(final); err == nil {
+		os.RemoveAll(filepath.Join(opts.ModelsDir, "."+name+".old"))
+	}
 	if !opts.Force {
 		if _, err := os.Stat(final); err == nil {
 			return Result{}, fmt.Errorf("model %q already exists (use --force to re-pull)", name)
@@ -288,13 +296,8 @@ func Run(opts Options) (Result, error) {
 	}
 
 	// Swap into place only after a complete, verified staging directory.
-	if _, err := os.Stat(final); err == nil {
-		if err := os.RemoveAll(final); err != nil {
-			return Result{}, fmt.Errorf("replace existing model: %w", err)
-		}
-	}
-	if err := os.Rename(staging, final); err != nil {
-		return Result{}, fmt.Errorf("finalize model: %w", err)
+	if err := swapIntoPlace(final, staging); err != nil {
+		return Result{}, err
 	}
 
 	if !opts.Quiet {
@@ -302,6 +305,33 @@ func Run(opts Options) (Result, error) {
 			name, HumanBytes(total), report.Verdict.Status, report.Verdict.MaxCtx, report.Verdict.CacheMode)
 	}
 	return Result{Name: name, Verdict: report.Verdict, Files: len(files), Bytes: total}, nil
+}
+
+// swapIntoPlace moves a complete, verified staging directory onto final,
+// replacing a pre-existing model (pull --force) without deleting it
+// first: the old dir is renamed aside to .<name>.old, staging is renamed
+// in, and only then is the old copy removed — a failed second rename
+// puts the old model back. staging and final are both children of the
+// same models dir, so every rename is same-filesystem and atomic; a kill
+// between the two renames leaves the old model at .old plus a complete
+// staging, both reclaimed by the next pull run.
+func swapIntoPlace(final, staging string) error {
+	old := filepath.Join(filepath.Dir(final), "."+filepath.Base(final)+".old")
+	if _, err := os.Stat(final); err == nil {
+		if err := os.Rename(final, old); err != nil {
+			return fmt.Errorf("set aside existing model: %w", err)
+		}
+	}
+	if err := os.Rename(staging, final); err != nil {
+		if _, oerr := os.Stat(old); oerr == nil {
+			if rerr := os.Rename(old, final); rerr != nil {
+				return fmt.Errorf("finalize model: %w — previous model left at %s (restore failed: %v)", err, old, rerr)
+			}
+		}
+		return fmt.Errorf("finalize model: %w", err)
+	}
+	os.RemoveAll(old) // previous model; also reclaims an interrupted swap's leftover
+	return nil
 }
 
 // resolveRepo turns opts.Ref into repo metadata: direct owner/repo, or a

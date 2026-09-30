@@ -665,6 +665,95 @@ func TestPullLockContention(t *testing.T) {
 	}
 }
 
+// The final swap must never destroy the live model directory before the
+// new one is in place: if the staging rename fails, the old model has to
+// survive in its original location (audit CRITICAL: RemoveAll-then-Rename
+// leaves nothing when the second syscall dies).
+func TestSwapFailedRenameKeepsOldModel(t *testing.T) {
+	models := t.TempDir()
+	final := filepath.Join(models, "tiny-exl3")
+	staging := filepath.Join(models, ".tiny-exl3.staging")
+	if err := os.MkdirAll(final, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(final, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// staging deliberately absent: the rename onto final must fail.
+	if err := swapIntoPlace(final, staging); err == nil {
+		t.Fatal("swap with missing staging = nil, want error")
+	}
+	b, err := os.ReadFile(filepath.Join(final, "old.txt"))
+	if err != nil {
+		t.Fatalf("old model destroyed by a failed swap: %v", err)
+	}
+	if string(b) != "old" {
+		t.Errorf("old.txt = %q, want %q", b, "old")
+	}
+	if _, err := os.Stat(filepath.Join(models, ".tiny-exl3.old")); !os.IsNotExist(err) {
+		t.Errorf("set-aside copy left behind after restore: %v", err)
+	}
+}
+
+// A swap interrupted between its two renames leaves the previous model
+// set aside at .<name>.old; the next successful swap must install
+// staging AND clear that copy.
+func TestSwapClearsLeftoverFromInterruptedRun(t *testing.T) {
+	models := t.TempDir()
+	final := filepath.Join(models, "tiny-exl3")
+	staging := filepath.Join(models, ".tiny-exl3.staging")
+	old := filepath.Join(models, ".tiny-exl3.old")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := swapIntoPlace(final, staging); err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(final, "new.txt")); err != nil || string(b) != "new" {
+		t.Errorf("staging not installed: %q, %v", b, err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("leftover .old not cleaned by the swap: %v", err)
+	}
+}
+
+// A .<name>.old left by a crash after the swap completed is invisible
+// to Scan (dot-prefixed) but must be reclaimed by the next pull run —
+// even one that refuses with "already exists".
+func TestPullCleansLeftoverOldDir(t *testing.T) {
+	f, srv := newFakeHF(t)
+	seedTiny(f)
+	models := t.TempDir()
+	final := filepath.Join(models, "tiny-exl3")
+	stale := filepath.Join(models, ".tiny-exl3.old")
+	if err := os.MkdirAll(final, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "old.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := baseOpts(srv, models)
+	if _, err := Run(opts); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("err = %v, want already-exists", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("leftover .old survived the next pull run: %v", err)
+	}
+}
+
 func flock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }
