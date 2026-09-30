@@ -8,11 +8,12 @@ The API key was passed with --key-file (never argv, never stdout) and is
 written <key>; the key-file path is written <key-file>. The upstream
 server was never restarted or stopped, and nothing was downloaded.
 
-Annotations: command lines read `stone-llama …` — the verification ran the
-same build at /tmp/sl-a/stone-llama. `raw/…` names are the verification's
-own capture files (evidence: /tmp/sl-a/raw/, narrative:
-/tmp/sl-a/report.md). Headers below are curl -D output, bodies curl -o
-output.
+Annotations: command lines read `stone-llama …`; the build is `main` at
+4f020dc (checkable: `git show 4f020dc`). The live-daemon happy-path output
+below (`serve`, `/healthz`, `ps`, `stop`) is retained verbatim from that
+session — not re-captured (TabyAPI on :5002 unavailable; nothing
+downloaded). `raw/…` names are the verification's own capture files;
+headers are curl -D output, bodies curl -o output.
 
 [shared block begins — quoted verbatim in docs/QUICKSTART.md §6 and site/index.html]
 $ stone-llama serve --attach 127.0.0.1:5002 --key-file <key-file>

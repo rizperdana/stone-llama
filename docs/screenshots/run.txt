@@ -8,10 +8,12 @@ In attach mode `run` proxies to the upstream: it never loads or unloads a
 model itself, and `/bye` leaves the upstream's model alone. Nothing was
 downloaded.
 
-Annotations: command lines read `stone-llama …` — the verification ran the
-same build at /tmp/sl-a/stone-llama, and the raw transcript abbreviates
-them; they are written out in full here. The output lines themselves are
-quoted verbatim from /tmp/sl-a/raw/run-bye-transcript.txt.
+Annotations: command lines read `stone-llama …`; the build is `main` at
+4f020dc (checkable: `git show 4f020dc`). The live-daemon happy-path output
+below (`ps`, `>>>`, `ls`) is retained verbatim from that session's
+transcript — not re-captured (TabyAPI on :5002 unavailable; nothing
+downloaded). The `profile:` line is byte-confirmed from a re-capture of
+the current build (/home/anon/ai/docverify2/run_profile.out).
 
 [shared block begins — quoted verbatim in docs/QUICKSTART.md §5]
 $ stone-llama ps
