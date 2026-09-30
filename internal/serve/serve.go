@@ -369,10 +369,10 @@ func UpstreamModel(ctx context.Context, base, token string) (string, error) {
 func (d *daemon) classifyCrash(childErr error) error {
 	tail := logTail(d.logPath, 20)
 	if ce := d.contention(); ce != nil {
-		return fmt.Errorf("serve: %s exited: %v; %w%s", d.conn.errName(), childErr, ce, tail)
+		return fmt.Errorf("%s exited: %v; %w%s", d.conn.errName(), childErr, ce, tail)
 	}
 	if isOOM([]byte(tail)) {
-		return fmt.Errorf("serve: %s exited: %v\n%s\n%s", d.conn.errName(), childErr, tail, d.oomAdvice())
+		return fmt.Errorf("%s exited: %v\n%s\n%s", d.conn.errName(), childErr, tail, d.oomAdvice())
 	}
 	return nil
 }
@@ -420,7 +420,7 @@ func Serve(ctx context.Context, opts Options) error {
 	if opts.Port == 0 { // ephemeral: pick a free downstream port
 		p, perr := freePort()
 		if perr != nil {
-			return fmt.Errorf("serve: pick downstream port: %w", perr)
+			return fmt.Errorf("pick downstream port: %w", perr)
 		}
 		opts.Port = p
 	}
@@ -457,15 +457,15 @@ func Serve(ctx context.Context, opts Options) error {
 	if upstream != "" {
 		u, perr := url.Parse(upstream)
 		if perr != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("serve: --attach must be host:port or an http(s) URL, got %q", upstream)
+			return fmt.Errorf("--attach must be host:port or an http(s) URL, got %q", upstream)
 		}
 		if u.User != nil {
-			return errors.New("serve: credentials in --attach URLs are not allowed — use the key file")
+			return errors.New("credentials in --attach URLs are not allowed — use the key file")
 		}
 		upstream = strings.TrimRight(u.String(), "/")
 		opts.Attach = upstream
 		if err := probeAttach(ctx, upstream, 10*time.Second); err != nil {
-			return fmt.Errorf("serve: attach target %s not reachable: %w", upstream, err)
+			return fmt.Errorf("attach target %s not reachable: %w", upstream, err)
 		}
 	}
 
@@ -509,7 +509,7 @@ func Serve(ctx context.Context, opts Options) error {
 		// EnsureFirstRunMarker for the start.py contract.
 		if merr := EnsureFirstRunMarker(opts.RuntimeDir); merr != nil {
 			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
-			return fmt.Errorf("serve: %w", merr)
+			return fmt.Errorf("%w", merr)
 		}
 		// Backend keys pre-created in the child's CWD (it reads ours
 		// instead of generating/logging its own) plus the raw upstream
@@ -517,7 +517,7 @@ func Serve(ctx context.Context, opts Options) error {
 		keyFile, _, terr := writeChildTokens(opts.RuntimeDir)
 		if terr != nil {
 			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
-			return fmt.Errorf("serve: write child keys: %w", terr)
+			return fmt.Errorf("write child keys: %w", terr)
 		}
 		d.upKey = loadUpstreamKey(keyFile)
 		d.conn = Conn{
@@ -534,7 +534,7 @@ func Serve(ctx context.Context, opts Options) error {
 		})
 		if werr := writeSecret(d.cfgPath, yaml); werr != nil {
 			dropState(opts.DataDir, opts.RuntimeDir)
-			return fmt.Errorf("serve: write child config: %w", werr)
+			return fmt.Errorf("write child config: %w", werr)
 		}
 		c, err = d.startReady(supCtx)
 		if err != nil {
@@ -555,7 +555,7 @@ func Serve(ctx context.Context, opts Options) error {
 			c.shutdownChild(killGrace)
 		}
 		dropState(opts.DataDir, opts.RuntimeDir)
-		return fmt.Errorf("serve: listen %s: %w", d.st.Addr(), lerr)
+		return fmt.Errorf("listen %s: %w", d.st.Addr(), lerr)
 	}
 	if err := WriteState(opts.DataDir, d.st); err != nil {
 		ln.Close()
@@ -606,7 +606,7 @@ func Serve(ctx context.Context, opts Options) error {
 	case <-ctx.Done(): // clean shutdown (stop / SIGTERM)
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			result = fmt.Errorf("serve: %w", err)
+			result = fmt.Errorf("%w", err)
 		}
 	case err := <-supCh:
 		consumed = true
@@ -640,7 +640,7 @@ func (d *daemon) startReady(ctx context.Context) (*child, error) {
 			return nil, err
 		}
 		d.setChild(c)
-		died, rerr := awaitReady(ctx, c, d.opts.ReadyTimeout, d.opts.RetryDelay, d.opts.probe)
+		died, rerr := awaitReady(ctx, c, d.st.Addr(), d.opts.ReadyTimeout, d.opts.RetryDelay, d.opts.probe)
 		if !died && rerr == nil {
 			return c, nil
 		}
@@ -667,13 +667,13 @@ func (d *daemon) startReady(ctx context.Context) (*child, error) {
 			if fatal := d.classifyCrash(rerr); fatal != nil {
 				return nil, fatal
 			}
-			return nil, fmt.Errorf("serve: %w%s", rerr, logTail(d.logPath, 20))
+			return nil, fmt.Errorf("%w%s", rerr, logTail(d.logPath, 20))
 		}
 		if fatal := d.classifyCrash(rerr); fatal != nil {
 			return nil, fatal
 		}
 		if attempt >= childRestarts {
-			return nil, fmt.Errorf("serve: %s exited %d times (%v)%s", d.conn.errName(), attempt, rerr, logTail(d.logPath, 20))
+			return nil, fmt.Errorf("%s exited %d times (%v)%s", d.conn.errName(), attempt, rerr, logTail(d.logPath, 20))
 		}
 		fmt.Fprintf(d.opts.Stderr, "stone-llama: %s exited (%v), restarting (%d/%d)\n",
 			d.conn.errName(), rerr, attempt, childRestarts)
@@ -715,11 +715,11 @@ func (d *daemon) supervise(ctx context.Context, c *child) error {
 			return fatal
 		}
 		if d.modelLoaded() {
-			return fmt.Errorf("serve: %s crashed while a model was loaded: %v%s",
+			return fmt.Errorf("%s crashed while a model was loaded: %v%s",
 				name, exitErr, logTail(d.logPath, 20))
 		}
 		if attempt >= childRestarts {
-			return fmt.Errorf("serve: %s exited %d times (%v)%s",
+			return fmt.Errorf("%s exited %d times (%v)%s",
 				name, attempt, exitErr, logTail(d.logPath, 20))
 		}
 		fmt.Fprintf(d.opts.Stderr, "stone-llama: %s exited (%v), restarting (%d/%d)\n",
@@ -731,10 +731,10 @@ func (d *daemon) supervise(ctx context.Context, c *child) error {
 		}
 		nc, err := d.spawn()
 		if err != nil {
-			return fmt.Errorf("serve: restart: %w%s", err, logTail(d.logPath, 20))
+			return fmt.Errorf("restart: %w%s", err, logTail(d.logPath, 20))
 		}
 		d.setChild(nc)
-		died, rerr := awaitReady(ctx, nc, d.opts.ReadyTimeout, d.opts.RetryDelay, d.opts.probe)
+		died, rerr := awaitReady(ctx, nc, d.st.Addr(), d.opts.ReadyTimeout, d.opts.RetryDelay, d.opts.probe)
 		if rerr != nil && !died {
 			nc.shutdownChild(killGrace)
 			if ctx.Err() != nil {
@@ -743,7 +743,7 @@ func (d *daemon) supervise(ctx context.Context, c *child) error {
 			if fatal := d.classifyCrash(rerr); fatal != nil {
 				return fatal
 			}
-			return fmt.Errorf("serve: %s not ready after restart: %v%s", name, rerr, logTail(d.logPath, 20))
+			return fmt.Errorf("%s not ready after restart: %v%s", name, rerr, logTail(d.logPath, 20))
 		}
 		if died {
 			// awaitReady consumed the exit — hand it back so this loop
@@ -904,25 +904,30 @@ func joinPath(prefix, p string) string {
 	return strings.TrimRight(prefix, "/") + p
 }
 
-// daemonCmdline is the Stop identification gate: argv0 names
-// stone-llama and argv1 is `serve` — exactly how StartDetached execs
-// the daemon. The old check was a bare "stone-llama" substring: it
-// matched unrelated processes before the signal, and its wait-loop
-// twin matched nothing at all (empty cmdline never contains the
-// substring), so a recycled pid's killer could never confirm the exit
-// (H2). Positional argv1 also keeps `stone-llama run <model named
-// serve>` out of the gate.
+// daemonCmdline is the Stop identification gate: argv1 is `serve`, the
+// exact positional StartDetached execs the daemon with. argv0 is
+// deliberately NOT part of the gate: it names the binary, and a
+// renamed one (`stone-fix serve`) must still be stoppable — gate on
+// argv0's "stone-llama" substring claimed success for a daemon it
+// could not recognize, leaving it alive while reporting "stopped"
+// (E). Positional argv1 is the reliable part: it keeps
+// `stone-llama run <model named serve>` out of the gate, and the
+// wait-loop twin reads the same gate (H2: an empty cmdline matches
+// nothing, so a recycled pid's killer can still confirm its exit).
 func daemonCmdline(cmd string) bool {
 	f := strings.Fields(cmd)
-	return len(f) >= 2 && strings.Contains(f[0], "stone-llama") && f[1] == "serve"
+	return len(f) >= 2 && f[1] == "serve"
 }
 
 // Stop terminates the daemon recorded in state. An absent state is a
-// no-op; a recycled pid (no longer a stone-llama serve) drops stale
-// state without signalling. Identification is two-gated (H2): the
-// cmdline must read as our serve AND the recorded port must answer the
-// healthz marker — if it will not confirm itself, we refuse to signal
-// and keep the state for inspection.
+// no-op. Identification is two-gated (H2): the cmdline must read as
+// our serve AND the recorded port must answer the healthz marker — if
+// it will not confirm itself, we refuse to signal and keep the state
+// for inspection. A pid that does NOT read as our serve only drops
+// state when nothing answers the healthz marker on the recorded port:
+// a live daemon behind it (renamed binary, another data dir) keeps its
+// state (E). A pid that reads as our serve while the port is still
+// down is reported as STARTING, matching ps (F).
 func Stop(dataDir string, grace time.Duration) error {
 	if runtime.GOOS == "windows" {
 		return errors.New("stop is not supported on windows (v1 targets Linux; the windows build compiles but is untested)")
@@ -941,11 +946,26 @@ func Stop(dataDir string, grace time.Duration) error {
 	}
 	rtDir := runtimeDirFor(dataDir)
 	if !daemonCmdline(procCmdline(st.PID)) {
-		// pid recycled by an unrelated process — never signal it
-		return dropState(dataDir, rtDir)
+		// pid recycled by an unrelated process — never signal it. But
+		// only drop the state when the recorded port answers nothing:
+		// a healthz marker there means a live daemon owns this state,
+		// and dropping it would blind `ps` while the daemon runs (E).
+		if ours, _, perr := probeDownstream(context.Background(), st.Host, st.Port); perr == nil && ours {
+			return fmt.Errorf("pid %d is not a recognized stone-llama serve, but %s still answers the healthz marker — refusing to drop state that may belong to a live daemon; stop the holder yourself, then rerun stop", st.PID, st.Addr())
+		}
+		if err := dropState(dataDir, rtDir); err != nil {
+			return err
+		}
+		return fmt.Errorf("pid %d is not recognized as ours — state dropped, NOT signaled", st.PID)
 	}
 	ours, listening, perr := probeDownstream(context.Background(), st.Host, st.Port)
 	if perr != nil || !ours {
+		// cold-start window: ps calls this state "starting", not
+		// "stale" — say the same thing here (F), never contradict it.
+		if sn := startingNote(dataDir, st); sn != "" {
+			return fmt.Errorf("%s — %s does not answer the healthz marker yet (listening=%v); refusing to signal, state kept at %s",
+				sn, st.Addr(), listening, StatePath(dataDir))
+		}
 		return fmt.Errorf("pid %d reads as a stone-llama serve, but %s does not answer the healthz marker (listening=%v) — refusing to signal a process that is not confirmed ours; state kept at %s",
 			st.PID, st.Addr(), listening, StatePath(dataDir))
 	}
@@ -966,7 +986,7 @@ func Stop(dataDir string, grace time.Duration) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("serve: pid %d did not exit within %s", st.PID, grace)
+	return fmt.Errorf("pid %d did not exit within %s", st.PID, grace)
 }
 
 // dropState ends a daemon's footprint: daemon.json plus the files this
@@ -1172,6 +1192,21 @@ func ensureDaemon(dataDir string, start bool, timeout time.Duration, args []stri
 // failure paths never re-exec the test binary.
 var startDetached = StartDetached
 
+// startingNote classifies a recorded daemon whose port did not answer:
+// while the spawn lock is held, a boot is in flight, so ps and stop both
+// say STARTING (F) — instead of ps claiming stale while stop refuses to
+// signal that same pid. Empty means nothing is in flight: the state is
+// genuinely dead and only then is "stale, stop clears it" the truth.
+func startingNote(dataDir string, st State) string {
+	if !spawnLockHeld(dataDir) {
+		return ""
+	}
+	if st.StartedAt > 0 {
+		return fmt.Sprintf("daemon starting (pid %d, %ds elapsed)", st.PID, int(time.Since(time.Unix(st.StartedAt, 0)).Seconds()))
+	}
+	return fmt.Sprintf("daemon starting (pid %d)", st.PID)
+}
+
 // stateDownErr states exactly what answered a recorded port — nothing,
 // a foreign process, or a listener that would not confirm itself (A3),
 // and never deletes the state (H3).
@@ -1186,6 +1221,12 @@ func stateDownErr(dataDir string, st State, class probeClass, stateErr error) er
 	case probeForeign:
 		return fmt.Errorf("a foreign process holds %s (not a stone-llama daemon) and the recorded state no longer matches it%s — state kept at %s; 'stone-llama stop' clears it", st.Addr(), note, StatePath(dataDir))
 	default: // probeDown
+		// cold-start window (F): the spawn-lock holder is still booting —
+		// say STARTING like stop does, never "stale … stop clears it"
+		// (stop would then refuse that very pid).
+		if sn := startingNote(dataDir, st); sn != "" {
+			return fmt.Errorf("%s — %s has no listener yet; state kept at %s%s", sn, st.Addr(), StatePath(dataDir), note)
+		}
 		return fmt.Errorf("no stone-llama daemon is listening on %s%s — stale state kept at %s; 'stone-llama stop' clears it", st.Addr(), note, StatePath(dataDir))
 	}
 }

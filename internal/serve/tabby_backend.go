@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -82,6 +83,9 @@ func (c *child) shutdownChild(grace time.Duration) {
 	if c == nil {
 		return
 	}
+	if c.cmd == nil {
+		return // no process (test seam): nothing to signal or reap
+	}
 	c.signalTerm()
 	select {
 	case <-c.wait:
@@ -110,9 +114,44 @@ func probeHTTP(ctx context.Context, port int) error {
 	return nil
 }
 
+// backendServing reports whether the child genuinely serves a model:
+// GET {BaseURL}/v1/models answers 200 with a NON-EMPTY data array,
+// authenticated with the upstream key. Distinct from probeHTTP (any
+// answer = serving; readiness only) and from modelLoaded (state only):
+// TabbyAPI's load "finished" event fires before warmup completes, and
+// in that window /v1/models answers 200 {"data":[]} while chat 503s.
+func (d *daemon) backendServing(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.conn.BaseURL+"/v1/models", nil)
+	if err != nil {
+		return false
+	}
+	if d.upKey != "" {
+		req.Header.Set("Authorization", "Bearer "+d.upKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var m struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&m); err != nil {
+		return false
+	}
+	return len(m.Data) > 0
+}
+
 // awaitReady polls until the child answers, the child dies, or ctx/timeout
 // ends. died=true means the incarnation exited (caller may respawn).
-func awaitReady(ctx context.Context, c *child, timeout, delay time.Duration, probe func(context.Context, int) error) (died bool, err error) {
+// addr is the daemon's configured PUBLIC address — the never-ready
+// failure must name where the user's client connects, not the internal
+// ephemeral child port (H), and carries the literal "backend not ready"
+// the CLI's remedy gate keys on.
+func awaitReady(ctx context.Context, c *child, addr string, timeout, delay time.Duration, probe func(context.Context, int) error) (died bool, err error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(delay)
@@ -127,7 +166,7 @@ func awaitReady(ctx context.Context, c *child, timeout, delay time.Duration, pro
 		case err := <-c.wait:
 			return true, err
 		case <-deadline.C:
-			return false, fmt.Errorf("backend not ready on port %d within %s", c.port, timeout)
+			return false, fmt.Errorf("backend not ready on %s within %s", addr, timeout)
 		case <-tick.C:
 		}
 	}

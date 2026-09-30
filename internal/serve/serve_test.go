@@ -398,7 +398,7 @@ func TestServeOwnDaemonHint(t *testing.T) {
 }
 
 // TestStopRefusesForeignPid: recycled pid is never signalled; stale
-// state is dropped.
+// state is dropped, and Stop says "not recognized" instead of success (E).
 func TestStopRefusesForeignPid(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("stop is refused on windows")
@@ -415,8 +415,9 @@ func TestStopRefusesForeignPid(t *testing.T) {
 	if err := WriteState(dataDir, State{PID: proc.Process.Pid, Host: "127.0.0.1", Port: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Stop(dataDir, time.Second); err != nil {
-		t.Fatalf("Stop(foreign pid): %v", err)
+	err := Stop(dataDir, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "not recognized as ours") {
+		t.Fatalf("Stop(foreign pid) = %v, want not-recognized (state dropped, NOT signaled)", err)
 	}
 	if err := proc.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Errorf("foreign process was signalled: %v", err)
@@ -602,10 +603,11 @@ func TestStartReadyCleanExitBeforeReadinessFails(t *testing.T) {
 	}
 }
 
-// H2: a process whose cmdline merely contains the substring
+// H2 + E: a process whose cmdline merely contains the substring
 // "stone-llama" but is not `stone-llama serve` must never be signalled
 // (the old gate was strings.Contains(cmd, "stone-llama")); its stale
-// state is dropped instead.
+// state is dropped instead — and Stop reports exactly that ("not
+// recognized … NOT signaled") instead of claiming success (E).
 func TestStopIgnoresNonServeStoneProcess(t *testing.T) {
 	isolateConfig(t)
 	proc := exec.Command("sleep", "30")
@@ -620,8 +622,8 @@ func TestStopIgnoresNonServeStoneProcess(t *testing.T) {
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- proc.Wait() }() // reap: Signal(0) sees zombies
-	if err := Stop(dataDir, time.Second); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if err := Stop(dataDir, time.Second); err == nil || !strings.Contains(err.Error(), "not recognized as ours") {
+		t.Fatalf("Stop = %v, want not-recognized (state dropped, NOT signaled)", err)
 	}
 	select {
 	case <-exited:
@@ -827,8 +829,8 @@ func TestStopCycleCleansGeneratedSparesVenvAndSiblings(t *testing.T) {
 	if err := WriteState(dataDir, State{PID: proc.Process.Pid, Host: "127.0.0.1", Port: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Stop(dataDir, time.Second); err != nil {
-		t.Fatalf("Stop: %v", err)
+	if err := Stop(dataDir, time.Second); err == nil || !strings.Contains(err.Error(), "not recognized as ours") {
+		t.Fatalf("Stop = %v, want not-recognized (state dropped, NOT signaled)", err)
 	}
 
 	for _, p := range []string{upKey, cfgYML, tokens, LockPath(dataDir), StatePath(dataDir)} {
@@ -909,31 +911,13 @@ func TestServeSpawnFailureCleansGeneratedSecrets(t *testing.T) {
 	}
 }
 
-// Defect 2 (supervised branch): `serve <model>` loads through our own
-// /-/load — the same handler `run` uses — against the supervised backend,
-// drains the event stream to the end, and marks the model loaded on the
-// backend's "finished" event. Any failure would print once on stderr.
-func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
+// newInitialLoadHarness wires a `serve <model>` daemon — own listener,
+// authed mux — against a fake backend: models dir with the config
+// fixture, GPU probe, and short serving-gate timers. Shared by the
+// initialLoad tests (A and I).
+func newInitialLoadHarness(t *testing.T, backend *httptest.Server) (*daemon, *bytes.Buffer) {
+	t.Helper()
 	isolateConfig(t)
-	var mu sync.Mutex
-	var gotBody []byte
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/model/load" {
-			http.NotFound(w, r)
-			return
-		}
-		b, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		gotBody = b
-		mu.Unlock()
-		fl, _ := w.(http.Flusher)
-		io.WriteString(w, "data: {\"status\":\"finished\"}\n\n")
-		if fl != nil {
-			fl.Flush()
-		}
-	}))
-	t.Cleanup(backend.Close)
-
 	models := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(models, "m"), 0o755); err != nil {
 		t.Fatal(err)
@@ -945,16 +929,18 @@ func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(models, "m", "config.json"), cfgJSON, 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	var errBuf bytes.Buffer
+	errBuf := &bytes.Buffer{}
 	d := &daemon{
 		opts: Options{
-			DataDir:   t.TempDir(),
-			ModelsDir: models,
-			Stderr:    &errBuf,
+			DataDir:      t.TempDir(),
+			ModelsDir:    models,
+			Stderr:       errBuf,
+			ReadyTimeout: 500 * time.Millisecond,
+			RetryDelay:   2 * time.Millisecond,
 			probeGPU: func() (doctor.Report, error) {
 				return doctor.Report{GPUs: []doctor.GPU{{VRAMMiB: 4096}}}, nil
 			},
+			contenders: func() ([]doctor.Contender, error) { return nil, nil },
 		},
 		conn: Conn{BaseURL: backend.URL},
 	}
@@ -974,6 +960,37 @@ func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
 	d.st = State{Host: "127.0.0.1", Port: port}
+	return d, errBuf
+}
+
+// Defect 2 (supervised branch): `serve <model>` loads through our own
+// /-/load — the same handler `run` uses — against the supervised backend,
+// drains the event stream to the end, and marks the model loaded only
+// once the backend really serves it (I: "finished" fires mid-warmup, so
+// an immediate `run <same model>` must not skip the reload and 503).
+func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
+	var mu sync.Mutex
+	var gotBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/model/load":
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			gotBody = b
+			mu.Unlock()
+			fl, _ := w.(http.Flusher)
+			io.WriteString(w, "data: {\"status\":\"finished\"}\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		case "/v1/models":
+			io.WriteString(w, `{"object":"list","data":[{"id":"m"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
 
 	d.initialLoad(context.Background(), "m")
 
@@ -991,7 +1008,116 @@ func TestInitialLoadThroughOwnLoadEndpoint(t *testing.T) {
 	model := d.st.Model
 	d.mu.Unlock()
 	if model != "m" {
-		t.Errorf("st.Model = %q after the backend's finished event", model)
+		t.Errorf("st.Model = %q after the load completed", model)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("initialLoad wrote stderr on success: %q", errBuf.String())
+	}
+}
+
+// A: TabbyAPI reports a failed load INSIDE a 200 SSE stream (OOM,
+// contention) — the status never turns non-2xx. initialLoad must parse
+// the stream and print the failure once; the old drain (io.Copy) never
+// parsed `data:` events, so `serve <model>` failed silently while the
+// comment claimed "a failure prints once on stderr".
+func TestInitialLoadPrintsStreamLoadFailure(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/model/load" {
+			http.NotFound(w, r)
+			return
+		}
+		io.Copy(io.Discard, r.Body)
+		fl, _ := w.(http.Flusher)
+		io.WriteString(w, "data: {\"error\":{\"message\":\"model load failed: weights are corrupt\"}}\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	d.initialLoad(context.Background(), "m")
+
+	want := `stone-llama serve: load "m": model load failed: weights are corrupt`
+	if !strings.Contains(errBuf.String(), want) {
+		t.Errorf("streamed load failure was silent: stderr = %q, want substring %q", errBuf.String(), want)
+	}
+}
+
+// I: TabbyAPI's load stream says `finished` BEFORE warmup completes —
+// /v1/models still answers {"data":[]} and chat 503s in that window.
+// The serving gate must hold markLoaded back: here the backend never
+// serves, so the state stays unloaded and the timeout surfaces on
+// stderr. Old code marked on `finished` (st.Model became "m" here), so
+// an immediate `run <same model>` skipped the reload and 503'd.
+func TestInitialLoadWaitsForBackendServing(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/model/load":
+			fl, _ := w.(http.Flusher)
+			io.WriteString(w, "data: {\"status\":\"finished\"}\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		case "/v1/models":
+			io.WriteString(w, `{"object":"list","data":[]}`) // warmup never finishes
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	d.initialLoad(context.Background(), "m")
+
+	d.mu.Lock()
+	model := d.st.Model
+	d.mu.Unlock()
+	if model != "" {
+		t.Errorf("marked loaded while /v1/models was still empty: st.Model = %q", model)
+	}
+	if !strings.Contains(errBuf.String(), "did not become usable") {
+		t.Errorf("serving-gate timeout never surfaced: stderr = %q", errBuf.String())
+	}
+}
+
+// I (liveness): once warmup finishes and /v1/models lists the model,
+// the load completes and marks — the gate must not stall a healthy load.
+func TestInitialLoadMarksLoadedOnceBackendServes(t *testing.T) {
+	serving := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/model/load":
+			fl, _ := w.(http.Flusher)
+			io.WriteString(w, "data: {\"status\":\"finished\"}\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		case "/v1/models":
+			select {
+			case <-serving:
+				io.WriteString(w, `{"object":"list","data":[{"id":"m"}]}`)
+			default:
+				io.WriteString(w, `{"object":"list","data":[]}`)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(backend.Close)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(serving)
+	}()
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	d.initialLoad(context.Background(), "m")
+
+	d.mu.Lock()
+	model := d.st.Model
+	d.mu.Unlock()
+	if model != "m" {
+		t.Errorf("st.Model = %q, want m once the backend served", model)
 	}
 	if errBuf.Len() != 0 {
 		t.Errorf("initialLoad wrote stderr on success: %q", errBuf.String())
@@ -1231,5 +1357,110 @@ func TestProbeNoStateStartingTimeout(t *testing.T) {
 	landed, perr := ProbeNoState(dataDir, 50*time.Millisecond)
 	if landed || perr == nil || !strings.Contains(perr.Error(), "starting the daemon") {
 		t.Fatalf("ProbeNoState(stuck boot) = %v, %v; want starting-daemon error", landed, perr)
+	}
+}
+
+// E: a daemon started from a RENAMED binary (argv0 lacks "stone-llama")
+// must actually be signalled. The old gate required the argv0 substring,
+// fell into the recycled-pid branch, dropped state, and reported
+// "stopped" while the daemon kept serving on the port.
+func TestStopSignalsRenamedBinaryDaemon(t *testing.T) {
+	isolateConfig(t)
+	s := daemonStandIn(t, "stone-fix serve")
+	ts := markerHealthzServer(t)
+	dataDir := t.TempDir()
+	if err := WriteState(dataDir, State{PID: s.pid, Host: "127.0.0.1", Port: serverPort(t, ts)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Stop(dataDir, 3*time.Second); err != nil {
+		t.Fatalf("Stop(renamed daemon): %v", err)
+	}
+	select {
+	case <-s.exited:
+	case <-time.After(2 * time.Second):
+		t.Error("renamed daemon survived stop — success was claimed without stopping it")
+	}
+	if _, err := ReadState(dataDir); !errors.Is(err, ErrNoDaemon) {
+		t.Errorf("state not dropped after stop: %v", err)
+	}
+}
+
+// F: ps and stop must classify the cold-start window (state written,
+// spawn lock held, no listener yet) identically — "daemon starting".
+// They used to contradict: ps called it stale and told the user to run
+// stop, which then refused to signal that very pid.
+func TestPsAndStopAgreeStartingDuringColdStart(t *testing.T) {
+	isolateConfig(t)
+	s := daemonStandIn(t, "stone-llama serve")
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	st := State{PID: s.pid, Host: "127.0.0.1", Port: p, StartedAt: time.Now().Unix()}
+	if err := WriteState(dataDir, st); err != nil {
+		t.Fatal(err)
+	}
+	lk, err := os.Create(LockPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lk.Close()
+	if err := syscall.Flock(int(lk.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("hold spawn lock: %v", err)
+	}
+
+	_, perr := EnsureDaemon(dataDir, false, time.Second)
+	if perr == nil {
+		t.Fatal("ps on a booting daemon: want an error, got nil")
+	}
+	if !strings.Contains(perr.Error(), "daemon starting") {
+		t.Errorf("ps does not call the cold-start window starting: %q", perr)
+	}
+	if strings.Contains(perr.Error(), "stale") || strings.Contains(perr.Error(), "clears it") {
+		t.Errorf("ps calls a booting daemon stale and recommends the stop that refuses it: %q", perr)
+	}
+
+	serr := Stop(dataDir, time.Second)
+	if serr == nil {
+		t.Fatal("stop during cold start: want a refusal, got nil")
+	}
+	if !strings.Contains(serr.Error(), "daemon starting") {
+		t.Errorf("stop disagrees with ps about the same window: %q", serr)
+	}
+	if err := syscall.Kill(s.pid, 0); err != nil {
+		t.Errorf("booting daemon was signalled: %v", err)
+	}
+}
+
+// G3: errors returned by Serve are prefix-free — runServe prints the
+// single `stone-llama serve:` layer. The never-ready failure must name
+// the configured address (H) and carry no inner `serve: ` of its own.
+func TestStartReadyNeverReadyHasNoServePrefix(t *testing.T) {
+	d := &daemon{
+		opts: Options{
+			Stderr:       io.Discard,
+			ReadyTimeout: 50 * time.Millisecond,
+			RetryDelay:   time.Millisecond,
+			contenders:   func() ([]doctor.Contender, error) { return nil, nil },
+			probe:        func(context.Context, int) error { return errors.New("never ready") },
+			spawn: func(string, string, string, int) (*child, error) {
+				return &child{wait: make(chan error, 1), port: 1}, nil // stays alive
+			},
+		},
+		conn:    Conn{Name: "TabbyAPI test"},
+		st:      State{Host: "127.0.0.1", Port: 42433},
+		logPath: filepath.Join(t.TempDir(), "none.log"),
+	}
+	_, err := d.startReady(context.Background())
+	if err == nil {
+		t.Fatal("startReady with a never-ready child must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "backend not ready on 127.0.0.1:42433") {
+		t.Errorf("never-ready error must name the configured address: %q", msg)
+	}
+	if strings.Contains(msg, "serve: ") {
+		t.Errorf("Serve-returned error carries its own prefix (runServe doubles it): %q", msg)
 	}
 }

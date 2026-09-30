@@ -132,8 +132,10 @@ func (d *daemon) attachModel() string {
 
 // initialLoad loads the `serve <model>` positional through our own /-/load —
 // the exact supervised path `run` uses (autofit, progress, state included).
-// The response is drained to the end so the backend load is never cut short;
-// a failure prints once on stderr and the daemon keeps serving.
+// The response is drained to the end so the backend load is never cut short,
+// and the stream is PARSED on the way: a TabbyAPI load failure (OOM,
+// contention) arrives inside a 200 SSE stream with HTTP still 200, so a
+// failure prints once on stderr and the daemon keeps serving.
 func (d *daemon) initialLoad(ctx context.Context, model string) {
 	body, _ := json.Marshal(map[string]any{"model": model})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -158,7 +160,9 @@ func (d *daemon) initialLoad(ctx context.Context, model string) {
 		fmt.Fprintf(d.opts.Stderr, "stone-llama serve: load %q: %s\n", model, extractMessage(b))
 		return
 	}
-	_, _ = io.Copy(io.Discard, resp.Body) // drain: let the load finish
+	if serr := streamLoadErr(resp.Body); serr != nil {
+		fmt.Fprintf(d.opts.Stderr, "stone-llama serve: load %q: %v\n", model, serr)
+	}
 }
 
 // handleLoad loads a model through the backend (contract: the backend
@@ -295,13 +299,27 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 	for {
 		line, err := br.ReadString('\n')
 		if len(line) > 0 {
-			if out, changed := d.rewriteLoadEvent(line, req.Model, ctx, mode); changed {
+			out, changed, finished := d.rewriteLoadEvent(line)
+			if changed {
 				line = out
 			}
 			if _, werr := io.WriteString(w, line); werr != nil {
 				return // client went away
 			}
 			flush()
+			if finished {
+				// TabbyAPI's "finished" fires at the end of warmup's
+				// last yield, BEFORE it serves: /v1/models still
+				// answers {"data":[]} and chat 503s, so claiming
+				// loaded here lets an immediate `run <same model>`
+				// skip the reload and die on 503 (I). Wait for a
+				// real model id first; on bound, report the failure
+				// on the stream and leave state unloaded.
+				if !d.awaitServing(r.Context(), w, flush) {
+					return
+				}
+				d.markLoaded(req.Model, ctx, mode)
+			}
 		}
 		if err != nil {
 			return
@@ -374,36 +392,67 @@ func fitLoadArgs(res *autofit.Result) map[string]any {
 var errFitRefused = fmt.Errorf("fit refused")
 
 // rewriteLoadEvent post-processes one upstream SSE line: OOM messages
-// gain the lever advice, load failures gain GPU-contention evidence, a
-// "finished" event marks the model loaded in state. Returns the line
-// to write and whether it changed.
-func (d *daemon) rewriteLoadEvent(line, model string, ctx int, mode string) (string, bool) {
+// gain the lever advice, load failures gain GPU-contention evidence.
+// finished=true names the backend's "finished" event so the caller can
+// gate markLoaded on the backend actually serving — the gate lives in
+// handleLoad (awaitServing), never here: "finished" fires mid-warmup.
+// Returns the line to write, whether it changed, and that finished flag.
+func (d *daemon) rewriteLoadEvent(line string) (out string, changed, finished bool) {
 	if !strings.HasPrefix(line, "data:") {
-		return line, false
+		return line, false, false
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	var m map[string]any
 	if err := json.Unmarshal([]byte(payload), &m); err != nil {
-		return line, false
+		return line, false, false
 	}
-	changed := false
+	if s, _ := m["status"].(string); s == "finished" {
+		finished = true
+	}
 	if em, ok := m["error"].(map[string]any); ok {
 		if s, ok := em["message"].(string); ok {
 			em["message"] = d.enrichLoadError(s)
 			changed = true
 		}
 	}
-	if s, _ := m["status"].(string); s == "finished" {
-		d.markLoaded(model, ctx, mode)
-	}
 	if !changed {
-		return line, false
+		return line, false, finished
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return line, false
+		return line, false, finished
 	}
-	return "data: " + string(b) + "\n", true
+	return "data: " + string(b) + "\n", true, finished
+}
+
+// awaitServing blocks until the supervised backend genuinely serves a
+// model (backendServing), polling every RetryDelay within ReadyTimeout.
+// It writes the stream's SSE error event and returns false when the
+// bound passes — the load is never marked loaded on a backend that
+// cannot answer. Runs between the client's writes, so the stream must
+// not EOF before markLoaded: both `run` and `serve <model>` drain to
+// EOF and then read state.
+func (d *daemon) awaitServing(ctx context.Context, w io.Writer, flush func()) bool {
+	deadline := time.NewTimer(d.opts.ReadyTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(d.opts.RetryDelay)
+	defer tick.Stop()
+	for {
+		if d.backendServing(ctx) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false // client went away
+		case <-deadline.C:
+			msg := fmt.Sprintf("model did not become usable within %s", d.opts.ReadyTimeout)
+			ev, _ := json.Marshal(map[string]any{"error": map[string]string{"message": msg}})
+			io.WriteString(w, "data: "+string(ev)+"\n\n")
+			flush()
+			return false
+		case <-tick.C:
+		}
+	}
 }
 
 // enrichLoadError adds actionable evidence to a failed load: OOM gets
@@ -601,24 +650,7 @@ func Load(ctx context.Context, dataDir string, req LoadRequest) (Status, error) 
 	defer resp.Body.Close()
 	var streamErr error
 	if resp.StatusCode == http.StatusOK {
-		br := bufio.NewReader(resp.Body)
-		for {
-			line, rerr := br.ReadString('\n')
-			if strings.HasPrefix(strings.TrimSpace(line), "data:") {
-				var m struct {
-					Error *struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
-				if json.Unmarshal([]byte(payload), &m) == nil && m.Error != nil && m.Error.Message != "" {
-					streamErr = fmt.Errorf("%s", m.Error.Message)
-				}
-			}
-			if rerr != nil {
-				break
-			}
-		}
+		streamErr = streamLoadErr(resp.Body)
 	} else {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 		streamErr = fmt.Errorf("%s", envelopeMessage(b, resp.StatusCode))
@@ -627,6 +659,34 @@ func Load(ctx context.Context, dataDir string, req LoadRequest) (Status, error) 
 		return Status{}, streamErr
 	}
 	return Query(dataDir)
+}
+
+// streamLoadErr consumes a 200 SSE load stream to EOF (the backend's
+// load is never cut short) and returns the first {"error":{"message"}}
+// event it carries, or nil. Shared by the run-side client (Load) and
+// the daemon's `serve <model>` initialLoad — a TabbyAPI load failure
+// (OOM/contention) arrives inside a 200 response, HTTP never turns
+// non-2xx.
+func streamLoadErr(r io.Reader) error {
+	br := bufio.NewReader(r)
+	var first error
+	for {
+		line, rerr := br.ReadString('\n')
+		if first == nil && strings.HasPrefix(strings.TrimSpace(line), "data:") {
+			var m struct {
+				Error *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "data:"))
+			if json.Unmarshal([]byte(payload), &m) == nil && m.Error != nil && m.Error.Message != "" {
+				first = fmt.Errorf("%s", m.Error.Message)
+			}
+		}
+		if rerr != nil {
+			return first
+		}
+	}
 }
 
 // Unload is the run-side client for /-/unload.
