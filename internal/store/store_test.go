@@ -158,6 +158,25 @@ func TestManifestRoundtrip(t *testing.T) {
 	}
 }
 
+// Duplicate file entries would double-count in ModelWeights; pull never
+// produces them (HF paths are unique) — SaveManifest refuses them.
+func TestSaveManifestRejectsDuplicatePaths(t *testing.T) {
+	dir := t.TempDir()
+	err := SaveManifest(dir, &Manifest{
+		RepoID: "org/m",
+		Files: []FileEntry{
+			{Path: "model.safetensors", Size: 100, SHA256: "aa"},
+			{Path: "model.safetensors", Size: 100, SHA256: "aa"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("err = %v, want duplicate-path rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); !os.IsNotExist(err) {
+		t.Errorf("refused manifest still committed: %v", err)
+	}
+}
+
 func TestImport(t *testing.T) {
 	modelsDir := filepath.Join(t.TempDir(), "models")
 	src := makeModel(t, t.TempDir(), "src-model", 512)

@@ -69,6 +69,13 @@ func LoadManifest(dir string) (*Manifest, error) {
 // SaveManifest writes dir/manifest.json atomically (temp + rename) so an
 // interrupted pull never leaves a half-written manifest behind.
 func SaveManifest(dir string, m *Manifest) error {
+	seen := make(map[string]bool, len(m.Files))
+	for _, f := range m.Files {
+		if seen[f.Path] {
+			return fmt.Errorf("duplicate file entry %q in manifest", f.Path)
+		}
+		seen[f.Path] = true
+	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
