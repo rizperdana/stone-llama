@@ -3,7 +3,7 @@
 > **Status:** v1 approved with amendments; **v2 is executable**. Amendments A5–A8 folded in. This document is authoritative; `PLAN.md` was renamed here per director instruction (A8).
 > **Author:** architect · **Date:** 2026-09-25 · **Revision:** v2 (approved)
 
-**Goal:** an ollama-like experience (`pull` / `list` / `rm` / `ps` / `serve` / `run`) for ExLlamaV3 + TabbyAPI, shipped as one small binary that any NVIDIA-CUDA user can run on a low-spec machine, with VRAM-aware automatic context/cache configuration and a **pre-download compatibility/fit gate** as the differentiators.
+**Goal:** an Ollama-like experience (`pull` / `list` / `rm` / `ps` / `serve` / `run`) for ExLlamaV3 + TabbyAPI, shipped as one small binary that any NVIDIA-CUDA user can run on a low-spec machine, with VRAM-aware automatic context/cache configuration and a **pre-download compatibility/fit gate** as the differentiators.
 
 ---
 
@@ -86,7 +86,7 @@ scalars", so no YAML library is involved either.
 
 **Decision: (a) supervise TabbyAPI as a child and proxy — not (b) a from-scratch exllamav3 server.** TabbyAPI owns every hard server problem (SSE, chat-template application, sampling, quant loading, gpu_split/autosplit, MoE offload keys, token auth); option (b) re-implements all of it against an exllamav3 API at 1.5.1 and moving. Upstream churn lands on TabbyAPI; we pin a commit. Cost of (a): one supervisor + ~150 lines of reverse proxy — which buys stable public port, independent downstream auth, SSE passthrough, and a runtime-swap seam.
 
-**Ports:** public **5111** (avoids well-known local-AI ports: 11434/ollama, 5000–5002/TabbyAPI). Occupied → health-probe: stone-llama answers → reuse (idempotent auto-start); foreign process → fatal with `--port` hint. TabbyAPI's internal port: **always bind `:0`**, write into generated config — never conflicts. Proxy hides it.
+**Ports:** public **5111** (avoids well-known local-AI ports: 11434/Ollama, 5000–5002/TabbyAPI). Occupied → health-probe: stone-llama answers → reuse (idempotent auto-start); foreign process → fatal with `--port` hint. TabbyAPI's internal port: **always bind `:0`**, write into generated config — never conflicts. Proxy hides it.
 
 **Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; contract test (§10) against the pin gates any pin bump. Never fork (Q11).
 
@@ -381,7 +381,7 @@ CI runs 1–4: no GPU, no Python, no external network.
 - **G4 · TabbyAPI coupling (MED-HIGH).** Pinned config schema + OAI routes + auth-file behavior relied upon; contract test is the early-warning; pin bumps are deliberate releases. *Residual:* if upstream goes dormant we inherit a Python server; we do not fork (Q11).
 - **G5 · EXL3 supply ceiling (MED-HIGH).** Few hundred EXL3 repos; some models have none at all (research doc: Llama-3.2-3B, Phi-3.5-mini — architecture supported, **no EXL3 published**). Zero-candidate messages redirect to ollama+GGUF; conversion impossible on 4 GB (research doc §6: conversion needs ≥2× FP16 size in VRAM). *Residual:* product ceiling = upstream quant supply.
 - **G6 · Concurrency (MED).** Single-model serving is a non-goal (Q9); second load while loaded = restart child (M5 decision, default restart). Requests during load queue/error per TabbyAPI behavior.
-- **G7 · vs ollama+GGUF (STRATEGIC).** For ≤3B on any hardware, ollama wins on convenience. Our honest value: EXL3 speed/VRAM-frugal on NVIDIA, 65k ctx autofit on 4 GB cards, front-end for TabbyAPI users. README says exactly this + "use ollama if …" (Q10).
+- **G7 · vs Ollama+GGUF (STRATEGIC).** For ≤3B on any hardware, Ollama wins on convenience. Our honest value: EXL3 speed/VRAM-frugal on NVIDIA, 65k ctx autofit on 4 GB cards, front-end for TabbyAPI users. README says exactly this + "use ollama if …" (Q10).
 - **G8 · Multi-GPU (LOW-MED).** `gpu_split` passthrough only; no per-GPU budget math in v1 (no test hardware).
 - **G9 · Windows (MED).** Upstream wheels exist; provisioning/paths/daemonization differ. Explicitly out of v1; claiming untested support is worse than none.
 - **G10 · Beyond-pull integrity + chunked downloads (LOW).** No background re-verify (found on re-pull); no concurrent-chunk downloader (gigabit users slower). Both deliberate (§4.2), upgrade paths named.

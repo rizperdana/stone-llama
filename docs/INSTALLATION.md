@@ -19,7 +19,7 @@ driver, chosen runtime extra — and makes no changes.
 
 ## Option A — release binary / install.sh
 
-Releases are tagged `vX.Y.Z` and publish, per platform. Names are ollama-style:
+Releases are tagged `vX.Y.Z` and publish, per platform. Names are Ollama-style:
 hyphens, **no version in the filename**, `.tgz` for linux/darwin, `.zip` for
 windows:
 

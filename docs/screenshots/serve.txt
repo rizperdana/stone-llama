@@ -11,7 +11,7 @@ server was never restarted or stopped, and nothing was downloaded.
 Annotations: command lines read `stone-llama …`; the build is `main` at
 4f020dc (checkable: `git show 4f020dc`). The live-daemon happy-path output
 below (`serve`, `/healthz`, `ps`, `stop`) is retained verbatim from that
-session — not re-captured (TabyAPI on :5002 unavailable; nothing
+session — not re-captured (TabbyAPI on :5002 unavailable; nothing
 downloaded). `raw/…` names are the verification's own capture files;
 headers are curl -D output, bodies curl -o output.
 

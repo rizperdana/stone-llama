@@ -12,7 +12,7 @@ change a workflow, update this file in that commit.
 
 ## Artifact naming
 
-Releases use **ollama-style** naming: a plain per-platform name with no version
+Releases use **Ollama-style** naming: a plain per-platform name with no version
 embedded in the filename, plus a single combined `checksums.txt`.
 
 ```
@@ -24,7 +24,7 @@ stone-llama-windows-amd64.zip
 checksums.txt
 ```
 
-**Rationale:** ollama publishes `ollama-linux-amd64.tar.zst`,
+**Rationale:** Ollama publishes `ollama-linux-amd64.tar.zst`,
 `ollama-darwin.tgz`, `ollama-windows-amd64.zip`, their installer scripts, and a
 single `sha256sum.txt` — no version in the filenames, one combined checksum
 file. We mirror that pattern so users and CI use consistent, predictable names
@@ -175,7 +175,7 @@ platform, vet+test only) and does not change the `--clobber`/`edit` path.
 ## Release-notes template
 
 `.github/release-notes-template.md` is the body of every release. Structure
-(mirrors how ollama/llama.cpp releases read: headline, install, what's
+(mirrors how Ollama/llama.cpp releases read: headline, install, what's
 changed, full-changelog link):
 
 1. Headline `# stone-llama __VERSION__` + one-line project summary

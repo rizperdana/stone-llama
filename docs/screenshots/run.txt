@@ -11,7 +11,7 @@ downloaded.
 Annotations: command lines read `stone-llama …`; the build is `main` at
 4f020dc (checkable: `git show 4f020dc`). The live-daemon happy-path output
 below (`ps`, `>>>`, `ls`) is retained verbatim from that session's
-transcript — not re-captured (TabyAPI on :5002 unavailable; nothing
+transcript — not re-captured (TabbyAPI on :5002 unavailable; nothing
 downloaded). The `profile:` line is byte-confirmed from a re-capture of
 the current build (/home/anon/ai/docverify2/run_profile.out).
 

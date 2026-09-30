@@ -4,7 +4,7 @@ Read this first. Facts below are true at the current `main`; verify, don't assum
 
 ## What this is
 
-- One static Go binary: an ollama-style CLI + loopback OpenAI-compatible server for
+- One static Go binary: an Ollama-style CLI + loopback OpenAI-compatible server for
   ExLlamaV3, which runs as **TabbyAPI — a separate process we spawn and talk to over HTTP**.
 - The low-spec goal is the product constraint: reference card RTX 3050 Laptop,
   4096 MiB VRAM. Most trade-offs answer to 4 GB-class cards.

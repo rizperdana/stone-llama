@@ -8,7 +8,7 @@ needed.
 
 ```text
 Set up the stone-llama CLI on this machine. stone-llama is a standalone,
-ollama-like CLI + local model server for ExLlamaV3 + TabbyAPI. Its only external
+Ollama-like CLI + local model server for ExLlamaV3 + TabbyAPI. Its only external
 interface is an OpenAI-compatible HTTP endpoint; it does not integrate with any
 other tool.
 
