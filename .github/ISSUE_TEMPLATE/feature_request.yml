@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        stone-llama is deliberately small: one static binary, an ollama-like CLI and a
+        stone-llama is deliberately small: one static binary, an Ollama-like CLI and a
         local OpenAI-compatible server for ExLlamaV3 via TabbyAPI, aimed at low-spec
         NVIDIA machines. Requests that keep that shape get the warmest welcome.
 

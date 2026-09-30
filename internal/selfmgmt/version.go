@@ -2,7 +2,7 @@
 // `update` (self-update from a GitHub release) and `uninstall` (remove
 // the binary and the tool's data completely).
 //
-// Conventions mirror scripts/install.sh exactly: ollama-style asset
+// Conventions mirror scripts/install.sh exactly: Ollama-style asset
 // names (stone-llama-<os>-<arch>.tgz/.zip, no version in the filename),
 // a single combined checksums.txt verified with SHA-256, and tags that
 // start with "v". Stdlib only — no third-party dependencies.
@@ -29,7 +29,7 @@ func binaryName(goos string) string {
 	return "stone-llama"
 }
 
-// artifactName is the ollama-style release asset for a platform
+// artifactName is the Ollama-style release asset for a platform
 // (RELEASE.md "Artifact naming"; install.sh line ARTIFACT=...).
 func artifactName(goos, goarch string) string {
 	ext := "tgz"

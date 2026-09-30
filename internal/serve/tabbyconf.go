@@ -85,7 +85,7 @@ model:
 }
 
 // --- attach convenience (TabbyAPI-specific seam lives here, per the seam
-// rule: no TabyAPI knowledge past tabby_backend.go/tabbyconf.go) ---
+// rule: no TabbyAPI knowledge past tabby_backend.go/tabbyconf.go) ---
 
 // TabbyAPITokensFile returns the api_tokens.yml path inside a checkout.
 // TabyAPI (the pinned f07131cd checkout) reads it from its start.py CWD, so

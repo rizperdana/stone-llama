@@ -12,7 +12,7 @@
 #   sh scripts/install.sh --uninstall [--prefix ~/go/bin]
 #   sh scripts/install.sh --help
 #
-# Version resolution (ollama-style pinning):
+# Version resolution (Ollama-style pinning):
 #   --version <tag>  install exactly that tag — pre-releases included
 #                    (e.g. v0.1.0-rc1)
 #   (default)        latest NON-pre-release (GitHub's /releases/latest
@@ -149,7 +149,7 @@ PLATFORM=$(detect_platform)
 GOOS=$(printf '%s' "$PLATFORM" | cut -d: -f1)
 GOARCH=$(printf '%s' "$PLATFORM" | cut -d: -f2)
 
-# Artifact name: stone-llama-<os>-<arch>.tgz  (ollama-style, no version in name)
+# Artifact name: stone-llama-<os>-<arch>.tgz  (Ollama-style, no version in name)
 ARTIFACT="stone-llama-${GOOS}-${GOARCH}"
 ext=tgz # linux/darwin only — Windows would be .zip but has no sh installer
 
