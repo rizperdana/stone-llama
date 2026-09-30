@@ -438,7 +438,10 @@ func (r *runner) run(plan Plan) error {
 
 	j, err := loadJournal(filepath.Join(r.runtimeDir, "setup-journal.json"))
 	if err != nil {
-		return err
+		// Resume state must never block setup: a corrupt journal loses
+		// only the step markers — report it and run the plan fresh.
+		fmt.Fprintf(r.stdout, "note: %v — corrupt journal ignored, running all steps\n", err)
+		j = journal{Done: map[string]string{}}
 	}
 
 	for _, st := range plan.Steps {
