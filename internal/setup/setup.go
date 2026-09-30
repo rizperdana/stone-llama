@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rizperdana/stone-llama/internal/fslock"
 	"github.com/rizperdana/stone-llama/internal/serve"
 )
 
@@ -340,6 +341,20 @@ func Run(opts Options) error {
 	if !opts.Yes && opts.Confirm == nil {
 		return errors.New("setup: refusing to download without consent (pass --yes or run interactively)")
 	}
+
+	// One setup at a time: two concurrent runs load the same journal,
+	// both download and clobber bin/uv, and lose each other's step
+	// markers. runtimeDir gets its own mode (0750) first — fslock.open
+	// would otherwise create it 0700. The lock file stays behind,
+	// inert after exit (same as models/.pull.lock).
+	if err := os.MkdirAll(opts.RuntimeDir, 0o750); err != nil {
+		return fmt.Errorf("setup: mkdir %s: %w", opts.RuntimeDir, err)
+	}
+	setupLock, lerr := fslock.TryAcquire(filepath.Join(opts.RuntimeDir, "setup.lock"))
+	if lerr != nil {
+		return fmt.Errorf("setup: another stone-llama process is setting up: %w", lerr)
+	}
+	defer setupLock.Release()
 
 	// Adoption runs before Preflight (design §8 slice 1 step 2) unless
 	// --provision forces a full provision.
