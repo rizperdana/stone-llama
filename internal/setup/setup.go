@@ -639,10 +639,10 @@ func (r *runner) logStep(stepID string, out []byte) error {
 	if r.logPath == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(r.logPath), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(r.logPath), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(r.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	f, err := os.OpenFile(r.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
