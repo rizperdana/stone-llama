@@ -13,7 +13,7 @@ same build at /tmp/sl-a/stone-llama, and the raw transcript abbreviates
 them; they are written out in full here. The output lines themselves are
 quoted verbatim from /tmp/sl-a/raw/run-bye-transcript.txt.
 
-[shared block begins — quoted verbatim in docs/QUICKSTART.md §5 and site/index.html]
+[shared block begins — quoted verbatim in docs/QUICKSTART.md §5]
 $ stone-llama ps
 stone-llama: running (pid 458259)
   address:  127.0.0.1:5111
@@ -25,6 +25,7 @@ stone-llama: running (pid 458259)
 exit=0
 
 $ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3
+profile: max_tokens 2048, sampling backend defaults, thinking model default, system "Answer directly and concisely."
 >>> exit=0
 
 $ ls ~/.local/share/stone-llama/   # state intact after run
@@ -61,19 +62,6 @@ exit=1
 
 With the model name that the upstream actually has loaded, `run` never
 calls `/-/load` at all — there is nothing to load in attach mode.
-
-Known caveat — `run -p` one-shot output is unbounded
-----------------------------------------------------
-
-The `-p` one-shot path was exercised: it exited 0, but generated for
-**285 s / 2206 lines** on a single short prompt (full transcript on record,
-deliberately not reproduced here). Two facts are on file: the committed
-completions body omits `max_tokens` (the pinned backend aborts a
-completion without it), and the only fix so far is an uncommitted local
-change that sends `"max_tokens": 0` — which means "generate to EOS, no
-cap". Until that lands properly, do not treat an unbounded `-p` run as
-normal behaviour: prefer a piped input such as the `/bye` capture above,
-or budget time and cap tokens yourself.
 
 Supervised (non-attach) `serve` and its `/-/load` SSE success stream were
 NOT exercised: they need the provisioned Python runtime (`stone-llama

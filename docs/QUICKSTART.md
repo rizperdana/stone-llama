@@ -101,6 +101,7 @@ stone-llama: running (pid 458259)
 exit=0
 
 $ printf '/bye\n' | stone-llama run SmolLM3-3B-exl3
+profile: max_tokens 2048, sampling backend defaults, thinking model default, system "Answer directly and concisely."
 >>> exit=0
 
 $ ls ~/.local/share/stone-llama/   # state intact after run
