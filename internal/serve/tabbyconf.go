@@ -88,7 +88,7 @@ model:
 // rule: no TabbyAPI knowledge past tabby_backend.go/tabbyconf.go) ---
 
 // TabbyAPITokensFile returns the api_tokens.yml path inside a checkout.
-// TabyAPI (the pinned f07131cd checkout) reads it from its start.py CWD, so
+// TabbyAPI (the pinned f07131cd checkout) reads it from its start.py CWD, so
 // it is the repo root in an adopted/provisioned checkout.
 func TabbyAPITokensFile(checkout string) string {
 	return filepath.Join(checkout, "api_tokens.yml")

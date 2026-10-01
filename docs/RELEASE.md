@@ -56,7 +56,7 @@ report a generic error. Capturing the line refuses by name instead.
 
 > **linux/amd64 is the only supported platform.** stone-llama is CUDA-only
 > (ExLlamaV3) — no CPU/AMD/Metal backend exists. CPU or Apple users should use
-> [ollama with GGUF models](https://ollama.com). The Windows binary builds but
+> [Ollama with GGUF models](https://ollama.com). The Windows binary builds but
 > has never been executed on Windows; macOS binaries can never serve.
 
 **Builds** (cross-compiled) but **UNTESTED at runtime** for all platforms
@@ -188,7 +188,7 @@ changed, full-changelog link):
 6. **Checksums** — `__CHECKSUMS__` (the generated `checksums.txt`, verbatim)
 7. **Platform support (honest matrix)** and **Known limitations** — CUDA-only,
    linux/amd64 only, Windows builds-but-untested, macOS can never serve,
-   CPU/AMD/Apple → ollama + GGUF
+   CPU/AMD/Apple → Ollama + GGUF
 
 Placeholders are substituted with `awk` in the release job; any placeholder
 still present after rendering fails the run. `__CHANGELOG__` is built from

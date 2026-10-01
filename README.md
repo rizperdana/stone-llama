@@ -22,8 +22,8 @@ Three things it does that a stock config cannot:
   default is a flag: `--max-tokens` (0 = unbounded), `--temperature`, `--top-p`,
   `--system` / `--no-system`, `--thinking` / `--no-thinking`.
 
-**Not a better ollama.** exllamav3 — the engine stone-llama wraps — has no CPU, AMD/ROCm
-or Apple path. On CPU/AMD/Apple, use ollama with GGUF; see [Platform support](#platform-support).
+**Not a better Ollama.** exllamav3 — the engine stone-llama wraps — has no CPU, AMD/ROCm
+or Apple path. On CPU/AMD/Apple, use Ollama with GGUF; see [Platform support](#platform-support).
 
 ## Install
 

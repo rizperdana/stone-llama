@@ -8,7 +8,7 @@ body:
         Thanks for the report. Please search [existing issues](https://github.com/rizperdana/stone-llama/issues) first.
 
         Heads-up before filing: stone-llama is **CUDA-only** (ExLlamaV3). No NVIDIA GPU
-        is not a bug — use [ollama](https://ollama.com) for GGUF/CPU models.
+        is not a bug — use [Ollama](https://ollama.com) for GGUF/CPU models.
 
   - type: checkboxes
     id: preflight

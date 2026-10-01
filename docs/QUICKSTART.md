@@ -10,7 +10,7 @@ Expected output on this machine (RTX 3050 Laptop, driver 580):
 [screenshots/doctor-list.txt](screenshots/doctor-list.txt).
 
 Driver decides the runtime extra: ≥ 580 → `cu13`, ≥ 570 → `cu12`, older → refusal
-with the upgrade hint. No NVIDIA GPU → hard refusal pointing you at ollama + GGUF.
+with the upgrade hint. No NVIDIA GPU → hard refusal pointing you at Ollama + GGUF.
 
 ## 2. `setup` — provision the inference runtime (≈ 1 GB download, consent-gated)
 
@@ -233,7 +233,7 @@ exit=0
 |---|---|
 | CUDA OOM **before** the first token | lower `--ctx` one tier (32768 → 16384) — prefill workspace, not generation |
 | `gate: fit` refuses | GPU too small for this model; the printout includes the largest ctx that *would* fit |
-| `exl2` / GGUF-only repo refused | wrong format for exllamav3; GGUF means use ollama with GGUF |
+| `exl2` / GGUF-only repo refused | wrong format for exllamav3; GGUF means use Ollama with GGUF |
 | pull 401/403 | gated repo → `stone-llama login` (or `HF_TOKEN`) |
 | `setup` ENOSPC | free up disk; the error prints required vs available |
 | Testing without touching the live daemon | point `XDG_DATA_HOME` at an empty directory (separate state dir) and `XDG_CONFIG_HOME` / `STONE_LLAMA_CONFIG` at a scratch config — see [README](../README.md#commands) |

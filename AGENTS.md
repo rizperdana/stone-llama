@@ -29,7 +29,7 @@ Read this first. Facts below are true at the current `main`; verify, don't assum
 | Windows | binary **builds** (CI cross-compiles) but is **untested at runtime** |
 | macOS | binary runs `doctor`/`list`/`fit` but can **never serve** (no CUDA) |
 | linux/arm64, darwin/* | cross-compiled by `make dist`; untested — no hardware (v1: unsupported) |
-| CPU / AMD / Apple | exllamav3 has no path — advise ollama + GGUF, never a workaround |
+| CPU / AMD / Apple | exllamav3 has no path — advise Ollama + GGUF, never a workaround |
 
 ## The architectural seam
 

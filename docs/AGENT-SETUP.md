@@ -19,7 +19,7 @@ Repo: https://github.com/rizperdana/stone-llama (Go 1.24, MIT)
 1. GPU: run `nvidia-smi`.
    - No nvidia-smi / no NVIDIA GPU → STOP. stone-llama cannot work here:
      exllamav3 is NVIDIA-CUDA-only (no CPU, no AMD/ROCm, no Apple/Metal).
-     Report that the user should use ollama + GGUF instead. Do not try to
+    Report that the user should use Ollama + GGUF instead. Do not try to
      work around it.
 2. Driver: `nvidia-smi --query-gpu=driver_version --format=csv,noheader`.
    - >= 580  → runtime extra is `cu13`
