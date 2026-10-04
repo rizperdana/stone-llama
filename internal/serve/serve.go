@@ -5,9 +5,10 @@
 //
 // The daemon owns the only write side of daemon.json and the child
 // lifecycle; clients (ps/run) read state and talk to the /-/ control
-// endpoints. Downstream auth is ours (token in daemon.json 0600,
-// optional on loopback, required otherwise); upstream auth is injected
-// from a file and never appears in argv, logs, or stdout.
+// endpoints. Downstream auth is ours: the /-/ control routes always
+// demand the bearer token from daemon.json 0600, while the /v1 proxy
+// and /api shim need it only on a non-loopback bind; upstream auth is
+// injected from a file and never appears in argv, logs, or stdout.
 package serve
 
 import (
@@ -81,10 +82,13 @@ type Options struct {
 	Model           string // optional positional: loaded via /-/load once the supervised backend is ready ("" = none; ignored in attach mode)
 	RuntimeDir      string // setup runtime root (venv + tabbyAPI checkout)
 	ModelsDir       string
-	DataDir         string         // daemon.json + flock + logs
-	UpstreamKeyFile string         // file whose CONTENTS become the upstream Bearer (file-only secret)
-	PinnedCommit    string         // for the startup banner ("" = omit)
-	Fit             config.Autofit // autofit knobs for /-/load
+	DataDir         string            // daemon.json + flock + logs
+	UpstreamKeyFile string            // file whose CONTENTS become the upstream Bearer (file-only secret)
+	PinnedCommit    string            // for the startup banner ("" = omit)
+	Fit             config.Autofit    // autofit knobs for /-/load
+	EngineEnv       map[string]string // config engine_env: extra environment for the supervised child
+	Backend         string            // supervised engine: "" | "tabby" (default, TabbyAPI + ExLlamaV3) | "llama" (llama-server over GGUF); unknown names are refused
+	DeviceBudgetMiB int               // llama weights budget in MiB (0 = no check); tabby ignores it
 
 	Stdout, Stderr io.Writer
 
@@ -93,7 +97,7 @@ type Options struct {
 	Now          func() time.Time
 
 	// test seams
-	spawn      func(runtimeDir, cfgPath, logPath string, port int) (*child, error)
+	spawn      func(runtimeDir, cfgPath, logPath string, port int, extraEnv map[string]string) (*child, error)
 	probe      func(ctx context.Context, port int) error
 	procCmd    func(pid int) string
 	contenders func() ([]doctor.Contender, error)
@@ -122,9 +126,9 @@ func (o *Options) withDefaults() {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	if o.spawn == nil {
-		o.spawn = spawnChild
-	}
+	// o.spawn stays nil unless a test sets it: production spawns through
+	// the selected Backend (daemon.spawn falls back to d.be.Spawn), and
+	// the backend is not known until Serve resolves it.
 	if o.probe == nil {
 		o.probe = probeHTTP
 	}
@@ -228,11 +232,12 @@ type daemon struct {
 	conn      Conn // THE backend contract (see mux)
 	token     string
 	needToken bool
-	upKey     string // upstream Bearer read from conn.UpKeyFile (file-only)
-	port      int    // internal child port; 0 in attach mode
-	cfgPath   string // generated child config (supervised only)
-	logPath   string // logs/tabby.log (child stdout+stderr)
-	child     *child // current incarnation (supervised only)
+	upKey     string  // upstream Bearer read from conn.UpKeyFile (file-only)
+	port      int     // internal child port; 0 in attach mode
+	cfgPath   string  // generated child config, or the resolved GGUF (supervised only)
+	be        Backend // selected engine, set in Serve before the child starts
+	logPath   string  // logs/tabby.log (child stdout+stderr)
+	child     *child  // current incarnation (supervised only)
 
 	mu     sync.Mutex
 	loadMu sync.Mutex // serializes /-/load and /-/unload
@@ -502,40 +507,25 @@ func Serve(ctx context.Context, opts Options) error {
 			return perr
 		}
 		d.port = port
-		d.cfgPath = tabbyCfgPath(opts.RuntimeDir)
-		// TabbyAPI's first-run marker in OUR clone must exist before
-		// the child starts: without it start.py runs its self-installer
-		// (pip into whatever interpreter it finds) and dies — see
-		// EnsureFirstRunMarker for the start.py contract.
-		if merr := EnsureFirstRunMarker(opts.RuntimeDir); merr != nil {
+		// The engine is selected once, here: ""/tabby keeps today's
+		// TabbyAPI path verbatim, an unknown name is refused before any
+		// file is written (so there is nothing to clean up), and Prepare
+		// owns every pre-spawn artifact — TabbyAPI's first-run marker,
+		// the 0600 child keys, the rendered config — plus the Conn the
+		// proxy probes and injects the upstream Bearer from.
+		be, berr := BackendFor(opts.Backend, opts.DeviceBudgetMiB)
+		if berr != nil {
+			return berr
+		}
+		d.be = be
+		conn, cfgPath, perr2 := be.Prepare(&opts, port)
+		if perr2 != nil {
 			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
-			return fmt.Errorf("%w", merr)
+			return perr2
 		}
-		// Backend keys pre-created in the child's CWD (it reads ours
-		// instead of generating/logging its own) plus the raw upstream
-		// key file the proxy injects from — both 0600, never argv/log.
-		keyFile, _, terr := writeChildTokens(opts.RuntimeDir)
-		if terr != nil {
-			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
-			return fmt.Errorf("write child keys: %w", terr)
-		}
-		d.upKey = loadUpstreamKey(keyFile)
-		d.conn = Conn{
-			BaseURL:   "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-			Name:      tabbyConnName(opts.PinnedCommit),
-			UpKeyFile: keyFile,
-		}
-		yaml := RenderTabbyYAML(TabbyConfig{
-			Host:     "127.0.0.1",
-			Port:     port,
-			ModelDir: opts.ModelsDir,
-			// model-less at boot: /-/load drives the backend's native
-			// load endpoint (no child restart on model switch).
-		})
-		if werr := writeSecret(d.cfgPath, yaml); werr != nil {
-			dropState(opts.DataDir, opts.RuntimeDir)
-			return fmt.Errorf("write child config: %w", werr)
-		}
+		d.cfgPath = cfgPath
+		d.upKey = loadUpstreamKey(conn.UpKeyFile)
+		d.conn = conn
 		c, err = d.startReady(supCtx)
 		if err != nil {
 			// failed start = no daemon: drop the generated keys and
@@ -685,8 +675,27 @@ func (d *daemon) startReady(ctx context.Context) (*child, error) {
 	}
 }
 
+// bootTabbyConfig maps the serve options onto the generated child
+// config. The boot render stays model-less (/-/load drives the backend's
+// native load endpoint — no child restart on model switch), but draft
+// settings are daemon-level: they ride config.yml's draft_model block at
+// child start. Default off — no block unless the user opts in.
+func bootTabbyConfig(opts Options, port int) TabbyConfig {
+	return TabbyConfig{
+		Host:           "127.0.0.1",
+		Port:           port,
+		ModelDir:       opts.ModelsDir,
+		DraftMode:      opts.Fit.DraftMode,
+		NgramMatchMin:  opts.Fit.NgramMatchMin,
+		DraftNumTokens: opts.Fit.DraftNumTokens,
+	}
+}
+
 func (d *daemon) spawn() (*child, error) {
-	return d.opts.spawn(d.opts.RuntimeDir, d.cfgPath, d.logPath, d.port)
+	if d.opts.spawn != nil { // test seam wins; production spawns via the backend
+		return d.opts.spawn(d.opts.RuntimeDir, d.cfgPath, d.logPath, d.port, d.opts.EngineEnv)
+	}
+	return d.be.Spawn(d.opts.RuntimeDir, d.cfgPath, d.logPath, d.port, d.opts.EngineEnv)
 }
 
 // supervise owns the wait channel of every incarnation after the first
@@ -839,6 +848,13 @@ func (d *daemon) mux() http.Handler {
 	mux.HandleFunc(statusPath, d.handleStatus)
 	mux.HandleFunc(loadPath, d.handleLoad)
 	mux.HandleFunc(unloadPath, d.handleUnload)
+
+	// Ollama compatibility shim (phase 4): literal patterns, longest
+	// match wins over the "/" catch-all — registration order irrelevant.
+	mux.HandleFunc("/api/chat", d.handleOllamaChat)
+	mux.HandleFunc("/api/tags", d.handleOllamaTags)
+	mux.HandleFunc("/api/show", d.handleOllamaShow)
+	mux.HandleFunc("/api/generate", d.handleOllamaGenerate)
 
 	target, _ := url.Parse(d.conn.BaseURL)
 	rp := &httputil.ReverseProxy{

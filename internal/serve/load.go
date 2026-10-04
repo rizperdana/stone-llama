@@ -182,6 +182,17 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 			"attach_mode")
 		return
 	}
+	// llama-server cannot hot-swap a model: the GGUF is fixed at spawn
+	// (-m). Refuse rather than fall back to TabbyAPI silently — switching
+	// engines means restarting serve with --backend.
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		writeJSON(w, http.StatusConflict,
+			fmt.Sprintf("backend %q cannot switch models at runtime — the GGUF is fixed at spawn; "+
+				"stop the daemon and re-run 'stone-llama serve --backend %s <model.gguf>' to change it",
+				BackendLlama, BackendLlama),
+			"backend_fixed_model")
+		return
+	}
 	d.loadMu.Lock()
 	defer d.loadMu.Unlock()
 
@@ -377,6 +388,9 @@ func (d *daemon) fitModel(w http.ResponseWriter, dir, model string, ctx *int, mo
 // at the pinned commit — endpoints/core/types/model.py). The verdict is
 // the only source: nothing here computes, so payload and rendered YAML
 // cannot disagree. Unset verdict fields emit no key (backend defaults).
+// Drafting never rides this payload: the pinned ModelLoadRequest does
+// not declare draft_mode/ngram_match_min/draft_num_tokens (dropped at
+// validation) — the boot config.yml draft_model block owns drafting.
 func fitLoadArgs(res *autofit.Result) map[string]any {
 	args := map[string]any{}
 	if res.ChunkSize > 0 {

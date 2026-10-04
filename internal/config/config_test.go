@@ -123,3 +123,45 @@ func TestBadJSONIsError(t *testing.T) {
 		t.Errorf("err = %v, want config parse error", err)
 	}
 }
+
+// Speculative-decoding keys are load-time tuning next to chunk_size: the
+// defaults must survive a file that sets only one of them (partial-merge
+// semantics), so a partial draft_mode does not zero ngram_match_min.
+func TestDraftDefaultsSurvivePartialFile(t *testing.T) {
+	home := cleanEnv(t)
+	xdg := filepath.Join(home, "cfg")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	writeConfig(t, xdg, `{"autofit": {"draft_mode": "ngram"}}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Autofit.DraftMode != "ngram" || cfg.Autofit.NgramMatchMin != 2 || cfg.Autofit.DraftNumTokens != 0 {
+		t.Errorf("partial file zeroed a draft default: %+v", cfg.Autofit)
+	}
+}
+
+func TestEngineEnvDefaultsNilAndLoadsFromFile(t *testing.T) {
+	home := cleanEnv(t)
+	xdg := filepath.Join(home, "cfg")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	if cfg, err := Load(); err != nil {
+		t.Fatal(err)
+	} else if cfg.EngineEnv != nil {
+		t.Errorf("EngineEnv default = %v, want nil", cfg.EngineEnv)
+	}
+
+	writeConfig(t, xdg, `{"engine_env": {"CUDA_MODULE_LOADING": "LAZY"}}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EngineEnv["CUDA_MODULE_LOADING"] != "LAZY" || len(cfg.EngineEnv) != 1 {
+		t.Errorf("EngineEnv = %v, want exactly the one file key", cfg.EngineEnv)
+	}
+	// draft defaults still hold alongside the engine block
+	if cfg.Autofit.NgramMatchMin != 2 || cfg.Autofit.DraftMode != "" {
+		t.Errorf("engine_env file disturbed draft defaults: %+v", cfg.Autofit)
+	}
+}

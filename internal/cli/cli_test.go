@@ -1486,3 +1486,145 @@ func TestLoginSigintRestoresEchoOnPTY(t *testing.T) {
 		t.Error("ECHO bit still off after SIGINT — termios not restored")
 	}
 }
+
+// Phase 2: the request carries the whole conversation — with a system
+// message that is system + 3 persisted turns*2 + prompt = 8 entries (the
+// plan's "6" assumed the no-system case; this tests the with-system case).
+func TestChatBodyIncludesHistory(t *testing.T) {
+	prof := runProfile{MaxTokens: 2048, System: "be terse"}
+	s := &Session{Model: "m", Turns: []Turn{
+		{User: "q1", Assistant: "known-answer-2"},
+		{User: "q2", Assistant: "a2"},
+		{User: "q3", Assistant: "a3"},
+	}}
+	b := chatBody("m", buildMessages(s, prof, "q4"), prof)
+	var body struct {
+		Messages []map[string]string `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		t.Fatalf("chatBody produced invalid JSON: %v", err)
+	}
+	if len(body.Messages) != 8 {
+		t.Errorf("len(messages) = %d, want 8 (system + 3 turns*2 + prompt)", len(body.Messages))
+	}
+	if body.Messages[0]["role"] != "system" || body.Messages[0]["content"] != "be terse" {
+		t.Errorf("system message missing or not first: %+v", body.Messages[0])
+	}
+	if body.Messages[2]["content"] != "known-answer-2" {
+		t.Errorf("persisted assistant turn missing: %+v", body.Messages[2])
+	}
+	if body.Messages[7]["role"] != "user" || body.Messages[7]["content"] != "q4" {
+		t.Errorf("current prompt must be last: %+v", body.Messages[7])
+	}
+}
+
+// --continue resumes the NEWEST session by file mtime (id order alone is
+// not trusted: the newer-mtime file here carries the lexicographically
+// smaller id). --history prints that session's turns and exits 0 with no
+// HTTP/backend resolution — this isolated config has no daemon and no
+// upstream, so any request would fail instead of exiting clean.
+func TestContinueResumesNewestSession(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	older := &Session{Model: "m", ID: "200", Turns: []Turn{{User: "older-q", Assistant: "older-a"}}}
+	newer := &Session{Model: "m", ID: "100", Turns: []Turn{{User: "newer-q", Assistant: "newer-a"}}}
+	for _, s := range []*Session{older, newer} {
+		if err := saveSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(sessionFile("m", "200"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	got, err := lastSession("m")
+	if err != nil {
+		t.Fatalf("lastSession: %v", err)
+	}
+	if got.ID != "100" || got.Turns[0].User != "newer-q" {
+		t.Errorf("lastSession = id %s turn %q, want newest-mtime id 100 (mtime wins over id order)", got.ID, got.Turns[0].User)
+	}
+	code, out, errOut := run("run", "m", "--history")
+	if code != 0 {
+		t.Fatalf("--history: code=%d stderr=%q (must not touch the backend)", code, errOut)
+	}
+	if !strings.Contains(out, "newer-q") {
+		t.Errorf("--history missing newest turns: %q", out)
+	}
+	if strings.Contains(out, "older-q") {
+		t.Errorf("--history must print only the newest session, not older ones: %q", out)
+	}
+}
+
+// The overflow guard drops the OLDEST pair only: token counts come from the
+// stubbed exact upstream endpoint (POST /v1/token/encode), re-measured after
+// every drop; the system message survives and the stderr notice is labelled
+// "exact".
+func TestHistoryDropsOldestWhenOverBudget(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/token/encode" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Messages []map[string]string `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("encode body: %v", err)
+		}
+		n := 0
+		for _, m := range req.Messages {
+			n += len(m["content"])
+		}
+		fmt.Fprintf(w, `{"length":%d}`, n/4)
+	}))
+	defer srv.Close()
+	prof := runProfile{MaxTokens: 100, System: "sys"}
+	s := &Session{Model: "m", System: "sys", Turns: []Turn{
+		{User: strings.Repeat("u1", 60), Assistant: strings.Repeat("a1", 60)},
+		{User: strings.Repeat("u2", 60), Assistant: strings.Repeat("a2", 60)},
+		{User: strings.Repeat("u3", 60), Assistant: strings.Repeat("a3", 60)},
+	}}
+	countOf := func(sess *Session) int {
+		n := 0
+		for _, m := range buildMessages(sess, prof, "q") {
+			n += len(m["content"])
+		}
+		return n / 4
+	}
+	// Land the budget (0.95*ctx - 100) inside [count-after-1-drop, count-full)
+	// so exactly the oldest pair must go.
+	c0 := countOf(s)
+	c1 := countOf(&Session{Model: s.Model, System: s.System, Turns: s.Turns[1:]})
+	if c0 <= c1 {
+		t.Fatalf("fixture degenerate: c0=%d c1=%d", c0, c1)
+	}
+	nCtx := 1
+	for {
+		if b := int(0.95*float64(nCtx)) - 100; b >= c1 && b < c0 {
+			break
+		}
+		nCtx++
+		if nCtx > 100000 {
+			t.Fatal("no ctx lands the budget in [c1, c0)")
+		}
+	}
+	var errb bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, "q", &errb)
+	if len(s.Turns) != 2 || !strings.HasPrefix(s.Turns[0].User, "u2") {
+		t.Errorf("turns after guard = %d (first %q), want 2 with the oldest pair gone", len(s.Turns), s.Turns[0].User)
+	}
+	msgs := buildMessages(s, prof, "q")
+	if msgs[0]["role"] != "system" || msgs[0]["content"] != "sys" {
+		t.Errorf("system message must survive trimming: %+v", msgs[0])
+	}
+	for _, m := range msgs {
+		if strings.HasPrefix(m["content"], "u1") || strings.HasPrefix(m["content"], "a1") {
+			t.Errorf("oldest pair still sent: %q", m["content"])
+		}
+	}
+	if !strings.Contains(errb.String(), "history trimmed 1 turns") || !strings.Contains(errb.String(), "exact") {
+		t.Errorf("trim notice missing or not labelled exact: %q", errb.String())
+	}
+}

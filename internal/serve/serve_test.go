@@ -97,14 +97,64 @@ func waitReady(t *testing.T, dataDir string, errCh <-chan error) Status {
 	return Status{}
 }
 
+// gatedUpstream serves the backend-contract surfaces like fakeUpstream,
+// but /v1/completions flushes chunk0 and then BLOCKS until release() is
+// called: the upstream provably cannot complete while the gate holds.
+// Causal hook for TestAttachStreamsZeroBuffer — no wall clock involved.
+// release is idempotent and registered as a cleanup AFTER ts.Close (LIFO
+// unblocks the handler first), so a failing test never wedges Close.
+func gatedUpstream(t *testing.T, wantKey string, chunks int) (*httptest.Server, func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	mux := http.NewServeMux()
+	check := func(w http.ResponseWriter, r *http.Request) bool {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantKey {
+			t.Errorf("%s: upstream Authorization = %q, want Bearer %s (Conn.UpKeyFile injection)", r.URL.Path, got, wantKey)
+			w.WriteHeader(http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"object":"list","data":[]}`)
+	})
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, r *http.Request) {
+		if check(w, r) {
+			io.WriteString(w, `{"id":"fake-model"}`)
+		}
+	})
+	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
+		if !check(w, r) {
+			return
+		}
+		fl := w.(http.Flusher)
+		fmt.Fprintf(w, "data: chunk0\n\n")
+		fl.Flush()
+		<-gate // upstream stalls mid-stream until the test releases it
+		for i := 1; i < chunks; i++ {
+			fmt.Fprintf(w, "data: chunk%d\n\n", i)
+			fl.Flush()
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Cleanup(release)
+	return ts, release
+}
+
 // TestAttachStreamsZeroBuffer is the M5 attach E2E: schemeless host:port
 // accepted (bug 3), upstream key injected from the file, status/mode/
-// model correct, and chunks must arrive while the upstream is still
-// producing — a buffering proxy collapses the arrival times.
+// model correct, and the causal no-buffering proof: the fake upstream
+// flushes chunk0 then blocks, so chunk0 reaching the client while the
+// upstream is provably stalled means the server relayed per-chunk.
+// Synchronization, not a stopwatch — CI load cannot collapse this.
 func TestAttachStreamsZeroBuffer(t *testing.T) {
-	const delay = 150 * time.Millisecond
 	const chunks = 3
-	ts := fakeUpstream(t, "sekret", chunks, delay)
+	ts, release := gatedUpstream(t, "sekret", chunks)
 	dataDir := t.TempDir()
 	keyFile := writeUpstreamKey(t, "sekret")
 
@@ -140,44 +190,59 @@ func TestAttachStreamsZeroBuffer(t *testing.T) {
 		t.Fatalf("completions status = %d", resp.StatusCode)
 	}
 
-	t0 := time.Now()
-	var first, last time.Time
-	var body bytes.Buffer
-	br := bufio.NewReader(resp.Body)
-	for {
-		line, err := br.ReadString('\n')
-		body.WriteString(line)
-		if strings.HasPrefix(line, "data:") {
-			now := time.Now()
-			if first.IsZero() {
-				first = now
+	// Client-side pump: data lines only; closes on EOF or read error.
+	lines := make(chan string, 32)
+	go func() {
+		defer close(lines)
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, err := br.ReadString('\n')
+			if strings.HasPrefix(line, "data:") {
+				lines <- strings.TrimSpace(line)
 			}
-			last = now
+			if err != nil {
+				return
+			}
 		}
-		if err != nil || strings.Contains(line, "[DONE]") {
-			break
+	}()
+
+	// Causal proof: the upstream flushed chunk0 and is now blocked until
+	// release(); it cannot complete. A buffering server would therefore
+	// hold chunk0 indefinitely — receiving it here proves per-chunk relay.
+	var got []string
+	select {
+	case l := <-lines:
+		if !strings.Contains(l, "chunk0") {
+			t.Fatalf("first line %q, want chunk0 while upstream is stalled mid-stream", l)
+		}
+		got = append(got, l)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no chunk0 within 5s while upstream is stalled after chunk0 — server buffered until completion")
+	}
+	release() // the proof above already holds; let the stream finish
+
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+loop:
+	for {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				t.Fatalf("stream ended before [DONE]; lines: %q", got)
+			}
+			got = append(got, l)
+			if strings.Contains(l, "[DONE]") {
+				break loop
+			}
+		case <-timeout.C:
+			t.Fatalf("stream stalled before [DONE]; lines: %q", got)
 		}
 	}
-	elapsed := time.Since(t0)
-	if first.IsZero() {
-		t.Fatalf("no streamed data arrived; body:\n%s", body.String())
-	}
-	if first.Sub(t0) > 400*time.Millisecond {
-		t.Errorf("first chunk arrived %s after request — response buffered?", first.Sub(t0))
-	}
-	if last.Sub(first) < 300*time.Millisecond {
-		t.Errorf("chunk span %s — arrivals collapsed (buffering)", last.Sub(first))
-	}
-	wantMin := time.Duration(chunks-1) * delay // 300ms between first and last flush
-	if last.Sub(first) < wantMin-50*time.Millisecond {
-		t.Errorf("chunk span %s < %s — chunks not passed through in real time", last.Sub(first), wantMin)
-	}
-	if elapsed < 400*time.Millisecond {
-		t.Errorf("total %s < %s — stream completed too early", elapsed, 300*time.Millisecond)
-	}
-	for _, want := range []string{"chunk0", "chunk2", "[DONE]"} {
-		if !strings.Contains(body.String(), want) {
-			t.Errorf("stream missing %q; body:\n%s", want, body.String())
+
+	all := strings.Join(got, "\n")
+	for _, want := range []string{"chunk0", "chunk1", "chunk2", "[DONE]"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("stream missing %q; lines:\n%s", want, all)
 		}
 	}
 
@@ -525,7 +590,7 @@ func TestServeSpawnFailureNoState(t *testing.T) {
 		Port:      p,
 		DataDir:   dataDir,
 		ModelsDir: t.TempDir(),
-		spawn: func(string, string, string, int) (*child, error) {
+		spawn: func(string, string, string, int, map[string]string) (*child, error) {
 			return nil, errors.New("runtime missing")
 		},
 	})
@@ -776,7 +841,7 @@ func TestStartReadyCleanExitBeforeReadinessFails(t *testing.T) {
 			RetryDelay:   time.Millisecond,
 			contenders:   func() ([]doctor.Contender, error) { return nil, nil },
 			probe:        func(context.Context, int) error { return errors.New("never ready") },
-			spawn: func(string, string, string, int) (*child, error) {
+			spawn: func(string, string, string, int, map[string]string) (*child, error) {
 				c := &child{wait: make(chan error, 1), port: 1}
 				kids = append(kids, c)
 				go func() {
@@ -1092,7 +1157,7 @@ func TestServeSpawnFailureCleansGeneratedSecrets(t *testing.T) {
 		ModelsDir:  t.TempDir(),
 		RuntimeDir: runtimeDir,
 		Stderr:     io.Discard,
-		spawn: func(string, string, string, int) (*child, error) {
+		spawn: func(string, string, string, int, map[string]string) (*child, error) {
 			return nil, errors.New("runtime missing")
 		},
 	})
@@ -1450,7 +1515,7 @@ func TestServeWritesFirstRunMarkerBeforeSpawn(t *testing.T) {
 		ModelsDir:  t.TempDir(),
 		RuntimeDir: runtimeDir,
 		Stderr:     io.Discard,
-		spawn: func(_, _, _ string, _ int) (*child, error) {
+		spawn: func(_, _, _ string, _ int, _ map[string]string) (*child, error) {
 			atSpawn, _ = os.ReadFile(filepath.Join(checkout, "start_options.json"))
 			return nil, errors.New("runtime missing")
 		},
@@ -1649,7 +1714,7 @@ func TestStartReadyNeverReadyHasNoServePrefix(t *testing.T) {
 			RetryDelay:   time.Millisecond,
 			contenders:   func() ([]doctor.Contender, error) { return nil, nil },
 			probe:        func(context.Context, int) error { return errors.New("never ready") },
-			spawn: func(string, string, string, int) (*child, error) {
+			spawn: func(string, string, string, int, map[string]string) (*child, error) {
 				return &child{wait: make(chan error, 1), port: 1}, nil // stays alive
 			},
 		},

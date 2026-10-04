@@ -89,17 +89,35 @@ verdict — with your actual GPU and driver numbers — before anything gets ins
 | `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
 | `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream; the model positional is ignored in attach mode) |
 | `ps` / `stop` | loaded model + sampled VRAM peak of the supervised child (line omitted in attach mode — no child to sample) / stop the daemon |
-| `run <model>` | streaming CLI chat |
+| `run <model> [--continue] [--history] [-p "prompt"]` | streaming CLI chat with persistent history — `--continue` resumes the newest saved session (by file mtime), `--history` prints that session's turns as JSON and exits without touching the backend |
 | `version` | version |
 | `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
 | `uninstall [--dry-run] [--keep-models] [--yes]` | remove the install (weights optional to keep) |
 
 Flags that always win over autofit: `--ctx N`, `--cache-mode Q8|Q4|FP16|"2,2"`,
-`--no-autofit`. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`,
-`STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
-State (`models/`, `runtime/`, `daemon.json`, logs) is `$XDG_DATA_HOME/stone-llama`,
+`--no-autofit`. `serve --draft-mode ngram|off` selects speculative drafting (default
+off — no `draft_model` block is rendered; effect **unmeasured**, no A/B has been run);
+`run --draft-mode` parses and validates the value only — it cannot reach an already-
+running daemon and has no effect. Config `engine_env` adds extra environment for the
+supervised backend child (parent env preserved; config keys win). Env: `STONE_LLAMA_HOST`,
+`STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`,
+`STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
+`serve --backend tabby|llama` selects the supervised engine (default `tabby` =
+TabbyAPI + ExLlamaV3; `llama` = `llama-server` over GGUF weights — status in
+`docs/ARCHITECTURE.md`); an unknown value is a usage error, never a silent
+fallback. Env `STONE_LLAMA_BACKEND` and config `backend` do the same.
+State (`models/`, `runtime/`, `daemon.json`, logs, `chats/`) is `$XDG_DATA_HOME/stone-llama`,
 config `$XDG_CONFIG_HOME/stone-llama/config.json`. **Testing? Point `XDG_DATA_HOME` at
 an empty directory** or `ps`/`run`/`serve` will find the live daemon.
+`chats/<model>/chat-<id>.json` holds `run` history (files 0600, dirs 0700); when a
+session would overflow the context window it is trimmed to fit — **destructively:
+dropped turns leave the file too** (deliberate — they could not be replayed anyway).
+
+Security: every request is gated on `Host` (must name loopback or the daemon's bind
+host, else **421**) and on `Origin` when present (else **403**) before any handler.
+The control routes `/-/status`, `/-/load`, `/-/unload` always require the bearer token
+from `daemon.json` (0600) — even on a loopback bind; `/v1/*` and the `/api/*` Ollama
+shim routes need it only when bound to a non-loopback host, `/healthz` never does.
 
 `[est]` = computed from metadata + your VRAM, not measured. The one measured anchor
 feeding these numbers: 42.7 tok/s decode (SmolLM3-3B, reference card); prefill has

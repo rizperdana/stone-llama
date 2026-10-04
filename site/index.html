@@ -76,11 +76,11 @@
         <a class="btn btn-ghost" href="https://github.com/rizperdana/stone-llama/blob/main/docs/QUICKSTART.md">Quickstart docs</a>
       </div>
 
-      <p class="fine">14 commands: <code>doctor</code>, <code>setup</code>, <code>fit</code>,
+      <p class="fine">16 commands: <code>doctor</code>, <code>setup</code>, <code>fit</code>,
         <code>pull</code>, <code>rank</code>, <code>list</code>, <code>serve</code>, <code>ps</code>,
         <code>stop</code>, <code>run</code>, <code>version</code>, <code>rm</code>,
-        <code>import</code>, <code>login</code>.</p>
-      <p class="fine">MIT &middot; Go &ge; 1.24 &middot; static binary &asymp; 7.4&nbsp;MiB &middot;
+        <code>import</code>, <code>login</code>, <code>update</code>, <code>uninstall</code>.</p>
+      <p class="fine">MIT &middot; Go &ge; 1.24 &middot; static binary &asymp; 8.5&nbsp;MiB &middot;
         NVIDIA CUDA &middot; <strong>Linux/amd64 only</strong> &middot;
         <code>v0.1.0-rc1</code> &middot;
         <a href="https://github.com/rizperdana/stone-llama/blob/main/docs/INSTALLATION.md">install docs</a>.</p>
@@ -114,8 +114,8 @@
           <p><code>fit</code> and <code>pull</code> check architecture &rarr; quant format
             &rarr; fit from metadata alone, then refuse with the numbers.</p>
           <p class="stat"><span class="stat-n">&le;&nbsp;~16&nbsp;MiB</span>
-            of metadata read per repo, worst case &mdash; it once refused a 1.68&nbsp;GB model
-            before a single weight byte moved.</p>
+            of metadata read per repo, worst case &mdash; it refused a GGUF repo on
+            <code>config.json</code> alone, before a single weight byte moved.</p>
         </article>
       </div>
     </div>

@@ -24,9 +24,47 @@ type Report struct {
 	Extra string
 	// Note explains a refusal (Extra == "") or warns (e.g. cu12 chosen).
 	Note string
+	// Device is the compute device this machine will target.
+	Device Device
 }
 
 func (r Report) Ready() bool { return r.Extra != "" }
+
+// Device classifies the compute device stone-llama will target.
+type Device struct {
+	Kind      string // "gpu" or "cpu"
+	Name      string
+	MemoryMiB int
+	Note      string
+}
+
+// Detect runs Probe and returns the selected device.
+// If a usable NVIDIA GPU exists (Extra != ""), returns Kind="gpu".
+// Otherwise returns Kind="cpu" with host CPU info and a note.
+func Detect() (Device, error) {
+	r, err := Probe()
+	if err != nil {
+		return Device{}, err
+	}
+	if r.Ready() {
+		return Device{
+			Kind:      "gpu",
+			Name:      r.GPUs[0].Name,
+			MemoryMiB: r.GPUs[0].VRAMMiB,
+			Note:      r.Note,
+		}, nil
+	}
+	cpuName, cpuMiB := cpuInfo()
+	return Device{
+		Kind:      "cpu",
+		Name:      cpuName,
+		MemoryMiB: cpuMiB,
+		Note:      r.Note + " — stone-llama requires an NVIDIA GPU; use ollama for CPU/AMD/Apple",
+	}, nil
+}
+
+// HasNVIDIA reports whether the machine has a usable NVIDIA GPU.
+func (r Report) HasNVIDIA() bool { return r.Extra != "" }
 
 // Probe queries nvidia-smi. Missing/broken nvidia-smi is not an error —
 // it is a negative verdict.

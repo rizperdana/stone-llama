@@ -311,15 +311,45 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
   "host": "127.0.0.1",
   "port": 5111,
   "autofit": { "enabled": true, "headroom_mib": 512, "overhead_mib": 128, "min_ctx": 4096 },
-  "runtime_dir": ""
+  "runtime_dir": "",
+  "engine_env": { "CUDA_MODULE_LOADING": "LAZY" },
+  "backend": "tabby",
+  "backend_device_budget_mib": 0
 }
 ```
 
-**Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
+**Backend selection.** `Backend` (`internal/serve/backend.go`) is the seam between
+the supervision loop and the engine it supervises: `Prepare` owns everything that
+must exist before the child starts (validation, 0600 config/key files, the `Conn`
+the proxy probes and injects the upstream Bearer from) and `Spawn` is one
+incarnation. `BackendFor` resolves the name — `""`/`tabby` → `tabbyBackend`
+(TabbyAPI + ExLlamaV3, the default and unchanged behaviour), `llama` →
+`llamaBackend` (llama-server over GGUF); anything else is refused, never coerced.
+`serve --backend` > `STONE_LLAMA_BACKEND` > config `backend` > default. Readiness
+probing, the child lifecycle, supervision and shutdown stay engine-agnostic, and
+both `Spawn`s delegate to one `startProcess`.
 
-**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log). Downstream, two header gates run before any handler: `Host` must name loopback (else **421** `invalid_request`, message `loopback only` — DNS-rebinding defence) and `Origin`, when present, must name loopback or this daemon's own bind host (else **403** `browser_origin_forbidden`, message `cross-origin request refused`). `/healthz` is bearer-exempt but not gate-exempt. The control routes `/-/status`, `/-/load`, `/-/unload` **always** require the daemon state token (`Authorization: Bearer`), including on a loopback bind; the chat surface requires it only when `host != 127.0.0.1`.
+**llama backend status: UNVERIFIED.** No GGUF weights and no `llama-server` binary
+exist on this machine, so the path is exercised only up to `Prepare` (GGUF
+resolution, the weights budget, the missing-binary refusal) and its unit tests.
+Nothing here has served a token. Two structural limits are implemented, not
+guessed: the model is fixed at spawn (`-m`), so `/-/load` refuses **409**
+`backend_fixed_model` on this backend instead of falling back to TabbyAPI; and
+`backend_device_budget_mib` is our own arithmetic over the GGUF file size —
+weights only, KV cache and runtime overhead excluded, so it is a floor on the
+weights, not the engine's memory use.
+
+**Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `STONE_LLAMA_BACKEND`, `HF_TOKEN`.
+
+**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log). Downstream, two header gates run before any handler: `Host` must name loopback or this daemon's own bind host (else **421** `invalid_request`, message `loopback only` — DNS-rebinding defence) and `Origin`, when present, must name that same accept-set (else **403** `browser_origin_forbidden`, message `cross-origin request refused`); an absent `Origin` (curl/CLI) passes. `/healthz` is bearer-exempt but not gate-exempt. The control routes `/-/status`, `/-/load`, `/-/unload` **always** require the daemon state token (`Authorization: Bearer`, constant-time compare → else **401** `unauthorized`, message `bearer token required`), including on a loopback bind. Every other route — the `/v1/*` proxy and the `/api/*` Ollama shim below — requires the token only when the configured bind host is not loopback; `/healthz` never does.
 
 **Tool calling:** a server concern. stone-llama sets the format automatically and reports it; the OpenAI-compatible surface exposes whatever the loaded model advertises, unchanged, to any client or gateway.
+
+**Ollama compatibility shim** (`internal/serve/ollama.go`): four routes translate ollama's API onto the OpenAI surface — `POST /api/chat` → `/v1/chat/completions`, `GET /api/tags` (model-store scan), `POST /api/show` (answerable subset only), `POST /api/generate` → `/v1/completions` (verbatim prompt, no fallback to chat). They sit behind the same Host/Origin gates and the same bearer rule as the chat surface (above). Mapping as implemented: `options.num_predict` 0/absent omits `max_tokens` entirely; `think` true/false → `enable_thinking`, an effort string → `enable_thinking` plus `reasoning_effort` passed through verbatim, absent/null → neither key, anything else → 400; `options.seed` is decoded but never forwarded (the pinned request types have no seed field). Unsupported fields are a clear 400 naming the field, never a silent drop: `/api/chat` rejects `tools`, `format`, `template`, `raw`, `context`; `/api/generate` rejects `format`, `template`, `context`, `suffix`, `system` and accepts `raw` (completions are verbatim by design). `keep_alive: 0` (or `"0s"`) POSTs our own `/-/unload` with the state token after the reply; any other `keep_alive` value is accepted and ignored — the daemon is resident by design.
+
+**What the shim refuses to invent.** Durations not observable through the OpenAI surface (`load_duration`, `prompt_eval_duration`, `eval_duration`) are sent as `0`; `total_duration` is the request time we actually measured. `prompt_eval_count`/`eval_count` appear only when the upstream sends usage. Fields without a real on-disk source are omitted, never fabricated: `/api/tags` carries no `digest`, and `details` reports only what the model directory shows (`family` from `config.json`'s `model_type`, `format` `safetensors`, `quantization_level` from the manifest) — `parameter_size` stays out. `/api/show` answers `details`, a limited verbatim `model_info` subset, and `template` only when a template file exists on disk; `modelfile`, `parameters`, `license` and friends are omitted. `done_reason` is `length` or `stop` — nothing else is claimed. **Unverified:** the `/v1/completions` call on the generate route and the `enable_thinking`/`reasoning_effort` fields were never exercised against a live backend (TabbyAPI 5002 is down and stays down); their routes/types are verified against the pinned source tree and unit tests only, not proven live.
+
+**Drafting + engine env.** Speculative drafting is configured via the boot `config.yml` `draft_model` block (`autofit.draft_mode` / `ngram_match_min` / `draft_num_tokens` in config.json; `serve --draft-mode ngram|off` overrides the mode). Default is **off**: no block is rendered at all, and `draft_model_dir` never renders (no draft weights ship). The block is daemon-level — it rides child start, not `/-/load`. Its effect is **unmeasured**: no A/B has been run, so no speedup is claimed. `run --draft-mode` parses and validates the value only — it cannot reach an already-running daemon and therefore has no effect. Config `engine_env` (a `map[string]string`) is extra environment for the supervised child: the parent environment is preserved (`PATH`/venv discovery unaffected) and config entries append last, so they win over a same-named parent variable.
 
 ## 8. Platform reality + hard limits (approved Q5/Q8)
 

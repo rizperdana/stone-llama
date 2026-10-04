@@ -128,9 +128,10 @@ make dist                          # 5 bundles + dist/checksums.txt
 | Path | Responsibility |
 |---|---|
 | `cmd/stone-llama/` | `main` → `cli.Run`, process exit code |
-| `internal/cli/` | subcommand dispatch, flags, exit codes |
+| `internal/cli/` | subcommand dispatch, flags, exit codes, chat history (`history.go`: sessions under `chats/`, `--continue`/`--history`, context-window trim) |
 | `internal/config/` | config load + XDG/env path resolution |
-| `internal/serve/` | daemon, reverse proxy, state; `tabby_backend.go`/`tabbyconf.go` = the seam |
+| `internal/serve/` | daemon, reverse proxy, state, Ollama shim (`ollama.go`); `tabby_backend.go`/`tabbyconf.go` = the seam |
+| `internal/runner/` | stone-llama's own serving runner: bounded Jinja2-subset chat-template renderer + expression/value model (`template.go`, `expr.go`, `value.go`) |
 | `internal/autofit/` | VRAM-fit ctx/cache decision from `config.json` + GPU |
 | `internal/preflight/` | pre-download gate (arch / quant / fit) |
 | `internal/pull/` | gate → consent → resumable sha256 download |

@@ -234,7 +234,9 @@ func (o Options) headroomFor(ctx int) int {
 // Fit runs the ladder (or the forced override) against real numbers.
 // The ladder maximizes ctx first (ctx tiers from target down to the
 // floor), preferring cache quality within a tier: FP16 → Q8 → Q4 → "4,2".
-func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result, error) {
+// budgetMiB is the device budget: on a GPU it is VRAM; on a CPU-only device
+// it is a conservative share of system RAM.
+func Fit(spec Spec, weightsBytes int64, budgetMiB int, opts Options) (Result, error) {
 	if spec.Layers <= 0 || spec.KVHeads <= 0 || spec.HeadDim <= 0 || spec.MaxCtx <= 0 {
 		return Result{}, fmt.Errorf("incomplete model spec: %+v", spec)
 	}
@@ -254,7 +256,7 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 		return float64(ctx) * float64(elems) * bpe
 	}
 	fits := func(ctx int, bpe float64) bool {
-		return weightsB+kvB(ctx, bpe)+overheadB <= float64(vramTotalMiB-opts.headroomFor(ctx))*mib
+		return weightsB+kvB(ctx, bpe)+overheadB <= float64(budgetMiB-opts.headroomFor(ctx))*mib
 	}
 	setKV := func(ctx int, bpe float64) {
 		res.KVMiB = int(math.Ceil(kvB(ctx, bpe) / mib))
@@ -263,9 +265,9 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 	// and warns when the remaining margin is thin (see thinMarginMiB).
 	accept := func(ctx int) {
 		res.HeadroomMiB = opts.headroomFor(ctx)
-		res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
+		res.BudgetMiB = budgetMiB - res.HeadroomMiB
 		load := res.WeightsMiB + res.KVMiB + res.OverheadMiB
-		slack := vramTotalMiB - load - res.HeadroomMiB
+		slack := budgetMiB - load - res.HeadroomMiB
 		if slack < thinMarginMiB {
 			res.Warning = fmt.Sprintf(
 				"only %d MiB margin above the %d MiB headroom (prefill workspace [est] included): "+
@@ -314,8 +316,8 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 		if !res.Fits {
 			res.Ctx = 0
 			res.HeadroomMiB = opts.headroomFor(target)
-			res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
-			res.LargestCtx = largestCtx(elems, bpe, vramTotalMiB, res.WeightsMiB, res.OverheadMiB, opts)
+			res.BudgetMiB = budgetMiB - res.HeadroomMiB
+			res.LargestCtx = largestCtx(elems, bpe, budgetMiB, res.WeightsMiB, res.OverheadMiB, opts)
 			res.Reason = refusalReason(res, opts, target, res.Mode)
 		} else {
 			accept(target)
@@ -376,9 +378,9 @@ func Fit(spec Spec, weightsBytes int64, vramTotalMiB int, opts Options) (Result,
 
 	// Nothing fits — arithmetic for the refusal message.
 	res.HeadroomMiB = opts.headroomFor(floor)
-	res.BudgetMiB = vramTotalMiB - res.HeadroomMiB
+	res.BudgetMiB = budgetMiB - res.HeadroomMiB
 	q4BPE, _ := BytesPerElement("Q4") // valid by construction (see ladder)
-	res.LargestCtx = largestCtx(elems, q4BPE, vramTotalMiB, res.WeightsMiB, res.OverheadMiB, opts)
+	res.LargestCtx = largestCtx(elems, q4BPE, budgetMiB, res.WeightsMiB, res.OverheadMiB, opts)
 	setKV(floor, q4BPE)
 	res.Reason = refusalReason(res, opts, floor, "Q4")
 	return res, nil
@@ -414,12 +416,12 @@ func refusalReason(res Result, opts Options, ctx int, modeLabel string) string {
 		opts.HeadroomMiB, opts.WorkspaceMiB, blanket, largest)
 }
 
-// largestCtx solves load(ctx) + headroom(ctx) ≤ vram_total for ctx: the
+// largestCtx solves load(ctx) + headroom(ctx) ≤ budgetMiB for ctx: the
 // per-token cost is the KV bytes plus the ctx margin's per-token share, so
 // the answer is smaller than the old headroom-free division (which ignored
 // the margin's growth with ctx). Always 256-aligned downward.
-func largestCtx(elems int64, bpe float64, vramTotalMiB, weightsMiB, overheadMiB int, opts Options) int {
-	availMiB := float64(vramTotalMiB - opts.HeadroomMiB - opts.WorkspaceMiB - weightsMiB - overheadMiB)
+func largestCtx(elems int64, bpe float64, budgetMiB, weightsMiB, overheadMiB int, opts Options) int {
+	availMiB := float64(budgetMiB - opts.HeadroomMiB - opts.WorkspaceMiB - weightsMiB - overheadMiB)
 	if availMiB <= 0 {
 		return 0
 	}

@@ -112,6 +112,16 @@ runtime
 stone-llama.lock
 ```
 
+That `ls` capture predates persisted chat history: `run` now also keeps sessions under
+`chats/<model>/chat-<id>.json` in this state dir (files 0600, dirs 0700, written via
+atomic temp+rename). `--continue` resumes the newest session for the model **by file
+mtime**; `--history` prints that session's turns as indented JSON and exits before any
+backend resolution — no HTTP request, no daemon spawn. Before each turn the session is
+trimmed to fit the context window (token count from the upstream's `/v1/token/encode`
+when reachable, a `len(json)/4` estimate otherwise); trimming is **persistent — dropped
+turns leave the file too**, deliberately: context overflow means they could not have
+been replayed anyway.
+
 `run` auto-tunes one profile line in the REPL (nothing extra in `-p` output):
 
 ```console
