@@ -1259,7 +1259,8 @@ func startingNote(dataDir string, st State) string {
 }
 
 // stateDownErr states exactly what answered a recorded port — nothing,
-// a foreign process, or a listener that would not confirm itself (A3),
+// a foreign process, a 401 from our own control route (state without a
+// usable token), or a listener that would not confirm itself (A3) —
 // and never deletes the state (H3).
 func stateDownErr(dataDir string, st State, class probeClass, stateErr error) error {
 	note := ""
@@ -1271,6 +1272,8 @@ func stateDownErr(dataDir string, st State, class probeClass, stateErr error) er
 		return fmt.Errorf("could not confirm a stone-llama daemon on %s: a listener answers neither the healthz marker nor /-/status with the state token (booting or wedged?)%s — state kept at %s", st.Addr(), note, StatePath(dataDir))
 	case probeForeign:
 		return fmt.Errorf("a foreign process holds %s (not a stone-llama daemon) and the recorded state no longer matches it%s — state kept at %s; 'stone-llama stop' clears it", st.Addr(), note, StatePath(dataDir))
+	case probeRefused:
+		return fmt.Errorf("the listener on %s answers /-/status with 401 — how our own control route refuses an unauthenticated probe, so this is our daemon reached through state that no longer carries a usable token (damaged daemon.json?), not a foreign process%s — state kept at %s; 'stone-llama stop' clears it", st.Addr(), note, StatePath(dataDir))
 	default: // probeDown
 		// cold-start window (F): the spawn-lock holder is still booting —
 		// say STARTING like stop does, never "stale … stop clears it"
@@ -1296,6 +1299,8 @@ func missingStateErr(dataDir string, rerr error) error {
 			return fmt.Errorf("a stone-llama daemon is already serving on %s, but its state is not in %s (state file missing or another data dir) — not starting a second one", cfgSt.Addr(), dataDir)
 		case probeForeign:
 			return fmt.Errorf("another process holds %s (not a stone-llama daemon) and %s has no state file — nothing to query from here", cfgSt.Addr(), dataDir)
+		case probeRefused:
+			return fmt.Errorf("the listener on %s answers /-/status with 401 — our control route refusing an unauthenticated probe — but %s has no state file (damaged or wrong data dir): nothing to query from here", cfgSt.Addr(), dataDir)
 		case probeUnconfirmed:
 			return fmt.Errorf("a listener on %s would not identify itself (booting or wedged?) and %s has no state file — nothing to query from here", cfgSt.Addr(), dataDir)
 		}
@@ -1346,6 +1351,8 @@ func ProbeNoState(dataDir string, wait time.Duration) (bool, error) {
 			return false, fmt.Errorf("a stone-llama daemon is serving on %s, but its state is not in %s (state file missing or another data dir) — refusing to signal a pid that was never recorded", cfgSt.Addr(), StatePath(dataDir))
 		case probeForeign:
 			return false, fmt.Errorf("another process holds %s (not a stone-llama daemon) — nothing to stop from here", cfgSt.Addr())
+		case probeRefused:
+			return false, fmt.Errorf("the listener on %s answers /-/status with 401 — our control route refusing an unauthenticated probe — and %s has no state file: refusing to signal a pid that was never recorded", cfgSt.Addr(), dataDir)
 		case probeUnconfirmed:
 			return false, fmt.Errorf("a listener on %s would not identify itself (booting or wedged?) and %s has no state file — nothing to signal", cfgSt.Addr(), StatePath(dataDir))
 		}
@@ -1385,6 +1392,8 @@ func startFailed(dataDir string, logStart int64) error {
 			return fmt.Errorf("a stone-llama daemon is already serving on %s, but its state is not in %s (state file missing or another data dir) — not starting a second one", cfgSt.Addr(), dataDir)
 		case probeForeign:
 			return fmt.Errorf("another process holds %s (not a stone-llama daemon) — stop it, or pick a free port with --port", cfgSt.Addr())
+		case probeRefused:
+			return fmt.Errorf("the listener on %s answers /-/status with 401 — our control route refusing an unauthenticated probe — and %s has no usable state; fix daemon.json or stop that listener", cfgSt.Addr(), dataDir)
 		case probeUnconfirmed:
 			return fmt.Errorf("a listener on %s answered neither the healthz marker nor /-/status (a daemon may be booting or wedged) — retry shortly; state kept at %s", cfgSt.Addr(), StatePath(dataDir))
 		}
@@ -1408,12 +1417,14 @@ const (
 	probeDown                          // nothing listening
 	probeUnconfirmed                   // listener up, neither probe answered within bound
 	probeForeign                       // listener answered without our identity
+	probeRefused                       // listener answered /-/status 401: our own control route refusing the probe
 )
 
 // classifyListener identifies st's port: the healthz marker is the
 // primary proof; /-/status carrying the unguessable state token is the
 // cross-check when healthz was inconclusive (H3: identification must
-// separate confirmed-live, confirmed-foreign, and could-not-confirm).
+// separate confirmed-live, confirmed-foreign, refused-by-our-own-gate,
+// and could-not-confirm).
 func classifyListener(ctx context.Context, st State) probeClass {
 	conn, derr := net.DialTimeout("tcp", st.Addr(), 500*time.Millisecond)
 	if derr != nil {
@@ -1435,9 +1446,12 @@ func classifyListener(ctx context.Context, st State) probeClass {
 			return probeLive
 		}
 	}
-	answered, ok := statusAnswers(ctx, st)
+	answered, ok, refused := statusAnswers(ctx, st)
 	if ok {
 		return probeLive
+	}
+	if refused {
+		return probeRefused
 	}
 	if answered {
 		return probeForeign
@@ -1446,26 +1460,29 @@ func classifyListener(ctx context.Context, st State) probeClass {
 }
 
 // statusAnswers cross-checks /-/status with the recorded token:
-// (answered, ok). ok proves our daemon (token unguessable); answered
-// with !ok proves a foreign HTTP server; no answer at all is a
+// (answered, ok, refused). ok proves our daemon (token unguessable);
+// refused — HTTP 401 — is our own control route rejecting the probe
+// because the state carries no usable token: our daemon behind
+// damaged state, not a foreign process. answered with !ok (and not
+// refused) is a foreign HTTP server; no answer at all is a
 // booting/stalled listener — not yet dead.
-func statusAnswers(ctx context.Context, st State) (answered, ok bool) {
+func statusAnswers(ctx context.Context, st State) (answered, ok, refused bool) {
 	rctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, "http://"+st.Addr()+statusPath, nil)
 	if err != nil {
-		return false, false
+		return false, false, false
 	}
 	if st.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+st.Token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, false
+		return false, false, false
 	}
 	defer resp.Body.Close()
 	io.Copy(io.Discard, resp.Body)
-	return true, resp.StatusCode == http.StatusOK
+	return true, resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusUnauthorized
 }
 
 // writeSecret writes a 0600 file atomically (child config/tokens —

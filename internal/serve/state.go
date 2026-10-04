@@ -79,6 +79,9 @@ func Query(dataDir string) (Status, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return Status{}, errors.New("status endpoint: HTTP 401 (the daemon rejected this state's bearer — daemon.json is damaged, or it belongs to another data dir)")
+		}
 		return Status{}, fmt.Errorf("status endpoint: HTTP %d", resp.StatusCode)
 	}
 	var s Status

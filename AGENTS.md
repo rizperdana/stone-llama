@@ -141,6 +141,7 @@ make dist                          # 5 bundles + dist/checksums.txt
 | `internal/estimate/` | tok/s prediction from metadata `[est]` |
 | `internal/fslock/` | cross-process flock (daemon spawn, downloads) |
 | `internal/brand/` | embedded icon for banners |
+| `internal/selfmgmt/` | self-update (sha256-verified binary swap), uninstall, `version` |
 | `docs/` | ARCHITECTURE, QUICKSTART, INSTALLATION, RELEASE, AGENT-SETUP |
 | `site/`, `scripts/`, `.github/workflows/` | homepage, `install.sh`, CI + release |
 

@@ -399,6 +399,43 @@ func TestControlRoutesRequireTokenOnLoopback(t *testing.T) {
 	}
 }
 
+// TestProbeRefusedNamesOurDaemonNotForeign: with a daemon.json salvaged
+// without a token (state.go salvage misses it), our own /-/status answers
+// 401 to the unauthenticated probe. Classification stays fail-closed, but
+// the message must say "our daemon behind damaged state" — never "a
+// foreign process holds <addr>". A listener that answers 404 is still
+// probeForeign: the 401 branch does not loosen identification.
+func TestProbeRefusedNamesOurDaemonNotForeign(t *testing.T) {
+	ours := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == statusPath {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, "bearer token required", "unauthorized")
+			return
+		}
+		http.NotFound(w, r) // /healthz without the X-Stone-Llama marker
+	}))
+	t.Cleanup(ours.Close)
+	st := State{Host: "127.0.0.1", Port: serverPort(t, ours), Token: ""}
+
+	if cls := classifyListener(context.Background(), st); cls != probeRefused {
+		t.Fatalf("classify = %v, want probeRefused", cls)
+	}
+	msg := stateDownErr(t.TempDir(), st, probeRefused, errors.New("state file is corrupt")).Error()
+	if strings.Contains(msg, "foreign process holds") || strings.Contains(msg, "not a stone-llama daemon") {
+		t.Errorf("401 probe reported as foreign: %s", msg)
+	}
+	if !strings.Contains(msg, "401") || !strings.Contains(msg, "damaged daemon.json") {
+		t.Errorf("401 probe message lacks the diagnosis: %s", msg)
+	}
+
+	foreign := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(foreign.Close)
+	fst := State{Host: "127.0.0.1", Port: serverPort(t, foreign), Token: ""}
+	if cls := classifyListener(context.Background(), fst); cls != probeForeign {
+		t.Errorf("404-on-status classify = %v, want probeForeign", cls)
+	}
+}
+
 // TestRewriteOOMEnriches: an upstream OOM error gains the levers and
 // keeps the original message; anything else passes through untouched.
 func TestRewriteOOMEnriches(t *testing.T) {

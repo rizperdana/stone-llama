@@ -144,7 +144,11 @@ over the API.
 Two caveats:
 
 - Loading is the upstream's job in attach mode: `/-/load` answers 409
-  `attach_mode`, and a mismatched model name exits 1 with the same message.
+  `attach_mode` — but only to an **authenticated** request. `/-/load` is a
+  control route, so a bare `curl` with no `Authorization` header now gets
+  401 `unauthorized` first (bearer = the state token in `daemon.json`,
+  0600). A mismatched model name is reported as a local alias and the
+  upstream's loaded model is reused.
 
 ## 6. `serve` + `curl` — OpenAI-compatible API
 
