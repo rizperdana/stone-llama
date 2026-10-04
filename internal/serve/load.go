@@ -144,7 +144,7 @@ func (d *daemon) initialLoad(ctx context.Context, model string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if d.needToken {
+	if d.token != "" {
 		req.Header.Set("Authorization", "Bearer "+d.token)
 	}
 	resp, err := http.DefaultClient.Do(req)

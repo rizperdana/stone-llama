@@ -867,16 +867,23 @@ func (d *daemon) mux() http.Handler {
 	return mux
 }
 
-// authed enforces downstream bearer: healthz open (our own probe), token
-// required when host is not loopback, anything accepted on loopback
-// (optional per §7) — and whatever arrives is stripped by the Director.
+// authed enforces downstream access, gates first: Host and Origin must
+// name loopback (421/403 otherwise — pure header checks; Go's ServeMux
+// never routes on Host), healthz stays open (our own probe), the
+// control routes /-/status, /-/load, /-/unload always demand the state
+// token, and any other route needs the token only when the bind is not
+// loopback (§7) — whatever arrives is stripped by the Director.
 func (d *daemon) authed(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !d.hostOK(w, r) || !d.originOK(w, r) {
+			return // the failing gate wrote its refusal envelope
+		}
 		if r.URL.Path == healthzPath {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if d.needToken {
+		control := r.URL.Path == statusPath || r.URL.Path == loadPath || r.URL.Path == unloadPath
+		if d.needToken || control {
 			got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
 			got = strings.TrimSpace(got)
 			if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(d.token)) != 1 {
@@ -887,6 +894,50 @@ func (d *daemon) authed(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostOK gates the request's Host header before any handler runs
+// (DNS-rebinding defence): only loopback names and this daemon's own
+// configured bind host pass; a foreign Host is refused 421.
+func (d *daemon) hostOK(w http.ResponseWriter, r *http.Request) bool {
+	if !d.hostAllowed(r.Host) {
+		writeJSON(w, http.StatusMisdirectedRequest, "loopback only", "invalid_request")
+		return false
+	}
+	return true
+}
+
+// originOK gates the Origin header (CSRF defence): absent (curl/CLI
+// clients) passes; present must resolve to the same accept-set as
+// hostOK, else 403.
+func (d *daemon) originOK(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || !d.hostAllowed(u.Host) {
+		writeJSON(w, http.StatusForbidden, "cross-origin request refused", "browser_origin_forbidden")
+		return false
+	}
+	return true
+}
+
+// hostAllowed is the shared accept-set for Host and Origin: normalize
+// to a bare host (strip the port, unwrap [::1] IPv6 form), then accept
+// only loopback names and the host this daemon is configured to bind.
+// An empty host never passes (an unset opts.Host must not widen it).
+func (d *daemon) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	return host == "127.0.0.1" || host == "::1" || host == "localhost" ||
+		host == d.opts.Host
 }
 
 // joinPath prefixes the upstream base path (attach URLs may carry one)

@@ -88,7 +88,7 @@ scalars", so no YAML library is involved either.
 
 **Ports:** public **5111** (avoids well-known local-AI ports: 11434/Ollama, 5000–5002/TabbyAPI). Occupied → health-probe: stone-llama answers → reuse (idempotent auto-start); foreign process → fatal with `--port` hint. TabbyAPI's internal port: **always bind `:0`**, write into generated config — never conflicts. Proxy hides it.
 
-**Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; contract test (§10) against the pin gates any pin bump. Never fork (Q11).
+**Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; §10.5's contract test against the pin is **planned, not in the tree** (no `go:build integration` file), so a pin bump is reviewed by hand and rides a release. Never fork (Q11).
 
 **Lifecycle:** `serve` = foreground daemon (it *is* the daemon). `run` auto-starts a detached daemon if none is reachable (re-exec self, `setsid`, log → `logs/daemon.log`, state → `daemon.json` 0600), unless `STONE_LLAMA_NO_AUTOSTART=1` (then it reports + remedies instead). `ps` observes only — read-only, never spawns or deletes state; `stop` controls only — clean shutdown. Singleton guard: **flock** on `data_dir/stone-llama.lock` around daemon spawn and downloads (A7; primitive lands with its first consumer in M2, daemon-spawn usage in M5).
 
@@ -317,7 +317,7 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
 
 **Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
 
-**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log); downstream Bearer optional on loopback, **required** when `host != 127.0.0.1`.
+**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log). Downstream, two header gates run before any handler: `Host` must name loopback (else **421** `invalid_request`, message `loopback only` — DNS-rebinding defence) and `Origin`, when present, must name loopback or this daemon's own bind host (else **403** `browser_origin_forbidden`, message `cross-origin request refused`). `/healthz` is bearer-exempt but not gate-exempt. The control routes `/-/status`, `/-/load`, `/-/unload` **always** require the daemon state token (`Authorization: Bearer`), including on a loopback bind; the chat surface requires it only when `host != 127.0.0.1`.
 
 **Tool calling:** a server concern. stone-llama sets the format automatically and reports it; the OpenAI-compatible surface exposes whatever the loaded model advertises, unchanged, to any client or gateway.
 
@@ -343,7 +343,7 @@ README carries this in the first screen (Q10).
 
 - **Artifact:** `stone-llama-linux-amd64.tgz` (~5.5 MB bundle, 5,719,364 B; binary 8,933,560 B ≈ 8.5 MiB): binary + README.md + LICENSE + stone-llama.png; `-trimpath -ldflags "-s -w"`; sha256 published in the combined `checksums.txt`. Five targets built (linux amd64/arm64, windows amd64, darwin amd64/arm64) (G9: windows/macOS/arm64 runtime untested).
 - **Install:** GitHub Releases + `install.sh` (download, verify sha256, `~/.local/bin`, PATH hint). No package managers in v1 (G11).
-- **Release:** tag → build + sha256 + contract test (§10) → release. No Docker, no telemetry.
+- **Release:** tag → build + sha256 → release (the §10.5 contract test is still a planned gate, not a step that runs today). No Docker, no telemetry.
 - **A8 — repository (now):** `git init` at project start; **one commit per milestone**, conventional format (`feat(m1): …`); `.gitignore` excludes built binaries (`/stone-llama`, `/bin/`, `/dist/`), `/models/`, `/downloads/`, `/runtime/`, `*.part`, `/logs/`, `*.log`. **Public repo, owner `rizperdana`** — `gh auth status` verified this session: active account is `rizperdana` ✓ (gate satisfied; the repo **exists** at github.com/rizperdana/stone-llama). Plan doc committed as `docs/ARCHITECTURE.md`.
 - **Residual risk:** G16.
 
@@ -353,7 +353,7 @@ README carries this in the first screen (Q10).
 2. **A5 gate:** fake-HF `httptest` fixtures serving tiny `config.json`/`quantization_config.json`/trees → arch warn/confirm, `exl2` refusal, GGUF-only refusal, unknown-arch warning text, fit verdicts (proceed/warn/refuse + largest-fitting-ctx).
 3. **Pull against fake HF:** Range-resume after simulated interrupt, checksum mismatch, gated 403, disk-preflight refusal. KB fixtures; byte-identical code path.
 4. **Proxy/daemon vs fake TabbyAPI:** ~100-line Go stub with SSE canned tokens → passthrough, key injection, crash-backoff, port-occupied handling. No Python.
-5. **Contract test vs pinned TabbyAPI:** `go:build integration`, local only, no model load (config schema + routes). M4/M5 gate.
+5. **Contract test vs pinned TabbyAPI:** `go:build integration`, local only, no model load (config schema + routes). M4/M5 gate. **Status: planned — no integration-tagged file exists yet**, so §2/§9 must not cite it as an enforced gate.
 6. **GPU E2E:** on-disk SmolLM3 only (zero download). M5 serve + curl; M6 interactive.
 
 CI runs 1–4: no GPU, no Python, no external network.

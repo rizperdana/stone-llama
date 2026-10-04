@@ -188,7 +188,7 @@ func TestAttachStreamsZeroBuffer(t *testing.T) {
 }
 
 // TestStatusRequiresBearerOffLoopback: non-loopback bind → /-/status
-// demands the bearer (loopback stays open), Query uses the state token.
+// demands the bearer on an Origin-less request, Query uses the state token.
 func TestStatusRequiresBearerOffLoopback(t *testing.T) {
 	ts := fakeUpstream(t, "sekret", 0, 0)
 	dataDir := t.TempDir()
@@ -230,6 +230,173 @@ func TestStatusRequiresBearerOffLoopback(t *testing.T) {
 
 	cancel()
 	<-errCh
+}
+
+// gateDaemon: loopback daemon for the Host/Origin/control-bearer gate
+// tests — token set, needToken false (chat stays open on loopback), a
+// dead upstream so a request that clears every gate surfaces as a proxy
+// error instead of content.
+func gateDaemon() *daemon {
+	return &daemon{
+		opts: Options{Stderr: io.Discard, Host: "127.0.0.1",
+			contenders: func() ([]doctor.Contender, error) { return nil, nil }},
+		conn:  Conn{BaseURL: "http://127.0.0.1:1"},
+		token: "test-token",
+	}
+}
+
+// TestRejectsForeignHost: a Host naming anything but loopback is
+// refused 421 with the exact envelope before any handler runs
+// (DNS-rebinding defence); the normal loopback Host passes untouched.
+func TestRejectsForeignHost(t *testing.T) {
+	d := gateDaemon()
+	ts := httptest.NewServer(d.authed(d.mux()))
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMisdirectedRequest {
+		t.Errorf("foreign Host /healthz = %d, want 421", resp.StatusCode)
+	}
+	want := `{"error":{"message":"loopback only","type":"invalid_request"}}` + "\n"
+	if string(body) != want {
+		t.Errorf("421 body = %q, want %q", body, want)
+	}
+
+	// a normal loopback Host (with port) is unaffected
+	ok, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Errorf("loopback Host /healthz = %d, want 200", ok.StatusCode)
+	}
+}
+
+// TestRejectsForeignOrigin: a cross-site Origin is refused 403 with
+// type browser_origin_forbidden (CSRF defence); loopback Origins and
+// the Origin-less curl/CLI client pass the gate.
+func TestRejectsForeignOrigin(t *testing.T) {
+	d := gateDaemon()
+	ts := httptest.NewServer(d.authed(d.mux()))
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("foreign Origin /healthz = %d, want 403", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `"type":"browser_origin_forbidden"`) {
+		t.Errorf("403 body = %q, want type browser_origin_forbidden", body)
+	}
+
+	for _, origin := range []string{"http://localhost:5199", "http://127.0.0.1:5199"} {
+		r2, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r2.Header.Set("Origin", origin)
+		ok, err := http.DefaultClient.Do(r2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok.Body.Close()
+		if ok.StatusCode != http.StatusOK {
+			t.Errorf("Origin %s /healthz = %d, want 200", origin, ok.StatusCode)
+		}
+	}
+
+	// no Origin (curl/CLI chat-style request): gate passes, no bearer needed
+	plain, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.Body.Close()
+	if plain.StatusCode != http.StatusOK {
+		t.Errorf("Origin-less loopback /healthz = %d, want 200", plain.StatusCode)
+	}
+}
+
+// TestControlRoutesRequireTokenOnLoopback: on a loopback bind
+// (needToken false) the control routes still demand the state token —
+// POST /-/unload without a bearer is 401, with it the gate clears
+// (dead upstream then yields a non-401 proxy error); /healthz and the
+// chat surface stay token-free.
+func TestControlRoutesRequireTokenOnLoopback(t *testing.T) {
+	if d := gateDaemon(); d.needToken {
+		t.Fatal("gateDaemon must model a loopback bind (needToken false)")
+	}
+	d := gateDaemon()
+	ts := httptest.NewServer(d.authed(d.mux()))
+	t.Cleanup(ts.Close)
+
+	// no bearer → 401 with WWW-Authenticate
+	resp, err := http.Post(ts.URL+unloadPath, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("POST /-/unload without bearer = %d, want 401", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") != "Bearer" {
+		t.Errorf("WWW-Authenticate = %q, want Bearer", resp.Header.Get("WWW-Authenticate"))
+	}
+
+	// with the state token → gate clears (not 401)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+unloadPath, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-token")
+	ok, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok.Body.Close()
+	if ok.StatusCode == http.StatusUnauthorized {
+		t.Errorf("POST /-/unload with bearer = 401, want the gate to clear")
+	}
+
+	// healthz: exempt from bearer, still gated
+	hz, err := http.Get(ts.URL + healthzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hz.Body.Close()
+	if hz.StatusCode != http.StatusOK {
+		t.Errorf("/healthz without bearer = %d, want 200", hz.StatusCode)
+	}
+
+	// chat-style loopback request: no bearer, no 401
+	chat, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat.Body.Close()
+	if chat.StatusCode == http.StatusUnauthorized {
+		t.Errorf("loopback chat without bearer = 401, want chat to stay token-free")
+	}
 }
 
 // TestRewriteOOMEnriches: an upstream OOM error gains the levers and
@@ -942,7 +1109,8 @@ func newInitialLoadHarness(t *testing.T, backend *httptest.Server) (*daemon, *by
 			},
 			contenders: func() ([]doctor.Contender, error) { return nil, nil },
 		},
-		conn: Conn{BaseURL: backend.URL},
+		conn:  Conn{BaseURL: backend.URL},
+		token: "harness-token",
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
