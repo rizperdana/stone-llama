@@ -694,7 +694,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if line := setup.ReuseStatus(filepath.Join(config.DataDir(), "runtime")); line != "" {
 		fmt.Fprint(stdout, line)
 	}
-	if !rep.Ready() {
+	if !rep.HasNVIDIA() {
 		return 1
 	}
 	return 0
@@ -736,7 +736,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case err != nil:
 			fmt.Fprintf(stderr, "stone-llama list: estimates unavailable: %v\n", err)
-		case !rep.Ready():
+		case !rep.HasNVIDIA():
 			fmt.Fprintln(stderr, "stone-llama list: estimates unavailable: no ready GPU — run 'stone-llama doctor'")
 		default:
 			estGPU, estVRAM = rep.GPUs[0].Name, rep.GPUs[0].VRAMMiB
@@ -875,7 +875,7 @@ func gpuPreamble(cmd string, stdout, stderr io.Writer) (*config.Config, doctor.R
 		fmt.Fprintf(stderr, "stone-llama %s: %v\n", cmd, err)
 		return nil, doctor.Report{}, false
 	}
-	if !rep.Ready() {
+	if !rep.HasNVIDIA() {
 		fmt.Fprint(stdout, rep.Format())
 		fmt.Fprintf(stderr, "stone-llama %s: needs a working NVIDIA GPU — run 'stone-llama doctor'\n", cmd)
 		return nil, doctor.Report{}, false

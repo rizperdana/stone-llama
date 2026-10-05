@@ -158,7 +158,9 @@ func checkQuant(in Input) Check {
 			Detail: fmt.Sprintf("quant_method %q not exl3 — detected format is unsupported; %s", method, hint)}
 	case gguf && !safetensors:
 		return Check{Name: "quant", Status: StatusRefuse,
-			Detail: "no EXL3 weights — this repo ships GGUF; use ollama with GGUF instead; " + hint}
+			Detail: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, " +
+				"so use ollama with GGUF for now; a llama.cpp 'llama' backend exists for GGUF but is experimental — " +
+				"it has never served a token in this release; " + hint}
 	}
 
 	// Safetensors present, nothing excluded the format: the verdict comes

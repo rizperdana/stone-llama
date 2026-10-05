@@ -24,11 +24,7 @@ type Report struct {
 	Extra string
 	// Note explains a refusal (Extra == "") or warns (e.g. cu12 chosen).
 	Note string
-	// Device is the compute device this machine will target.
-	Device Device
 }
-
-func (r Report) Ready() bool { return r.Extra != "" }
 
 // Device classifies the compute device stone-llama will target.
 type Device struct {
@@ -46,7 +42,7 @@ func Detect() (Device, error) {
 	if err != nil {
 		return Device{}, err
 	}
-	if r.Ready() {
+	if r.HasNVIDIA() {
 		return Device{
 			Kind:      "gpu",
 			Name:      r.GPUs[0].Name,
@@ -144,7 +140,7 @@ func (r Report) Format() string {
 			fmt.Fprintf(&b, "GPU#%d      %s (%d MiB)\n", i+1, g.Name, g.VRAMMiB)
 		}
 	}
-	if r.Ready() {
+	if r.HasNVIDIA() {
 		fmt.Fprintf(&b, "Runtime    %s extra\n", r.Extra)
 		if r.Note != "" {
 			fmt.Fprintf(&b, "Note       %s\n", r.Note)
