@@ -602,6 +602,37 @@ func TestServeSpawnFailureNoState(t *testing.T) {
 	}
 }
 
+// TestServeCreatesModelsDirBeforeSpawn: a fresh state dir has no
+// models/ subdirectory, but the spawned child serves model_dir from
+// its very first request — an absent dir made TabbyAPI's listdir 500
+// GET /v1/models on every new install. Serve must provision the dir
+// before the backend spawns; hermetic (spawn seam, no real child).
+func TestServeCreatesModelsDirBeforeSpawn(t *testing.T) {
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	models := filepath.Join(dataDir, "models") // deliberately never created here
+	var statErr error
+	serr := Serve(context.Background(), Options{
+		Host:      "127.0.0.1",
+		Port:      p,
+		DataDir:   dataDir,
+		ModelsDir: models,
+		spawn: func(string, string, string, int, map[string]string) (*child, error) {
+			_, statErr = os.Stat(models)
+			return nil, errors.New("stop before a real child")
+		},
+	})
+	if serr == nil || !strings.Contains(serr.Error(), "stop before a real child") {
+		t.Fatalf("Serve = %v, want the spawn seam's error propagated", serr)
+	}
+	if statErr != nil {
+		t.Fatalf("models dir absent at spawn time: %v", statErr)
+	}
+}
+
 // TestServeForeignPortHint: a foreign process holding the configured
 // port fails fatally naming the exact --port remedy with a probed-free
 // port (ARCHITECTURE §2 "foreign process → fatal with --port hint").

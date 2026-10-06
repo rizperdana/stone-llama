@@ -518,6 +518,14 @@ func Serve(ctx context.Context, opts Options) error {
 			return berr
 		}
 		d.be = be
+		// A fresh state dir has no models/ yet, but the child serves
+		// model_dir from its very first request (TabbyAPI's listdir 500'd
+		// GET /v1/models on every new install). Provision the dir before
+		// Prepare renders the config that points at it; BackendFor above
+		// already refused a bad backend name without writing anything.
+		if err := os.MkdirAll(opts.ModelsDir, 0o755); err != nil {
+			return fmt.Errorf("create models dir: %w", err)
+		}
 		conn, cfgPath, perr2 := be.Prepare(&opts, port)
 		if perr2 != nil {
 			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
