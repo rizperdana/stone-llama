@@ -623,3 +623,247 @@ func TestOllamaKeepAliveZeroUnloadsStateToken(t *testing.T) {
 	default:
 	}
 }
+
+// reasoningUpstream: a backend answering a thinking model the way the
+// pinned parsers do — the text sits in reasoning_content; content is
+// "" (reason-only) or a proper split (both). Model selects the shape.
+func reasoningUpstream(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sekret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		_ = json.Unmarshal(b, &req)
+		reasonOnly := req.Model == "reason"
+		if req.Stream {
+			fl, _ := w.(http.Flusher)
+			if reasonOnly {
+				io.WriteString(w, `data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"The "}}]}`+"\n\n")
+				io.WriteString(w, `data: {"choices":[{"delta":{"reasoning_content":"answer is 42"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`+"\n\n")
+			} else {
+				io.WriteString(w, `data: {"choices":[{"delta":{"role":"assistant","reasoning_content":"hmm "}}]}`+"\n\n")
+				io.WriteString(w, `data: {"choices":[{"delta":{"content":"42"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`+"\n\n")
+			}
+			io.WriteString(w, "data: [DONE]\n\n")
+			fl.Flush()
+			return
+		}
+		if reasonOnly {
+			io.WriteString(w, `{"id":"c1","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"The answer is 42"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`)
+			return
+		}
+		io.WriteString(w, `{"id":"c1","choices":[{"index":0,"message":{"role":"assistant","content":"42","reasoning_content":"hmm"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}`)
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// Defect 1 (non-stream): a reasoning-capable backend can leave the
+// whole answer in message.reasoning_content with content "" — the shim
+// returned silence. Empty content now falls back to reasoning_content
+// (same mapping as the stream path); non-empty content wins untouched.
+func TestOllamaChatReasoningContentNonStream(t *testing.T) {
+	ts := ollamaTS(t, ollamaDaemon(reasoningUpstream(t).URL, t.TempDir(), t.TempDir()))
+
+	code, body := postOllama(t, ts, "/api/chat",
+		`{"model":"reason","stream":false,"messages":[{"role":"user","content":"q"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	_, got := jsonKeys(t, body)
+	if c, _ := got["message"].(map[string]any)["content"].(string); c != "The answer is 42" {
+		t.Errorf("reason-only content = %q, want the reasoning text, never silence", c)
+	}
+
+	code, body = postOllama(t, ts, "/api/chat",
+		`{"model":"both","stream":false,"messages":[{"role":"user","content":"q"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	_, got = jsonKeys(t, body)
+	if c, _ := got["message"].(map[string]any)["content"].(string); c != "42" {
+		t.Errorf("content = %q, want 42 — the backend's own split stays untouched", c)
+	}
+}
+
+// Defect 1 (stream): reasoning-only deltas must not leave a streamed
+// reply empty — the identical mapping as the non-stream path.
+func TestOllamaChatReasoningContentStream(t *testing.T) {
+	ts := ollamaTS(t, ollamaDaemon(reasoningUpstream(t).URL, t.TempDir(), t.TempDir()))
+
+	code, body := postOllama(t, ts, "/api/chat",
+		`{"model":"reason","messages":[{"role":"user","content":"q"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	var text strings.Builder
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		_, c := jsonKeys(t, []byte(line))
+		if done, _ := c["done"].(bool); done {
+			continue // final chunk carries counts only
+		}
+		text.WriteString(c["message"].(map[string]any)["content"].(string))
+	}
+	if text.String() != "The answer is 42" {
+		t.Errorf("streamed content = %q, want the reasoning text, never silence", text.String())
+	}
+}
+
+// Defect 1 (send side): the thinking flag must ride BOTH pinned shapes —
+// flat enable_thinking (TabbyAPI chat_completion.py:96) and
+// chat_template_kwargs.enable_thinking (llama-server reads only that,
+// server-common.cpp:1074-1088). Absent think sends neither; an effort
+// string still implies thinking on.
+func TestOllamaChatThinkRidesBothShapes(t *testing.T) {
+	up, last := cannedUpstream(t)
+	ts := ollamaTS(t, ollamaDaemon(up.URL, t.TempDir(), t.TempDir()))
+
+	postThink := func(think string) map[string]any {
+		t.Helper()
+		code, body := postOllama(t, ts, "/api/chat",
+			`{"model":"m","stream":false,"think":`+think+`,"messages":[{"role":"user","content":"hi"}]}`)
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", code, body)
+		}
+		var outbound map[string]any
+		if err := json.Unmarshal(last("/v1/chat/completions"), &outbound); err != nil {
+			t.Fatalf("decode outbound: %v", err)
+		}
+		return outbound
+	}
+
+	out := postThink("false")
+	if out["enable_thinking"] != false {
+		t.Errorf("flat enable_thinking = %v, want false (TabbyAPI shape)", out["enable_thinking"])
+	}
+	kw, _ := out["chat_template_kwargs"].(map[string]any)
+	if kw == nil || kw["enable_thinking"] != false {
+		t.Errorf("chat_template_kwargs = %v, want enable_thinking false (llama-server shape)", out["chat_template_kwargs"])
+	}
+
+	out = postThink(`"high"`)
+	if out["enable_thinking"] != true || out["reasoning_effort"] != "high" {
+		t.Errorf("effort: enable_thinking/effort = %v/%v, want true/high", out["enable_thinking"], out["reasoning_effort"])
+	}
+	if kw, _ = out["chat_template_kwargs"].(map[string]any); kw == nil || kw["enable_thinking"] != true {
+		t.Errorf("effort chat_template_kwargs = %v, want enable_thinking true", out["chat_template_kwargs"])
+	}
+
+	// think absent: neither key rides — an ollama client that never asked
+	code, body := postOllama(t, ts, "/api/chat",
+		`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	var outbound map[string]any
+	if err := json.Unmarshal(last("/v1/chat/completions"), &outbound); err != nil {
+		t.Fatalf("decode outbound: %v", err)
+	}
+	for _, key := range []string{"enable_thinking", "chat_template_kwargs"} {
+		if _, present := outbound[key]; present {
+			t.Errorf("think absent must omit %s: %v", key, outbound[key])
+		}
+	}
+}
+
+// Defect 4: streamed chat never asked for usage, so a pinned backend
+// following OpenAI semantics omits the usage chunk and eval_count/
+// prompt_eval_count can never fill on streamed replies. include_usage
+// now rides streamed requests only (TabbyAPI common.py:63; llama-server
+// server-task.cpp:262-263). Live effect: UNVERIFIED-pending-live-test.
+func TestOllamaChatStreamRequestsUsage(t *testing.T) {
+	up, last := cannedUpstream(t)
+	ts := ollamaTS(t, ollamaDaemon(up.URL, t.TempDir(), t.TempDir()))
+
+	code, body := postOllama(t, ts, "/api/chat",
+		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	_, out := jsonKeys(t, last("/v1/chat/completions"))
+	so, _ := out["stream_options"].(map[string]any)
+	if so == nil || so["include_usage"] != true {
+		t.Errorf("streamed outbound stream_options = %v, want include_usage true", out["stream_options"])
+	}
+
+	code, body = postOllama(t, ts, "/api/chat",
+		`{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	_, out = jsonKeys(t, last("/v1/chat/completions"))
+	if _, present := out["stream_options"]; present {
+		t.Errorf("non-stream must not ask for usage: stream_options = %v", out["stream_options"])
+	}
+}
+
+// Defect 2: on the llama backend /api/tags scanned ModelsDir and missed
+// the actually-served GGUF (resolved at spawn, possibly outside
+// ModelsDir) — clients saw an empty list while one model was served.
+// The llama path reports exactly the spawned file; no digest is ever
+// fabricated (file bytes have no manifest digest).
+func TestOllamaTagsLlamaServesSpawnGGUF(t *testing.T) {
+	gguf := filepath.Join(t.TempDir(), "SmolLM3-Q4_K_M.gguf")
+	if err := os.WriteFile(gguf, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ModelsDir holds ONE unrelated store model — a scan would either
+	// miss the served GGUF or report the wrong thing entirely.
+	d := ollamaDaemon("http://127.0.0.1:1", ollamaFixture(t), t.TempDir())
+	d.be = llamaBackend{}
+	d.cfgPath = gguf
+	ts := ollamaTS(t, d)
+
+	resp, err := http.Get(ts.URL + "/api/tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte(`"digest"`)) {
+		t.Errorf("llama tags fabricates a digest: %s", body)
+	}
+	keys, got := jsonKeys(t, body)
+	wantKeys(t, "tags reply", keys, []string{"models"})
+	models := got["models"].([]any)
+	if len(models) != 1 {
+		t.Fatalf("models = %d, want 1 served GGUF (not the store): %s", len(models), body)
+	}
+	m := models[0].(map[string]any)
+	wantKeys(t, "llama tags entry", sortedKeys(m), []string{
+		"details", "model", "modified_at", "name", "size"})
+	if m["name"] != "SmolLM3-Q4_K_M.gguf" || m["model"] != "SmolLM3-Q4_K_M.gguf" {
+		t.Errorf("name/model = %v/%v, want the spawned GGUF", m["name"], m["model"])
+	}
+	if m["size"].(float64) != 9 {
+		t.Errorf("size = %v, want 9 (the served file's bytes)", m["size"])
+	}
+	if details := m["details"].(map[string]any); details["format"] != "gguf" {
+		t.Errorf("details = %v, want format gguf", details)
+	}
+
+	// model-less llama spawn serves nothing → [] (never the store's models)
+	d2 := ollamaDaemon("http://127.0.0.1:1", ollamaFixture(t), t.TempDir())
+	d2.be = llamaBackend{}
+	ts2 := ollamaTS(t, d2)
+	resp2, err := http.Get(ts2.URL + "/api/tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	if !bytes.Contains(body2, []byte(`{"models":[]}`)) {
+		t.Errorf("model-less llama must report [], got %s", body2)
+	}
+}

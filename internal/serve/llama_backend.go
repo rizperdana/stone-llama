@@ -12,8 +12,9 @@ import (
 
 // llamaBackend supervises llama-server (llama.cpp) over GGUF weights.
 // The model is chosen at SPAWN (-m): llama-server cannot hot-swap
-// models, so /-/load and initialLoad never route here (load.go refuses
-// with a clear message instead — no silent TabbyAPI fallback).
+// models, so /-/load refuses a hot-swap with a clear message (no
+// silent TabbyAPI fallback) while initialLoad records the already-
+// spawned model for /-/status (load.go).
 type llamaBackend struct {
 	// deviceBudgetMiB: pre-spawn weights gate, 0 = off. llama-server
 	// has no MiB budget flag (its --fit already caps itself to device

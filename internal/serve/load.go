@@ -130,13 +130,30 @@ func (d *daemon) attachModel() string {
 	return m.ID
 }
 
-// initialLoad loads the `serve <model>` positional through our own /-/load —
-// the exact supervised path `run` uses (autofit, progress, state included).
-// The response is drained to the end so the backend load is never cut short,
-// and the stream is PARSED on the way: a TabbyAPI load failure (OOM,
-// contention) arrives inside a 200 SSE stream with HTTP still 200, so a
-// failure prints once on stderr and the daemon keeps serving.
+// initialLoad loads the `serve <model>` positional. TabbyAPI path: it
+// POSTs our own /-/load — the exact supervised path `run` uses
+// (autofit, progress, state included). The response is drained to the
+// end so the backend load is never cut short, and the stream is PARSED
+// on the way: a TabbyAPI load failure (OOM, contention) arrives inside
+// a 200 SSE stream with HTTP still 200, so a failure prints once on
+// stderr and the daemon keeps serving.
+// llama path: the GGUF is already resident (loaded at spawn with -m)
+// and /-/load refuses hot-swaps by design (409 backend_fixed_model),
+// so this records the served model for /-/status instead of POSTing
+// just to read a refusal whose message tells the user to re-run the
+// command they just ran. A genuinely DIFFERENT model is still refused
+// by /-/load below — on llama that means a restart.
 func (d *daemon) initialLoad(ctx context.Context, model string) {
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		// Model resident at spawn: record it (Ctx 0 / CacheMode ""
+		// are unknown on this path — both are omitempty, never faked).
+		// cfgPath guard: a llama daemon with no resolved GGUF serves
+		// nothing and reports nothing.
+		if model != "" && d.cfgPath != "" {
+			d.markLoaded(model, 0, "")
+		}
+		return
+	}
 	body, _ := json.Marshal(map[string]any{"model": model})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+d.st.Addr()+loadPath, bytes.NewReader(body))

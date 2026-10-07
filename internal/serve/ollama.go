@@ -77,18 +77,27 @@ type ollamaChatRequest struct {
 }
 
 // ollamaChatBody is the outbound OpenAI body: model, messages, stream,
-// max_tokens, temperature, top_p, enable_thinking, plus
-// reasoning_effort for ollama's think effort strings — both reasoning
-// fields exist on the pinned ChatCompletionRequest (f07131c).
+// max_tokens, temperature, top_p, the thinking fields (flat =
+// TabbyAPI's ChatCompletionRequest @ f07131c; chat_template_kwargs =
+// llama-server's template-kwargs path) and, while streaming,
+// stream_options.include_usage so usage counts can come back.
 type ollamaChatBody struct {
-	Model           string          `json:"model"`
-	Messages        []ollamaMessage `json:"messages"`
-	Stream          bool            `json:"stream"`
-	MaxTokens       *int            `json:"max_tokens,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	EnableThinking  *bool           `json:"enable_thinking,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	Model              string          `json:"model"`
+	Messages           []ollamaMessage `json:"messages"`
+	Stream             bool            `json:"stream"`
+	MaxTokens          *int            `json:"max_tokens,omitempty"`
+	Temperature        *float64        `json:"temperature,omitempty"`
+	TopP               *float64        `json:"top_p,omitempty"`
+	EnableThinking     *bool           `json:"enable_thinking,omitempty"`
+	ReasoningEffort    string          `json:"reasoning_effort,omitempty"`
+	ChatTemplateKwargs map[string]any  `json:"chat_template_kwargs,omitempty"`
+	StreamOptions      *streamOptions  `json:"stream_options,omitempty"`
+}
+
+// streamOptions is OpenAI's stream_options block: include_usage asks
+// the backend to append a usage chunk before the [DONE] sentinel.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // openaiUsage is the token-count block both OpenAI routes share.
@@ -97,13 +106,24 @@ type openaiUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 }
 
+// openaiMessage is the upstream OpenAI message/delta — the shared
+// role+content core plus reasoning_content, which reasoning-capable
+// backends emit for thinking models (TabbyAPI's parser splits it out;
+// llama-server's auto reasoning parser routes thinking there, and the
+// whole answer can sit in it when thinking stays on).
+// Decode-only: the ollama reply shape stays role+content.
+type openaiMessage struct {
+	ollamaMessage
+	ReasoningContent string `json:"reasoning_content"`
+}
+
 // openaiChunk consumes both OpenAI reply shapes: chat (message) and
 // completions (text) sit side by side, stream deltas arrive in Delta.
 type openaiChunk struct {
 	Choices []struct {
-		Message      ollamaMessage `json:"message"`
+		Message      openaiMessage `json:"message"`
 		Text         string        `json:"text"`
-		Delta        ollamaMessage `json:"delta"`
+		Delta        openaiMessage `json:"delta"`
 		FinishReason string        `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *openaiUsage `json:"usage"`
@@ -183,11 +203,30 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 		writeOllamaError(w, http.StatusBadRequest, "invalid \"think\": "+err.Error())
 		return
 	}
-	// enable_thinking/reasoning_effort: field types verified on the
-	// pinned ChatCompletionRequest (f07131c); live effect UNVERIFIED
+	// Both pinned shapes carry the thinking bool: the flat field is
+	// TabbyAPI's (endpoints/OAI/types/chat_completion.py:96) and
+	// chat_template_kwargs is llama-server's — it reads enable_thinking
+	// ONLY from chat_template_kwargs (llama.cpp tools/server
+	// server-common.cpp:1074-1088), so sending just the flat field
+	// left thinking at the SmolLM3 template default (on) and the
+	// answer stranded in reasoning_content. TabbyAPI ignores unknown
+	// fields (pydantic default; extra OAI fields are documented as
+	// ignored — endpoints/OAI/types/common.py:72), so the pair is safe
+	// on both pinned backends. Flat field types verified on the pinned
+	// ChatCompletionRequest (f07131c); live effect on TabbyAPI UNVERIFIED
 	// pending a live-backend test (TabbyAPI 5002 down, left down).
 	body.EnableThinking = think
 	body.ReasoningEffort = effort
+	if think != nil {
+		body.ChatTemplateKwargs = map[string]any{"enable_thinking": *think}
+	}
+	// Streamed replies must REQUEST usage or eval_count/
+	// prompt_eval_count can never arrive (both pinned backends read
+	// stream_options.include_usage — endpoints/OAI/types/common.py:63,
+	// llama.cpp tools/server server-task.cpp:262-263).
+	if stream {
+		body.StreamOptions = &streamOptions{IncludeUsage: true}
+	}
 
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -212,6 +251,14 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 		content, reason := "", ""
 		if len(cr.Choices) > 0 {
 			content, reason = cr.Choices[0].Message.Content, cr.Choices[0].FinishReason
+			// An ollama client reads message.content and must never
+			// be handed silence: when the backend split leaves
+			// content empty, the text it did produce sits in
+			// reasoning_content — forward it as content. Non-empty
+			// content is the backend's own answer split; untouched.
+			if content == "" {
+				content = cr.Choices[0].Message.ReasoningContent
+			}
 		}
 		out := ollamaChatResponse{
 			Model:         req.Model,
@@ -382,7 +429,14 @@ func scanOpenAIStream(resp *http.Response, emit func(content string) bool, finis
 					}
 					// chat streams deltas in delta.content,
 					// completions in text — both are content.
+					// A reasoning-only delta still carries the text
+					// the client waits for: same mapping as the
+					// non-stream path — empty content falls back to
+					// reasoning_content, never silence.
 					txt := c.Choices[0].Delta.Content
+					if txt == "" {
+						txt = c.Choices[0].Delta.ReasoningContent
+					}
 					if txt == "" {
 						txt = c.Choices[0].Text
 					}
@@ -445,14 +499,13 @@ func (d *daemon) ollamaKeepAliveUnload(ctx context.Context, raw json.RawMessage)
 // Fields without an honest source are omitted, never faked: no digest
 // (our manifests carry per-file sha256, not a manifest digest), no
 // parameter_size (no honest source in config.json/manifest).
+// TabbyAPI path: the ModelsDir store scan. llama path: exactly the GGUF
+// the daemon spawned with -m — the model it actually serves — because
+// resolveGGUF accepts a path outside ModelsDir, where a scan sees
+// nothing that is running. A model-less llama spawn serves nothing ([]).
 func (d *daemon) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeOllamaError(w, http.StatusMethodNotAllowed, "use GET")
-		return
-	}
-	models, _, err := store.Scan(d.opts.ModelsDir)
-	if err != nil {
-		writeOllamaError(w, http.StatusInternalServerError, "scan models: "+err.Error())
 		return
 	}
 	type tag struct {
@@ -465,12 +518,33 @@ func (d *daemon) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 	out := struct {
 		Models []tag `json:"models"`
 	}{Models: []tag{}}
-	for _, m := range models {
-		t := tag{Model: m.Name, Name: m.Name, Size: m.SizeBytes, Details: ollamaDetails(m)}
-		if fi, err := os.Stat(m.Path); err == nil {
-			t.ModifiedAt = fi.ModTime().UTC().Format(time.RFC3339Nano)
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		if d.cfgPath != "" {
+			fi, err := os.Stat(d.cfgPath)
+			if err != nil {
+				writeOllamaError(w, http.StatusInternalServerError, "stat served gguf: "+err.Error())
+				return
+			}
+			name := filepath.Base(d.cfgPath)
+			out.Models = append(out.Models, tag{
+				Model: name, Name: name, Size: fi.Size(),
+				ModifiedAt: fi.ModTime().UTC().Format(time.RFC3339Nano),
+				Details:    map[string]any{"format": "gguf"},
+			})
 		}
-		out.Models = append(out.Models, t)
+	} else {
+		models, _, err := store.Scan(d.opts.ModelsDir)
+		if err != nil {
+			writeOllamaError(w, http.StatusInternalServerError, "scan models: "+err.Error())
+			return
+		}
+		for _, m := range models {
+			t := tag{Model: m.Name, Name: m.Name, Size: m.SizeBytes, Details: ollamaDetails(m)}
+			if fi, err := os.Stat(m.Path); err == nil {
+				t.ModifiedAt = fi.ModTime().UTC().Format(time.RFC3339Nano)
+			}
+			out.Models = append(out.Models, t)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)

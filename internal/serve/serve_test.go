@@ -1765,3 +1765,52 @@ func TestStartReadyNeverReadyHasNoServePrefix(t *testing.T) {
 		t.Errorf("Serve-returned error carries its own prefix (runServe doubles it): %q", msg)
 	}
 }
+
+// Defect 3: on the llama backend initialLoad POSTed /-/load, which
+// always refuses 409 backend_fixed_model (the GGUF is already resident
+// from spawn -m), so /-/status reported no model while one was served —
+// and the refusal told the user to re-run the command they just ran.
+// initialLoad records the spawn model instead; /-/load keeps refusing a
+// DIFFERENT model (backendwiring_test.go).
+func TestInitialLoadLlamaBackendReportsSpawnModel(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	gguf := filepath.Join(t.TempDir(), "SmolLM3-Q4_K_M.gguf")
+	if err := os.WriteFile(gguf, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.be = llamaBackend{}
+	d.cfgPath = gguf
+	d.opts.Now = time.Now // status handler needs opts.Now for uptime
+
+	d.initialLoad(context.Background(), "SmolLM3-Q4_K_M.gguf")
+
+	if errBuf.Len() != 0 {
+		t.Errorf("initialLoad wrote stderr on the llama path: %q", errBuf.String())
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://"+d.st.Addr()+"/-/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/-/status = %d: %s", resp.StatusCode, b)
+	}
+	var st Status
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatalf("decode /-/status: %v", err)
+	}
+	if st.Model != "SmolLM3-Q4_K_M.gguf" {
+		t.Errorf("status model = %q, want the spawn model the llama backend already serves", st.Model)
+	}
+}
