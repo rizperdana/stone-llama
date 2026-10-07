@@ -406,9 +406,25 @@ func (d *daemon) ollamaUpstream(w http.ResponseWriter, r *http.Request, path str
 // content delta (false = client gone, stop), finish runs exactly once
 // at the end with the accumulated finish reason and usage. The
 // [DONE] sentinel is consumed here, never forwarded.
+//
+// Reasoning rule (matches the non-stream path): real content wins.
+// reasoning_content deltas are HELD BACK — never interleaved into a
+// live answer, because an ollama client wants the answer, not the
+// scratchpad (the non-stream path returns the split answer's content,
+// never the reasoning, when both exist). Held reasoning is flushed as
+// content only if the stream ends having seen no content at all: the
+// never-silence guarantee — a model that runs out of budget
+// mid-reasoning, or a backend that emits only reasoning, still
+// delivers its text. Latency trade-off, deliberately accepted: on
+// reasoning-then-answer streams the client sees its first output at
+// the first content delta instead of at the first reasoning delta —
+// right-but-later beats wrong-but-early; the reasoning-only case
+// pays nothing beyond the stream's own end.
 func scanOpenAIStream(resp *http.Response, emit func(content string) bool, finish func(finishReason string, usage *openaiUsage)) {
 	var reason string
 	var usage *openaiUsage
+	var reasoning strings.Builder
+	sawContent := false
 	br := bufio.NewReader(resp.Body)
 	for {
 		line, err := br.ReadString('\n')
@@ -427,21 +443,22 @@ func scanOpenAIStream(resp *http.Response, emit func(content string) bool, finis
 					if c.Choices[0].FinishReason != "" {
 						reason = c.Choices[0].FinishReason
 					}
-					// chat streams deltas in delta.content,
-					// completions in text — both are content.
-					// A reasoning-only delta still carries the text
-					// the client waits for: same mapping as the
-					// non-stream path — empty content falls back to
-					// reasoning_content, never silence.
-					txt := c.Choices[0].Delta.Content
-					if txt == "" {
-						txt = c.Choices[0].Delta.ReasoningContent
-					}
-					if txt == "" {
-						txt = c.Choices[0].Text
-					}
-					if txt != "" && !emit(txt) {
-						return
+					// content wins outright (a mixed delta is the
+					// answer — its reasoning half is dropped, the
+					// rule above), else hold reasoning, else
+					// completions' text.
+					if txt := c.Choices[0].Delta.Content; txt != "" {
+						sawContent = true
+						if !emit(txt) {
+							return
+						}
+					} else if txt := c.Choices[0].Delta.ReasoningContent; txt != "" {
+						reasoning.WriteString(txt)
+					} else if txt := c.Choices[0].Text; txt != "" {
+						sawContent = true
+						if !emit(txt) {
+							return
+						}
 					}
 				}
 			}
@@ -449,6 +466,9 @@ func scanOpenAIStream(resp *http.Response, emit func(content string) bool, finis
 		if err != nil { // EOF without [DONE]: finish with what arrived
 			break
 		}
+	}
+	if !sawContent && reasoning.Len() > 0 && !emit(reasoning.String()) {
+		return
 	}
 	finish(reason, usage)
 }

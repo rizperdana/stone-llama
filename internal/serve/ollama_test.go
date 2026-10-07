@@ -867,3 +867,80 @@ func TestOllamaTagsLlamaServesSpawnGGUF(t *testing.T) {
 		t.Errorf("model-less llama must report [], got %s", body2)
 	}
 }
+
+// TestOllamaChatStreamReasoningHeldBack pins the stream rule to the
+// non-stream semantics: content wins and reasoning is held back (never
+// interleaved into a live answer), flushed only when no content ever
+// arrived — so an ollama client gets the answer, and never silence.
+func TestOllamaChatStreamReasoningHeldBack(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		_ = json.Unmarshal(b, &req)
+		fl, _ := w.(http.Flusher)
+		line := func(s string) { io.WriteString(w, "data: "+s+"\n\n") }
+		usage := `,"usage":{"prompt_tokens":11,"completion_tokens":7}}`
+		switch req.Model {
+		case "split": // (a) reasoning first, answer after
+			line(`{"choices":[{"delta":{"reasoning_content":"Let me think. "}}]}`)
+			line(`{"choices":[{"delta":{"reasoning_content":"hmm. "}}]}`)
+			line(`{"choices":[{"delta":{"content":"STONE LLAMA OK"},"finish_reason":"stop"}]` + usage)
+		case "only": // (b) never a content answer — never-silence holds
+			line(`{"choices":[{"delta":{"reasoning_content":"The "}}]}`)
+			line(`{"choices":[{"delta":{"reasoning_content":"answer is 42"},"finish_reason":"stop"}]` + usage)
+		case "content": // (c) plain answer, no reasoning anywhere
+			line(`{"choices":[{"delta":{"content":"Hi "}}]}`)
+			line(`{"choices":[{"delta":{"content":"there"},"finish_reason":"stop"}]` + usage)
+		case "mixed": // (d) both fields in ONE delta
+			line(`{"choices":[{"delta":{"content":"42","reasoning_content":"scratchpad"},"finish_reason":"stop"}]` + usage)
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	up := httptest.NewServer(mux)
+	t.Cleanup(up.Close)
+
+	contents := func(t *testing.T, model string) ([]string, string) {
+		t.Helper()
+		ts := ollamaTS(t, ollamaDaemon(up.URL, t.TempDir(), t.TempDir()))
+		code, body := postOllama(t, ts, "/api/chat",
+			`{"model":"`+model+`","messages":[{"role":"user","content":"q"}]}`)
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", code, body)
+		}
+		var out []string
+		for _, ln := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+			_, c := jsonKeys(t, []byte(ln))
+			if done, _ := c["done"].(bool); done {
+				continue
+			}
+			out = append(out, c["message"].(map[string]any)["content"].(string))
+		}
+		return out, string(body)
+	}
+
+	// (a) reasoning-then-answer: the answer only, reasoning withheld
+	got, raw := contents(t, "split")
+	if len(got) != 1 || got[0] != "STONE LLAMA OK" {
+		t.Errorf("split chunks = %q, want exactly [STONE LLAMA OK]; raw = %q", got, raw)
+	}
+	// (b) reasoning-only: still text — the D1 guarantee, now via flush
+	got, raw = contents(t, "only")
+	if joined := strings.Join(got, ""); joined != "The answer is 42" {
+		t.Errorf("only chunks = %q, want the reasoning text (never silence); raw = %q", joined, raw)
+	}
+	// (c) content-only: untouched, delivered live per delta
+	got, raw = contents(t, "content")
+	if len(got) != 2 || got[0] != "Hi " || got[1] != "there" {
+		t.Errorf("content chunks = %q, want [Hi  there] split as sent; raw = %q", got, raw)
+	}
+	// (d) both fields in one delta: content wins, scratchpad dropped
+	got, raw = contents(t, "mixed")
+	if len(got) != 1 || got[0] != "42" || strings.Contains(strings.Join(got, ""), "scratchpad") {
+		t.Errorf("mixed chunks = %q, want exactly [42]; raw = %q", got, raw)
+	}
+}
