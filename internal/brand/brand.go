@@ -8,11 +8,11 @@ import (
 )
 
 // icon.png is a byte-identical copy of assets/stone-llama-256.png
-// (sha256 prefix b7deb60f16640c52; the docs worker owns assets/, so
+// (sha256 prefix 951e8a1eaed4f217; the docs worker owns assets/, so
 // the embed target lives here). The banner never rasterises the PNG —
 // only its length is printed — so the 256×256 asset is embedded, not
-// the 2048×2048 one: 91,972 B instead of 1,254,528 B in the binary
-// (−1,162,556 B, measured 2026-09-26).
+// the 2048×2048 one: 78,985 B instead of 1,132,469 B in the binary
+// (−1,053,484 B, measured 2026-10-09).
 //
 //go:embed icon.png
 var iconPNG []byte

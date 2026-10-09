@@ -124,7 +124,7 @@ scalars", so no YAML library is involved either.
 `pull` phase 0 fetches **metadata only**: repo tree, `config.json`, `quantization_config.json` (KBs), plus the safetensors headers behind the format check — at most 4 files, one ranged `GET` each, `header_size` validated and capped at 4 MiB before anything is allocated (≤ ~16 MiB worst case per repo), bodies closed as soon as the header is parsed; a header that cannot be read (gated, missing, oversize, transport error) is **warn / "unverified"**, never a silent pass and never a refusal for failing to look. Then three checks, in order:
 
 1. **Architecture support.** `config.architectures[]` checked against a list **embedded in the binary**, sourced from `internal/preflight/archlist.go` (verified against installed `architecture/*.py` + upstream README). Verified strings include: `Qwen2ForCausalLM`, `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM`, `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration`, `Qwen3NextForCausalLM`, `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`, `Qwen4ExpForCausalLM`, `LlamaForCausalLM`, `Gemma2ForCausalLM`, `Gemma3ForCausalLM`, `Gemma3ForConditionalGeneration`, `Gemma4ForConditionalGeneration` (E2B/E4B variants unsupported), `Phi3ForCausalLM`, `MistralForCausalLM`, `Mistral3ForConditionalGeneration`, `MixtralForCausalLM`, `DeepseekV3ForCausalLM`, `Glm4ForCausalLM`, `Glm4MoeForCausalLM`, `Glm4MoeLiteForCausalLM`, `GlmMoeDsaForCausalLM`, `GptOssForCausalLM`, `CohereForCausalLM`, `Cohere2ForCausalLM`, `Olmo3ForCausalLM`, `OlmoHybridForCausalLM`, `SmolLM3ForCausalLM`, `Lfm2ForCausalLM`, `Lfm2MoeForCausalLM`, `HYV3ForCausalLM`, `Step3p5ForCausalLM`, `SeedOssForCausalLM`, `SolarOpenForCausalLM`, `IQuestCoderForCausalLM`, `KimiLinearForCausalLM`, `HyperCLOVAXForCausalLM`, `LagunaForCausalLM`, `MiniMaxM2ForCausalLM`, `MuseGlimmerForCausalLM`, `ArceeForCausalLM`, `ApertusForCausalLM`, `Exaone4ForCausalLM`, `Dots1ForCausalLM`, `Ernie4_5_MoeForCausalLM`, `ArceeForCausalLM`. **Unknown arch → warn with the exact string + confirm on TTY (`--yes` to proceed), never silent.** The list is a snapshot that drifts with exllamav3 releases; warn-not-refuse means an incomplete list degrades to warnings, not false refusals (G13).
-2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so use ollama with GGUF for now; a llama.cpp 'llama' backend exists for GGUF but is experimental — it has never served a token in this release." Missing/ambiguous metadata → warn + confirm; a header that cannot be read → warn / "unverified" (never a refusal for failing to look). Converts a 2 GB mistake into a KB-plus-headers check: KB of config, ≤ ~16 MiB of headers worst case per repo.
+2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so use ollama with GGUF for now; a llama.cpp 'llama' backend (`--backend llama`) serves GGUF and is verified and benchmarked in this release (median 55.43 tok/s, ~20% faster than the EXL3 path on the same GGUF); the default backend still loads EXL3 only, so a GGUF-only repo still refuses here." Missing/ambiguous metadata → warn + confirm; a header that cannot be read → warn / "unverified" (never a refusal for failing to look). Converts a 2 GB mistake into a KB-plus-headers check: KB of config, ≤ ~16 MiB of headers worst case per repo.
 3. **Fit projection.** Run §5 autofit against the fetching machine's GPU (VRAM from `nvidia-smi`): print `weights + KV(ctx) + overhead + headroom vs available`, then **proceed** / **proceed-with-warning** / **refuse** (with the numbers and *the largest ctx that would fit*). `min_vram` rule (§8) wired into `pull`, not just `doctor`.
 
 Verdict recorded in `manifest.json`; `list` shows it. **Residual risk:** G13.
@@ -329,18 +329,24 @@ incarnation. `BackendFor` resolves the name — `""`/`tabby` → `tabbyBackend`
 probing, the child lifecycle, supervision and shutdown stay engine-agnostic, and
 both `Spawn`s delegate to one `startProcess`.
 
-**llama backend status: partially verified.** The GGUF weights and the
-`llama-server` binary are on this machine (the path has run end-to-end once);
-everything below is otherwise proven against the pinned backend sources and
-unit tests — a post-fix live run is still UNVERIFIED. Two structural limits are
-implemented, not guessed: the model is fixed at spawn (`-m`), so `/-/load`
-refuses **409** `backend_fixed_model` on this backend instead of falling back to
-TabbyAPI, while `serve <model>`'s INITIAL load does not POST `/-/load` at all —
-the model is already resident from spawn, so `initialLoad` records it for
-`/-/status` instead of provoking the refusal; and `backend_device_budget_mib`
-is our own arithmetic over the GGUF file size — weights only, KV cache and
-runtime overhead excluded, so it is a floor on the weights, not the engine's
-memory use.
+**llama backend status: verified and benchmarked.** The full path runs end-to-end on
+this machine: HEAD `40e9ba7`+`b06dc8f` passes E2E on all shapes — content streaming and
+non-streaming, `/api/tags`, initial load, auth **401**/200, and hot-swap **409**
+`backend_fixed_model` refusal. Full benchmark (194 prompts × 2 conditions × 3 reps,
+n=1164/arm, artifacts in `/home/anon/ai/bench/llama-full/`): **A_llama median 55.43 tok/s
+/ 18.04 ms/token** vs the EXL3 incumbent 44.34 → **WINS +20%** (388/0/0, LEVER WINS
+−20.20/−20.14/−19.50%); vs ollama on the **same GGUF** (56.47 tok/s) → **loses
+1.40–3.52%**, inside the 1.5% noise floor. The same-GGUF comparison is clean; the EXL3
+comparison is product-level (different weight formats, different serving stack). Measured
+on an RTX 3050 Laptop 4 GB with full offload. It is still selected explicitly via
+`--backend llama` (default remains TabbyAPI). Two structural limits are implemented, not
+guessed: the model is fixed at spawn (`-m`), so `/-/load` refuses **409**
+`backend_fixed_model` on this backend instead of falling back to TabbyAPI, while
+`serve <model>`'s INITIAL load does not POST `/-/load` at all — the model is already
+resident from spawn, so `initialLoad` records it for `/-/status` instead of provoking the
+refusal; and `backend_device_budget_mib` is our own arithmetic over the GGUF file size —
+weights only, KV cache and runtime overhead excluded, so it is a floor on the weights,
+not the engine's memory use.
 
 **Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `STONE_LLAMA_BACKEND`, `HF_TOKEN`.
 
@@ -352,7 +358,18 @@ memory use.
 
 **What the shim refuses to invent.** Durations not observable through the OpenAI surface (`load_duration`, `prompt_eval_duration`, `eval_duration`) are sent as `0`; `total_duration` is the request time we actually measured. `prompt_eval_count`/`eval_count` appear only when the upstream sends usage — streamed chat now requests that usage via `stream_options.include_usage` (field types verified on both pinned backends; live effect **UNVERIFIED-pending-live-test**), non-stream requests never ask. Fields without a real on-disk source are omitted, never fabricated: `/api/tags` carries no `digest`, and `details` reports only what the disk shows — on TabbyAPI the model directory (`family` from `config.json`'s `model_type`, `format` `safetensors`, `quantization_level` from the manifest), on the llama backend the served GGUF file (`format` `gguf`) — `parameter_size` stays out. `/api/show` answers `details`, a limited verbatim `model_info` subset, and `template` only when a template file exists on disk; `modelfile`, `parameters`, `license` and friends are omitted. `done_reason` is `length` or `stop` — nothing else is claimed. **Unverified:** the `/v1/completions` call on the generate route, the `stream_options.include_usage` usage request, and the `enable_thinking`/`reasoning_effort` fields were never exercised against a live backend (TabbyAPI 5002 is down and stays down); their routes/types are verified against the pinned source tree and unit tests only, not proven live.
 
-**Drafting + engine env.** Speculative drafting is configured via the boot `config.yml` `draft_model` block (`autofit.draft_mode` / `ngram_match_min` / `draft_num_tokens` in config.json; `serve --draft-mode ngram|off` overrides the mode). Default is **off**: no block is rendered at all, and `draft_model_dir` never renders (no draft weights ship). The block is daemon-level — it rides child start, not `/-/load`. Its effect is **unmeasured**: no A/B has been run, so no speedup is claimed. `run --draft-mode` parses and validates the value only — it cannot reach an already-running daemon and therefore has no effect. Config `engine_env` (a `map[string]string`) is extra environment for the supervised child: the parent environment is preserved (`PATH`/venv discovery unaffected) and config entries append last, so they win over a same-named parent variable.
+**Drafting + engine env.** Speculative drafting is configured via the boot `config.yml`
+`draft_model` block (`autofit.draft_mode` / `ngram_match_min` / `draft_num_tokens` in
+config.json; `serve --draft-mode ngram|off` overrides the mode). Default is **off**: no
+block is rendered at all, and `draft_model_dir` never renders (no draft weights ship). The
+block is daemon-level — it rides child start, not `/-/load`. A/B run 2026-10-07
+(n=1164/arm, 3 reps, applied-proofs captured) measured **INCONCLUSIVE — within the 1.5%
+noise floor (0.00% overall delta, no regressions in any rep)**, so it stays off and no
+speedup is claimed. `run --draft-mode` parses and validates the value only — it cannot
+reach an already-running daemon and therefore has no effect. Config `engine_env`
+(a `map[string]string`) is extra environment for the supervised child: the parent
+environment is preserved (`PATH`/venv discovery unaffected) and config entries append last,
+so they win over a same-named parent variable.
 
 ## 8. Platform reality + hard limits (approved Q5/Q8)
 

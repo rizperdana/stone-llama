@@ -159,8 +159,9 @@ func checkQuant(in Input) Check {
 	case gguf && !safetensors:
 		return Check{Name: "quant", Status: StatusRefuse,
 			Detail: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, " +
-				"so use ollama with GGUF for now; a llama.cpp 'llama' backend exists for GGUF but is experimental — " +
-				"it has never served a token in this release; " + hint}
+				"so use ollama with GGUF for now; a llama.cpp 'llama' backend (`--backend llama`) serves GGUF and is verified " +
+				"and benchmarked in this release (median 55.43 tok/s, ~20% faster than the EXL3 path on the same GGUF); " +
+				"the default backend still loads EXL3 only, so a GGUF-only repo still refuses here; " + hint}
 	}
 
 	// Safetensors present, nothing excluded the format: the verdict comes

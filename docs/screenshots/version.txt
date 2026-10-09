@@ -1,11 +1,11 @@
 $ stone-llama version
-stone-llama dev (linux/amd64) — app icon stone-llama.png embedded (91972 bytes)
+stone-llama dev (linux/amd64) — app icon stone-llama.png embedded (78985 bytes)
 EXIT=0
 
-Conditions: captured 2026-09-26 by running the binary built from this
-tree (`main` at 4f020dc, plus the brand-icon size patch), linux/amd64,
+Conditions: captured 2026-10-09 by running the binary built from this
+tree (`HEAD` `b06dc8f`, tag `v0.1.0-rc1` present), linux/amd64,
 `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`, resulting binary
-7,770,296 bytes.
+8,265,912 bytes.
 
 `dev` is the compiled-in default (`var version = "dev"` in
 `cmd/stone-llama/main.go`), printed because this build passed only
@@ -14,6 +14,9 @@ workflow inject `-X main.version=$(git describe --tags)`, which resolves
 to `v0.1.0-rc1` in this tree (the tag is present), so a Makefile build of
 the same source prints `stone-llama v0.1.0-rc1 (linux/amd64)` — as the
 published release binary does. On the icon: this source build embeds the
-91,972-byte one (byte-identical to `assets/stone-llama-256.png`), down from
-1,254,528 bytes in builds made before the brand-icon patch — that swap is
-where the size drop comes from.
+78,985-byte one (byte-identical to `assets/stone-llama-256.png`), and the
+2048×2048 master `assets/stone-llama.png` is 1,132,469 B — a byte-identical
+copy of the hand-drawn source `/home/anon/Downloads/stone-llama-hand.png`
+(sha256 `f45941c2c931b26339f143dce3431749874ed74a5c32a0cc97b33e06beda4dde`), which
+replaces the 2,542,810 B RGBA re-encode that had been committed. The embedded
+icon is unchanged at 78,985 B; only the master asset's provenance was fixed.

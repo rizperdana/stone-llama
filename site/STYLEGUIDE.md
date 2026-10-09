@@ -7,14 +7,17 @@ Variable names below are the literal custom-property names.
 
 ## 1. Design principles
 
-**Engineering-honest spec-sheet, not a SaaS landing page.** The page's identity
+**Minimalist handdrawn paper, not a SaaS landing page.** The page's identity
 is real terminal output plus tabular, monospaced fact — the same voice as the
-CLI. **The visual identity must not read as AI-generated**: no gradients,
-blobs, glows, glassmorphism, drop-shadow depth, emoji, decorative animation, or
-feature-card grids with icons; no superlatives or invented numbers in copy
-either. Every element earns its place: if a block repeats its neighbour,
-merge or delete it. One accent colour; status colours exist only to carry
-honesty signals (`✓/⚠/✗`, `[est]`), never decoration.
+CLI — drawn as if sketched onto paper: 2px pencil borders, deliberately
+uneven corner radii, hard offset marker shadows, wavy marker underlines
+beneath display headings, generous whitespace. **The visual identity must not
+read as AI-generated**: no gradients, blobs, glows, glassmorphism, blur
+depth, emoji, decorative animation, or feature-card grids with icons; no
+superlatives or invented numbers in copy either. Every element earns its
+place: if a block repeats its neighbour, merge or delete it. One ink colour;
+one teal marker accent; status colours exist only to carry honesty signals
+(`✓/⚠/✗`, `[est]`), never decoration.
 
 The page is a scan, not an essay: one claim per block, tables are ✓/✗
 matrices with a two- or three-word row label, and every section links to the
@@ -25,10 +28,10 @@ or its neighbour, delete it — depth lives in `README.md` and `docs/`.
 
 ### 2.1 Colour
 
-Dark is the default (`:root`); light is applied by `html[data-theme="light"]`
-and, without JS, by `@media (prefers-color-scheme: light)` on
-`:root:not([data-theme])`. Terminal captures use a **fixed dark palette in both
-themes** — they are verbatim output from a dark terminal.
+Light (paper) is the default (`:root`); night is applied by
+`html[data-theme="dark"]` and, without JS, by `@media (prefers-color-scheme:
+dark)` on `:root:not([data-theme])`. Terminal captures use a **fixed dark
+palette in both themes** — they are verbatim output from a dark terminal.
 
 Ratios are WCAG 2.1 (sRGB relative luminance, alpha composited over backdrop),
 measured 2026-09-26. Floor: **4.5:1 text, 3:1 control boundaries/focus.**
@@ -52,6 +55,7 @@ state conveyed) are exempt from 1.4.11 and listed for transparency.
 | `--line` | `#232b31` | `#d5d0c4` | decorative hairline | 1.33 / 1.40 *(exempt)* |
 | `--line-strong` | `#606a71` | `#8a867a` | control borders (on `--bg-raise`: 3.26 / 3.08) | 3.45 / 3.31 |
 | `--row-tint` | `color-mix(#4cc3d6 12%, #12171b)` | `color-mix(#0d6b70 9%, #efece4)` | tinted rows (worst text on tint: `--muted` = 5.63 / 4.52) | — |
+| `--drop` | `rgba(0,0,0,0.6)` | `rgba(25,22,16,0.16)` | offset marker shadow (0 blur) | — |
 
 Terminal (both themes, `:root`): `--term-bg #070b0e`, `--term-bar #0e1418`,
 `--term-line #1c262d` *(decorative, 1.28)*, `--term-fg #cfd8dc` (13.65),
@@ -114,18 +118,28 @@ never raw px, for anything vertical.
 
 ### 2.4 Radii, borders, depth
 
-- `--r-sm` 4px: buttons, code, tags, toggle, install strip.
-- `--r-md` 8px: terminal blocks, callouts, table wraps.
-- Borders: 1px `--line` (structure) / 1px `--line-strong` (anything you click
-  or that can focus). Two widths only: 1px, plus the caveat's 3px `--warn`
-  left rule (the single deliberate accent rule on the page).
-- **No box-shadows. No gradients. Depth = surface change** (`--bg` →
-  `--bg-raise` → `--panel`) + a hairline.
+- `--r-sk` (e.g. `8px 4px 9px 5px / 5px 9px 4px 8px`): controls, chips,
+  code, tags, toggle — uneven on purpose, no two corners alike.
+- `--r-sk-lg` (e.g. `14px 6px 16px 8px / 8px 16px 6px 14px`): boxes —
+  terminal blocks, callouts, table wraps, install strip, stat card.
+- Borders: `--bw` (2px) `--line` (structure rules) / `--line-strong`
+  (anything you click or that can focus), plus the caveat's 4px `--warn`
+  left rule (the single deliberate accent rule on the page). Table row
+  separators stay 1px `--line`.
+- **Depth = hard offset marker shadow** `box-shadow: Npx Npx 0 var(--drop)`
+  (N = 3–5) on boxes and buttons — no blur, no gradients. Surface change
+  (`--bg` → `--bg-raise` → `--panel`) still carries the ground.
+- **Display headings (`h1`, `h2`) carry a wavy marker underline**:
+  `text-decoration-style: wavy` in `--accent`, 3px, offset 10px. Links use
+  the same wavy stroke at 1.5px.
 
 ### 2.5 Motion
 
 `--dur: 0.15s`, `ease`, and only on colour/border/background of interactive
-elements. Nothing animates on scroll or load; no transforms, no parallax.
+elements. Nothing animates on scroll or load; no parallax. The only
+transform in the system is the static sticker tilt on `.hero-mark`
+(`rotate(-1.5deg)`) and the button hover press (`translate(2px, 2px)` with
+the shadow contracting to 1px — the sketch lifting into the paper).
 `@media (prefers-reduced-motion: reduce)` zeroes all transitions globally
 (including smooth scrolling, which is otherwise gated behind
 `prefers-reduced-motion: no-preference`). Adding a keyframe animation requires
@@ -159,7 +173,7 @@ stone-llama loss, never put an `.est`/`?` marker inside a tinted cell (light
 `--est` on `--row-tint` measures 4.35:1), never add per-cell footnote links —
 the single sources line carries provenance.
 
-**Feature item (`.feature`)** — top hairline `--line-strong` + `h3` + prose.
+**Feature item (`.feature`)** — top rule 2px `--line-strong` + `h3` + prose.
 Use for the two mechanisms. What not to do: no card background, no icon, no
 shadow, no more than one row of these per section.
 
@@ -172,7 +186,7 @@ or a "good news" variant — good news is plain prose.
 uppercase mono, for verdicts only (`fits`, `fits-tight`). What not to do: no
 filled backgrounds, no new variants beyond these two.
 
-**Nav/header (`.site-head`)** — sticky, solid `--bg`, hairline bottom, no
+**Nav/header (`.site-head`)** — sticky, solid `--bg`, 2px bottom rule, no
 blur/transparency; nav is muted links, which become a horizontally scrollable
 strip below 860px (the section TOC never simply vanishes). What not to do: no
 mega-menu, no animated underline, no second CTA in the header.
@@ -185,7 +199,8 @@ phone. The wrapper still scrolls (`overflow-x:auto`, `role="region"`,
 survives; keep any first-cell background rules in sync when tinting rows.
 
 **Buttons (`.btn`, `.btn-primary`/`.btn-ghost`)** — one primary per screen
-(View on GitHub), ghost for the rest; `--r-sm`, no transform on hover.
+(View on GitHub), ghost for the rest; `--r-sk`, 4px offset shadow, hover
+press (`translate(2px,2px)` + 1px shadow).
 Copy button and theme toggle are JS-only (`html.js`) and hidden otherwise.
 
 **Footer (`.site-foot`)** — raised surface, three columns collapsing to one;
@@ -229,8 +244,10 @@ repeating the nav verbatim.
 - **Focus**: `:focus-visible` = 2px `--accent` outline, 2px offset, never
   removed; skip link (`.skip`) is the first focusable element and jumps to
   `#main`.
-- **Images**: meaningful images get `alt` (the hero-adjacent icons are
-  decorative next to their text label → `alt=""`).
+- **Images**: meaningful images get `alt`; the site logo (handdrawn mark on
+  a paper ground, no alpha) is decorative next to its text label → `alt=""`,
+  and always sits inside the sketched frame (`.hero-mark`, `.brand img`,
+  `.foot-brand img`) so its paper square reads as a sticker on any theme.
 - **Controls**: every `<button>` has visible text or `aria-label`; the install
   strip is a labelled `role="group"`; copy button text swaps ("copied") as
   feedback.
