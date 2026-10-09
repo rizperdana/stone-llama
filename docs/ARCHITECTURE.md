@@ -88,7 +88,7 @@ scalars", so no YAML library is involved either.
 
 **Ports:** public **5111** (avoids well-known local-AI ports: 11434/Ollama, 5000–5002/TabbyAPI). Occupied → health-probe: stone-llama answers → reuse (idempotent auto-start); foreign process → fatal with `--port` hint. TabbyAPI's internal port: **always bind `:0`**, write into generated config — never conflicts. Proxy hides it.
 
-**Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; contract test (§10) against the pin gates any pin bump. Never fork (Q11).
+**Upstream changes:** pin `f07131c` in embedded `runtime.lock.json`; §10.5's contract test against the pin is **planned, not in the tree** (no `go:build integration` file), so a pin bump is reviewed by hand and rides a release. Never fork (Q11).
 
 **Lifecycle:** `serve` = foreground daemon (it *is* the daemon). `run` auto-starts a detached daemon if none is reachable (re-exec self, `setsid`, log → `logs/daemon.log`, state → `daemon.json` 0600), unless `STONE_LLAMA_NO_AUTOSTART=1` (then it reports + remedies instead). `ps` observes only — read-only, never spawns or deletes state; `stop` controls only — clean shutdown. Singleton guard: **flock** on `data_dir/stone-llama.lock` around daemon spawn and downloads (A7; primitive lands with its first consumer in M2, daemon-spawn usage in M5).
 
@@ -124,7 +124,7 @@ scalars", so no YAML library is involved either.
 `pull` phase 0 fetches **metadata only**: repo tree, `config.json`, `quantization_config.json` (KBs), plus the safetensors headers behind the format check — at most 4 files, one ranged `GET` each, `header_size` validated and capped at 4 MiB before anything is allocated (≤ ~16 MiB worst case per repo), bodies closed as soon as the header is parsed; a header that cannot be read (gated, missing, oversize, transport error) is **warn / "unverified"**, never a silent pass and never a refusal for failing to look. Then three checks, in order:
 
 1. **Architecture support.** `config.architectures[]` checked against a list **embedded in the binary**, sourced from `internal/preflight/archlist.go` (verified against installed `architecture/*.py` + upstream README). Verified strings include: `Qwen2ForCausalLM`, `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM`, `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration`, `Qwen3NextForCausalLM`, `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`, `Qwen4ExpForCausalLM`, `LlamaForCausalLM`, `Gemma2ForCausalLM`, `Gemma3ForCausalLM`, `Gemma3ForConditionalGeneration`, `Gemma4ForConditionalGeneration` (E2B/E4B variants unsupported), `Phi3ForCausalLM`, `MistralForCausalLM`, `Mistral3ForConditionalGeneration`, `MixtralForCausalLM`, `DeepseekV3ForCausalLM`, `Glm4ForCausalLM`, `Glm4MoeForCausalLM`, `Glm4MoeLiteForCausalLM`, `GlmMoeDsaForCausalLM`, `GptOssForCausalLM`, `CohereForCausalLM`, `Cohere2ForCausalLM`, `Olmo3ForCausalLM`, `OlmoHybridForCausalLM`, `SmolLM3ForCausalLM`, `Lfm2ForCausalLM`, `Lfm2MoeForCausalLM`, `HYV3ForCausalLM`, `Step3p5ForCausalLM`, `SeedOssForCausalLM`, `SolarOpenForCausalLM`, `IQuestCoderForCausalLM`, `KimiLinearForCausalLM`, `HyperCLOVAXForCausalLM`, `LagunaForCausalLM`, `MiniMaxM2ForCausalLM`, `MuseGlimmerForCausalLM`, `ArceeForCausalLM`, `ApertusForCausalLM`, `Exaone4ForCausalLM`, `Dots1ForCausalLM`, `Ernie4_5_MoeForCausalLM`, `ArceeForCausalLM`. **Unknown arch → warn with the exact string + confirm on TTY (`--yes` to proceed), never silent.** The list is a snapshot that drifts with exllamav3 releases; warn-not-refuse means an incomplete list degrades to warnings, not false refusals (G13).
-2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 quant here — use ollama with GGUF." Missing/ambiguous metadata → warn + confirm; a header that cannot be read → warn / "unverified" (never a refusal for failing to look). Converts a 2 GB mistake into a KB-plus-headers check: KB of config, ≤ ~16 MiB of headers worst case per repo.
+2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so use ollama with GGUF for now; a llama.cpp 'llama' backend (`--backend llama`) serves GGUF and is verified and benchmarked in this release (median 55.43 tok/s, ~20% faster than the EXL3 path on the same GGUF); the default backend still loads EXL3 only, so a GGUF-only repo still refuses here." Missing/ambiguous metadata → warn + confirm; a header that cannot be read → warn / "unverified" (never a refusal for failing to look). Converts a 2 GB mistake into a KB-plus-headers check: KB of config, ≤ ~16 MiB of headers worst case per repo.
 3. **Fit projection.** Run §5 autofit against the fetching machine's GPU (VRAM from `nvidia-smi`): print `weights + KV(ctx) + overhead + headroom vs available`, then **proceed** / **proceed-with-warning** / **refuse** (with the numbers and *the largest ctx that would fit*). `min_vram` rule (§8) wired into `pull`, not just `doctor`.
 
 Verdict recorded in `manifest.json`; `list` shows it. **Residual risk:** G13.
@@ -311,15 +311,65 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
   "host": "127.0.0.1",
   "port": 5111,
   "autofit": { "enabled": true, "headroom_mib": 512, "overhead_mib": 128, "min_ctx": 4096 },
-  "runtime_dir": ""
+  "runtime_dir": "",
+  "engine_env": { "CUDA_MODULE_LOADING": "LAZY" },
+  "backend": "tabby",
+  "backend_device_budget_mib": 0
 }
 ```
 
-**Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
+**Backend selection.** `Backend` (`internal/serve/backend.go`) is the seam between
+the supervision loop and the engine it supervises: `Prepare` owns everything that
+must exist before the child starts (validation, 0600 config/key files, the `Conn`
+the proxy probes and injects the upstream Bearer from) and `Spawn` is one
+incarnation. `BackendFor` resolves the name — `""`/`tabby` → `tabbyBackend`
+(TabbyAPI + ExLlamaV3, the default and unchanged behaviour), `llama` →
+`llamaBackend` (llama-server over GGUF); anything else is refused, never coerced.
+`serve --backend` > `STONE_LLAMA_BACKEND` > config `backend` > default. Readiness
+probing, the child lifecycle, supervision and shutdown stay engine-agnostic, and
+both `Spawn`s delegate to one `startProcess`.
 
-**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log); downstream Bearer optional on loopback, **required** when `host != 127.0.0.1`.
+**llama backend status: verified and benchmarked.** The full path runs end-to-end on
+this machine: HEAD `40e9ba7`+`b06dc8f` passes E2E on all shapes — content streaming and
+non-streaming, `/api/tags`, initial load, auth **401**/200, and hot-swap **409**
+`backend_fixed_model` refusal. Full benchmark (194 prompts × 2 conditions × 3 reps,
+n=1164/arm, artifacts in `/home/anon/ai/bench/llama-full/`): **A_llama median 55.43 tok/s
+/ 18.04 ms/token** vs the EXL3 incumbent 44.34 → **WINS +20%** (388/0/0, LEVER WINS
+−20.20/−20.14/−19.50%); vs ollama on the **same GGUF** (56.47 tok/s) → **loses
+1.40–3.52%**, inside the 1.5% noise floor. The same-GGUF comparison is clean; the EXL3
+comparison is product-level (different weight formats, different serving stack). Measured
+on an RTX 3050 Laptop 4 GB with full offload. It is still selected explicitly via
+`--backend llama` (default remains TabbyAPI). Two structural limits are implemented, not
+guessed: the model is fixed at spawn (`-m`), so `/-/load` refuses **409**
+`backend_fixed_model` on this backend instead of falling back to TabbyAPI, while
+`serve <model>`'s INITIAL load does not POST `/-/load` at all — the model is already
+resident from spawn, so `initialLoad` records it for `/-/status` instead of provoking the
+refusal; and `backend_device_budget_mib` is our own arithmetic over the GGUF file size —
+weights only, KV cache and runtime overhead excluded, so it is a floor on the weights,
+not the engine's memory use.
+
+**Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `STONE_LLAMA_BACKEND`, `HF_TOKEN`.
+
+**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log). Downstream, two header gates run before any handler: `Host` must name loopback or this daemon's own bind host (else **421** `invalid_request`, message `loopback only` — DNS-rebinding defence) and `Origin`, when present, must name that same accept-set (else **403** `browser_origin_forbidden`, message `cross-origin request refused`); an absent `Origin` (curl/CLI) passes. `/healthz` is bearer-exempt but not gate-exempt. The control routes `/-/status`, `/-/load`, `/-/unload` **always** require the daemon state token (`Authorization: Bearer`, constant-time compare → else **401** `unauthorized`, message `bearer token required`), including on a loopback bind. Every other route — the `/v1/*` proxy and the `/api/*` Ollama shim below — requires the token only when the configured bind host is not loopback; `/healthz` never does.
 
 **Tool calling:** a server concern. stone-llama sets the format automatically and reports it; the OpenAI-compatible surface exposes whatever the loaded model advertises, unchanged, to any client or gateway.
+
+**Ollama compatibility shim** (`internal/serve/ollama.go`): four routes translate ollama's API onto the OpenAI surface — `POST /api/chat` → `/v1/chat/completions`, `GET /api/tags` (model-store scan on TabbyAPI; the spawned GGUF file on the llama backend), `POST /api/show` (answerable subset only), `POST /api/generate` → `/v1/completions` (verbatim prompt, no fallback to chat). They sit behind the same Host/Origin gates and the same bearer rule as the chat surface (above). Mapping as implemented: `options.num_predict` 0/absent omits `max_tokens` entirely; `think` true/false → `enable_thinking` flat (TabbyAPI's field) **plus** `chat_template_kwargs: {"enable_thinking": …}` (llama-server reads only that shape — `server-common.cpp:1074-1088`), an effort string → the same two shapes with `reasoning_effort` passed through verbatim, absent/null → neither key, anything else → 400; reasoning handling matches on both paths with content winning: the non-stream reply maps `reasoning_content` → `message.content` only when `content` is empty, and the stream holds reasoning deltas back — never interleaved into a live answer (an ollama client gets the answer, not the scratchpad; a mixed delta is the answer, its reasoning half dropped) — flushing held reasoning as content only if the stream ends having seen no content, so an ollama client is never handed silence on either path while non-empty `content` stays the backend's own split; `options.seed` is decoded but never forwarded (the pinned request types have no seed field). Unsupported fields are a clear 400 naming the field, never a silent drop: `/api/chat` rejects `tools`, `format`, `template`, `raw`, `context`; `/api/generate` rejects `format`, `template`, `context`, `suffix`, `system` and accepts `raw` (completions are verbatim by design). `keep_alive: 0` (or `"0s"`) POSTs our own `/-/unload` with the state token after the reply; any other `keep_alive` value is accepted and ignored — the daemon is resident by design.
+
+**What the shim refuses to invent.** Durations not observable through the OpenAI surface (`load_duration`, `prompt_eval_duration`, `eval_duration`) are sent as `0`; `total_duration` is the request time we actually measured. `prompt_eval_count`/`eval_count` appear only when the upstream sends usage — streamed chat now requests that usage via `stream_options.include_usage` (field types verified on both pinned backends; live effect **UNVERIFIED-pending-live-test**), non-stream requests never ask. Fields without a real on-disk source are omitted, never fabricated: `/api/tags` carries no `digest`, and `details` reports only what the disk shows — on TabbyAPI the model directory (`family` from `config.json`'s `model_type`, `format` `safetensors`, `quantization_level` from the manifest), on the llama backend the served GGUF file (`format` `gguf`) — `parameter_size` stays out. `/api/show` answers `details`, a limited verbatim `model_info` subset, and `template` only when a template file exists on disk; `modelfile`, `parameters`, `license` and friends are omitted. `done_reason` is `length` or `stop` — nothing else is claimed. **Unverified:** the `/v1/completions` call on the generate route, the `stream_options.include_usage` usage request, and the `enable_thinking`/`reasoning_effort` fields were never exercised against a live backend (TabbyAPI 5002 is down and stays down); their routes/types are verified against the pinned source tree and unit tests only, not proven live.
+
+**Drafting + engine env.** Speculative drafting is configured via the boot `config.yml`
+`draft_model` block (`autofit.draft_mode` / `ngram_match_min` / `draft_num_tokens` in
+config.json; `serve --draft-mode ngram|off` overrides the mode). Default is **off**: no
+block is rendered at all, and `draft_model_dir` never renders (no draft weights ship). The
+block is daemon-level — it rides child start, not `/-/load`. A/B run 2026-10-07
+(n=1164/arm, 3 reps, applied-proofs captured) measured **INCONCLUSIVE — within the 1.5%
+noise floor (0.00% overall delta, no regressions in any rep)**, so it stays off and no
+speedup is claimed. `run --draft-mode` parses and validates the value only — it cannot
+reach an already-running daemon and therefore has no effect. Config `engine_env`
+(a `map[string]string`) is extra environment for the supervised child: the parent
+environment is preserved (`PATH`/venv discovery unaffected) and config entries append last,
+so they win over a same-named parent variable.
 
 ## 8. Platform reality + hard limits (approved Q5/Q8)
 
@@ -343,7 +393,7 @@ README carries this in the first screen (Q10).
 
 - **Artifact:** `stone-llama-linux-amd64.tgz` (~5.5 MB bundle, 5,719,364 B; binary 8,933,560 B ≈ 8.5 MiB): binary + README.md + LICENSE + stone-llama.png; `-trimpath -ldflags "-s -w"`; sha256 published in the combined `checksums.txt`. Five targets built (linux amd64/arm64, windows amd64, darwin amd64/arm64) (G9: windows/macOS/arm64 runtime untested).
 - **Install:** GitHub Releases + `install.sh` (download, verify sha256, `~/.local/bin`, PATH hint). No package managers in v1 (G11).
-- **Release:** tag → build + sha256 + contract test (§10) → release. No Docker, no telemetry.
+- **Release:** tag → build + sha256 → release (the §10.5 contract test is still a planned gate, not a step that runs today). No Docker, no telemetry.
 - **A8 — repository (now):** `git init` at project start; **one commit per milestone**, conventional format (`feat(m1): …`); `.gitignore` excludes built binaries (`/stone-llama`, `/bin/`, `/dist/`), `/models/`, `/downloads/`, `/runtime/`, `*.part`, `/logs/`, `*.log`. **Public repo, owner `rizperdana`** — `gh auth status` verified this session: active account is `rizperdana` ✓ (gate satisfied; the repo **exists** at github.com/rizperdana/stone-llama). Plan doc committed as `docs/ARCHITECTURE.md`.
 - **Residual risk:** G16.
 
@@ -353,7 +403,7 @@ README carries this in the first screen (Q10).
 2. **A5 gate:** fake-HF `httptest` fixtures serving tiny `config.json`/`quantization_config.json`/trees → arch warn/confirm, `exl2` refusal, GGUF-only refusal, unknown-arch warning text, fit verdicts (proceed/warn/refuse + largest-fitting-ctx).
 3. **Pull against fake HF:** Range-resume after simulated interrupt, checksum mismatch, gated 403, disk-preflight refusal. KB fixtures; byte-identical code path.
 4. **Proxy/daemon vs fake TabbyAPI:** ~100-line Go stub with SSE canned tokens → passthrough, key injection, crash-backoff, port-occupied handling. No Python.
-5. **Contract test vs pinned TabbyAPI:** `go:build integration`, local only, no model load (config schema + routes). M4/M5 gate.
+5. **Contract test vs pinned TabbyAPI:** `go:build integration`, local only, no model load (config schema + routes). M4/M5 gate. **Status: planned — no integration-tagged file exists yet**, so §2/§9 must not cite it as an enforced gate.
 6. **GPU E2E:** on-disk SmolLM3 only (zero download). M5 serve + curl; M6 interactive.
 
 CI runs 1–4: no GPU, no Python, no external network.

@@ -130,13 +130,30 @@ func (d *daemon) attachModel() string {
 	return m.ID
 }
 
-// initialLoad loads the `serve <model>` positional through our own /-/load —
-// the exact supervised path `run` uses (autofit, progress, state included).
-// The response is drained to the end so the backend load is never cut short,
-// and the stream is PARSED on the way: a TabbyAPI load failure (OOM,
-// contention) arrives inside a 200 SSE stream with HTTP still 200, so a
-// failure prints once on stderr and the daemon keeps serving.
+// initialLoad loads the `serve <model>` positional. TabbyAPI path: it
+// POSTs our own /-/load — the exact supervised path `run` uses
+// (autofit, progress, state included). The response is drained to the
+// end so the backend load is never cut short, and the stream is PARSED
+// on the way: a TabbyAPI load failure (OOM, contention) arrives inside
+// a 200 SSE stream with HTTP still 200, so a failure prints once on
+// stderr and the daemon keeps serving.
+// llama path: the GGUF is already resident (loaded at spawn with -m)
+// and /-/load refuses hot-swaps by design (409 backend_fixed_model),
+// so this records the served model for /-/status instead of POSTing
+// just to read a refusal whose message tells the user to re-run the
+// command they just ran. A genuinely DIFFERENT model is still refused
+// by /-/load below — on llama that means a restart.
 func (d *daemon) initialLoad(ctx context.Context, model string) {
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		// Model resident at spawn: record it (Ctx 0 / CacheMode ""
+		// are unknown on this path — both are omitempty, never faked).
+		// cfgPath guard: a llama daemon with no resolved GGUF serves
+		// nothing and reports nothing.
+		if model != "" && d.cfgPath != "" {
+			d.markLoaded(model, 0, "")
+		}
+		return
+	}
 	body, _ := json.Marshal(map[string]any{"model": model})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+d.st.Addr()+loadPath, bytes.NewReader(body))
@@ -144,7 +161,7 @@ func (d *daemon) initialLoad(ctx context.Context, model string) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if d.needToken {
+	if d.token != "" {
 		req.Header.Set("Authorization", "Bearer "+d.token)
 	}
 	resp, err := http.DefaultClient.Do(req)
@@ -180,6 +197,17 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 				"stream completions directly (the loaded upstream model is reused, nothing downloads), "+
 				"or start a supervised backend with `stone-llama serve` (no --attach) and run `stone-llama run --local` to load here",
 			"attach_mode")
+		return
+	}
+	// llama-server cannot hot-swap a model: the GGUF is fixed at spawn
+	// (-m). Refuse rather than fall back to TabbyAPI silently — switching
+	// engines means restarting serve with --backend.
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		writeJSON(w, http.StatusConflict,
+			fmt.Sprintf("backend %q cannot switch models at runtime — the GGUF is fixed at spawn; "+
+				"stop the daemon and re-run 'stone-llama serve --backend %s <model.gguf>' to change it",
+				BackendLlama, BackendLlama),
+			"backend_fixed_model")
 		return
 	}
 	d.loadMu.Lock()
@@ -377,6 +405,9 @@ func (d *daemon) fitModel(w http.ResponseWriter, dir, model string, ctx *int, mo
 // at the pinned commit — endpoints/core/types/model.py). The verdict is
 // the only source: nothing here computes, so payload and rendered YAML
 // cannot disagree. Unset verdict fields emit no key (backend defaults).
+// Drafting never rides this payload: the pinned ModelLoadRequest does
+// not declare draft_mode/ngram_match_min/draft_num_tokens (dropped at
+// validation) — the boot config.yml draft_model block owns drafting.
 func fitLoadArgs(res *autofit.Result) map[string]any {
 	args := map[string]any{}
 	if res.ChunkSize > 0 {

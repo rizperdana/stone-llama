@@ -97,14 +97,64 @@ func waitReady(t *testing.T, dataDir string, errCh <-chan error) Status {
 	return Status{}
 }
 
+// gatedUpstream serves the backend-contract surfaces like fakeUpstream,
+// but /v1/completions flushes chunk0 and then BLOCKS until release() is
+// called: the upstream provably cannot complete while the gate holds.
+// Causal hook for TestAttachStreamsZeroBuffer — no wall clock involved.
+// release is idempotent and registered as a cleanup AFTER ts.Close (LIFO
+// unblocks the handler first), so a failing test never wedges Close.
+func gatedUpstream(t *testing.T, wantKey string, chunks int) (*httptest.Server, func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	mux := http.NewServeMux()
+	check := func(w http.ResponseWriter, r *http.Request) bool {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+wantKey {
+			t.Errorf("%s: upstream Authorization = %q, want Bearer %s (Conn.UpKeyFile injection)", r.URL.Path, got, wantKey)
+			w.WriteHeader(http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"object":"list","data":[]}`)
+	})
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, r *http.Request) {
+		if check(w, r) {
+			io.WriteString(w, `{"id":"fake-model"}`)
+		}
+	})
+	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
+		if !check(w, r) {
+			return
+		}
+		fl := w.(http.Flusher)
+		fmt.Fprintf(w, "data: chunk0\n\n")
+		fl.Flush()
+		<-gate // upstream stalls mid-stream until the test releases it
+		for i := 1; i < chunks; i++ {
+			fmt.Fprintf(w, "data: chunk%d\n\n", i)
+			fl.Flush()
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Cleanup(release)
+	return ts, release
+}
+
 // TestAttachStreamsZeroBuffer is the M5 attach E2E: schemeless host:port
 // accepted (bug 3), upstream key injected from the file, status/mode/
-// model correct, and chunks must arrive while the upstream is still
-// producing — a buffering proxy collapses the arrival times.
+// model correct, and the causal no-buffering proof: the fake upstream
+// flushes chunk0 then blocks, so chunk0 reaching the client while the
+// upstream is provably stalled means the server relayed per-chunk.
+// Synchronization, not a stopwatch — CI load cannot collapse this.
 func TestAttachStreamsZeroBuffer(t *testing.T) {
-	const delay = 150 * time.Millisecond
 	const chunks = 3
-	ts := fakeUpstream(t, "sekret", chunks, delay)
+	ts, release := gatedUpstream(t, "sekret", chunks)
 	dataDir := t.TempDir()
 	keyFile := writeUpstreamKey(t, "sekret")
 
@@ -140,44 +190,59 @@ func TestAttachStreamsZeroBuffer(t *testing.T) {
 		t.Fatalf("completions status = %d", resp.StatusCode)
 	}
 
-	t0 := time.Now()
-	var first, last time.Time
-	var body bytes.Buffer
-	br := bufio.NewReader(resp.Body)
-	for {
-		line, err := br.ReadString('\n')
-		body.WriteString(line)
-		if strings.HasPrefix(line, "data:") {
-			now := time.Now()
-			if first.IsZero() {
-				first = now
+	// Client-side pump: data lines only; closes on EOF or read error.
+	lines := make(chan string, 32)
+	go func() {
+		defer close(lines)
+		br := bufio.NewReader(resp.Body)
+		for {
+			line, err := br.ReadString('\n')
+			if strings.HasPrefix(line, "data:") {
+				lines <- strings.TrimSpace(line)
 			}
-			last = now
+			if err != nil {
+				return
+			}
 		}
-		if err != nil || strings.Contains(line, "[DONE]") {
-			break
+	}()
+
+	// Causal proof: the upstream flushed chunk0 and is now blocked until
+	// release(); it cannot complete. A buffering server would therefore
+	// hold chunk0 indefinitely — receiving it here proves per-chunk relay.
+	var got []string
+	select {
+	case l := <-lines:
+		if !strings.Contains(l, "chunk0") {
+			t.Fatalf("first line %q, want chunk0 while upstream is stalled mid-stream", l)
+		}
+		got = append(got, l)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no chunk0 within 5s while upstream is stalled after chunk0 — server buffered until completion")
+	}
+	release() // the proof above already holds; let the stream finish
+
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+loop:
+	for {
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				t.Fatalf("stream ended before [DONE]; lines: %q", got)
+			}
+			got = append(got, l)
+			if strings.Contains(l, "[DONE]") {
+				break loop
+			}
+		case <-timeout.C:
+			t.Fatalf("stream stalled before [DONE]; lines: %q", got)
 		}
 	}
-	elapsed := time.Since(t0)
-	if first.IsZero() {
-		t.Fatalf("no streamed data arrived; body:\n%s", body.String())
-	}
-	if first.Sub(t0) > 400*time.Millisecond {
-		t.Errorf("first chunk arrived %s after request — response buffered?", first.Sub(t0))
-	}
-	if last.Sub(first) < 300*time.Millisecond {
-		t.Errorf("chunk span %s — arrivals collapsed (buffering)", last.Sub(first))
-	}
-	wantMin := time.Duration(chunks-1) * delay // 300ms between first and last flush
-	if last.Sub(first) < wantMin-50*time.Millisecond {
-		t.Errorf("chunk span %s < %s — chunks not passed through in real time", last.Sub(first), wantMin)
-	}
-	if elapsed < 400*time.Millisecond {
-		t.Errorf("total %s < %s — stream completed too early", elapsed, 300*time.Millisecond)
-	}
-	for _, want := range []string{"chunk0", "chunk2", "[DONE]"} {
-		if !strings.Contains(body.String(), want) {
-			t.Errorf("stream missing %q; body:\n%s", want, body.String())
+
+	all := strings.Join(got, "\n")
+	for _, want := range []string{"chunk0", "chunk1", "chunk2", "[DONE]"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("stream missing %q; lines:\n%s", want, all)
 		}
 	}
 
@@ -188,7 +253,7 @@ func TestAttachStreamsZeroBuffer(t *testing.T) {
 }
 
 // TestStatusRequiresBearerOffLoopback: non-loopback bind → /-/status
-// demands the bearer (loopback stays open), Query uses the state token.
+// demands the bearer on an Origin-less request, Query uses the state token.
 func TestStatusRequiresBearerOffLoopback(t *testing.T) {
 	ts := fakeUpstream(t, "sekret", 0, 0)
 	dataDir := t.TempDir()
@@ -230,6 +295,210 @@ func TestStatusRequiresBearerOffLoopback(t *testing.T) {
 
 	cancel()
 	<-errCh
+}
+
+// gateDaemon: loopback daemon for the Host/Origin/control-bearer gate
+// tests — token set, needToken false (chat stays open on loopback), a
+// dead upstream so a request that clears every gate surfaces as a proxy
+// error instead of content.
+func gateDaemon() *daemon {
+	return &daemon{
+		opts: Options{Stderr: io.Discard, Host: "127.0.0.1",
+			contenders: func() ([]doctor.Contender, error) { return nil, nil }},
+		conn:  Conn{BaseURL: "http://127.0.0.1:1"},
+		token: "test-token",
+	}
+}
+
+// TestRejectsForeignHost: a Host naming anything but loopback is
+// refused 421 with the exact envelope before any handler runs
+// (DNS-rebinding defence); the normal loopback Host passes untouched.
+func TestRejectsForeignHost(t *testing.T) {
+	d := gateDaemon()
+	ts := httptest.NewServer(d.authed(d.mux()))
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMisdirectedRequest {
+		t.Errorf("foreign Host /healthz = %d, want 421", resp.StatusCode)
+	}
+	want := `{"error":{"message":"loopback only","type":"invalid_request"}}` + "\n"
+	if string(body) != want {
+		t.Errorf("421 body = %q, want %q", body, want)
+	}
+
+	// a normal loopback Host (with port) is unaffected
+	ok, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok.Body.Close()
+	if ok.StatusCode != http.StatusOK {
+		t.Errorf("loopback Host /healthz = %d, want 200", ok.StatusCode)
+	}
+}
+
+// TestRejectsForeignOrigin: a cross-site Origin is refused 403 with
+// type browser_origin_forbidden (CSRF defence); loopback Origins and
+// the Origin-less curl/CLI client pass the gate.
+func TestRejectsForeignOrigin(t *testing.T) {
+	d := gateDaemon()
+	ts := httptest.NewServer(d.authed(d.mux()))
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("foreign Origin /healthz = %d, want 403", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), `"type":"browser_origin_forbidden"`) {
+		t.Errorf("403 body = %q, want type browser_origin_forbidden", body)
+	}
+
+	for _, origin := range []string{"http://localhost:5199", "http://127.0.0.1:5199"} {
+		r2, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r2.Header.Set("Origin", origin)
+		ok, err := http.DefaultClient.Do(r2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ok.Body.Close()
+		if ok.StatusCode != http.StatusOK {
+			t.Errorf("Origin %s /healthz = %d, want 200", origin, ok.StatusCode)
+		}
+	}
+
+	// no Origin (curl/CLI chat-style request): gate passes, no bearer needed
+	plain, err := http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain.Body.Close()
+	if plain.StatusCode != http.StatusOK {
+		t.Errorf("Origin-less loopback /healthz = %d, want 200", plain.StatusCode)
+	}
+}
+
+// TestControlRoutesRequireTokenOnLoopback: on a loopback bind
+// (needToken false) the control routes still demand the state token —
+// POST /-/unload without a bearer is 401, with it the gate clears
+// (dead upstream then yields a non-401 proxy error); /healthz and the
+// chat surface stay token-free.
+func TestControlRoutesRequireTokenOnLoopback(t *testing.T) {
+	if d := gateDaemon(); d.needToken {
+		t.Fatal("gateDaemon must model a loopback bind (needToken false)")
+	}
+	d := gateDaemon()
+	ts := httptest.NewServer(d.authed(d.mux()))
+	t.Cleanup(ts.Close)
+
+	// no bearer → 401 with WWW-Authenticate
+	resp, err := http.Post(ts.URL+unloadPath, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("POST /-/unload without bearer = %d, want 401", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") != "Bearer" {
+		t.Errorf("WWW-Authenticate = %q, want Bearer", resp.Header.Get("WWW-Authenticate"))
+	}
+
+	// with the state token → gate clears (not 401)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+unloadPath, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-token")
+	ok, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok.Body.Close()
+	if ok.StatusCode == http.StatusUnauthorized {
+		t.Errorf("POST /-/unload with bearer = 401, want the gate to clear")
+	}
+
+	// healthz: exempt from bearer, still gated
+	hz, err := http.Get(ts.URL + healthzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hz.Body.Close()
+	if hz.StatusCode != http.StatusOK {
+		t.Errorf("/healthz without bearer = %d, want 200", hz.StatusCode)
+	}
+
+	// chat-style loopback request: no bearer, no 401
+	chat, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat.Body.Close()
+	if chat.StatusCode == http.StatusUnauthorized {
+		t.Errorf("loopback chat without bearer = 401, want chat to stay token-free")
+	}
+}
+
+// TestProbeRefusedNamesOurDaemonNotForeign: with a daemon.json salvaged
+// without a token (state.go salvage misses it), our own /-/status answers
+// 401 to the unauthenticated probe. Classification stays fail-closed, but
+// the message must say "our daemon behind damaged state" — never "a
+// foreign process holds <addr>". A listener that answers 404 is still
+// probeForeign: the 401 branch does not loosen identification.
+func TestProbeRefusedNamesOurDaemonNotForeign(t *testing.T) {
+	ours := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == statusPath {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, "bearer token required", "unauthorized")
+			return
+		}
+		http.NotFound(w, r) // /healthz without the X-Stone-Llama marker
+	}))
+	t.Cleanup(ours.Close)
+	st := State{Host: "127.0.0.1", Port: serverPort(t, ours), Token: ""}
+
+	if cls := classifyListener(context.Background(), st); cls != probeRefused {
+		t.Fatalf("classify = %v, want probeRefused", cls)
+	}
+	msg := stateDownErr(t.TempDir(), st, probeRefused, errors.New("state file is corrupt")).Error()
+	if strings.Contains(msg, "foreign process holds") || strings.Contains(msg, "not a stone-llama daemon") {
+		t.Errorf("401 probe reported as foreign: %s", msg)
+	}
+	if !strings.Contains(msg, "401") || !strings.Contains(msg, "damaged daemon.json") {
+		t.Errorf("401 probe message lacks the diagnosis: %s", msg)
+	}
+
+	foreign := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(foreign.Close)
+	fst := State{Host: "127.0.0.1", Port: serverPort(t, foreign), Token: ""}
+	if cls := classifyListener(context.Background(), fst); cls != probeForeign {
+		t.Errorf("404-on-status classify = %v, want probeForeign", cls)
+	}
 }
 
 // TestRewriteOOMEnriches: an upstream OOM error gains the levers and
@@ -321,7 +590,7 @@ func TestServeSpawnFailureNoState(t *testing.T) {
 		Port:      p,
 		DataDir:   dataDir,
 		ModelsDir: t.TempDir(),
-		spawn: func(string, string, string, int) (*child, error) {
+		spawn: func(string, string, string, int, map[string]string) (*child, error) {
 			return nil, errors.New("runtime missing")
 		},
 	})
@@ -330,6 +599,37 @@ func TestServeSpawnFailureNoState(t *testing.T) {
 	}
 	if _, err := ReadState(dataDir); !errors.Is(err, ErrNoDaemon) {
 		t.Errorf("daemon.json written despite failed start: %v", err)
+	}
+}
+
+// TestServeCreatesModelsDirBeforeSpawn: a fresh state dir has no
+// models/ subdirectory, but the spawned child serves model_dir from
+// its very first request — an absent dir made TabbyAPI's listdir 500
+// GET /v1/models on every new install. Serve must provision the dir
+// before the backend spawns; hermetic (spawn seam, no real child).
+func TestServeCreatesModelsDirBeforeSpawn(t *testing.T) {
+	p, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	models := filepath.Join(dataDir, "models") // deliberately never created here
+	var statErr error
+	serr := Serve(context.Background(), Options{
+		Host:      "127.0.0.1",
+		Port:      p,
+		DataDir:   dataDir,
+		ModelsDir: models,
+		spawn: func(string, string, string, int, map[string]string) (*child, error) {
+			_, statErr = os.Stat(models)
+			return nil, errors.New("stop before a real child")
+		},
+	})
+	if serr == nil || !strings.Contains(serr.Error(), "stop before a real child") {
+		t.Fatalf("Serve = %v, want the spawn seam's error propagated", serr)
+	}
+	if statErr != nil {
+		t.Fatalf("models dir absent at spawn time: %v", statErr)
 	}
 }
 
@@ -572,7 +872,7 @@ func TestStartReadyCleanExitBeforeReadinessFails(t *testing.T) {
 			RetryDelay:   time.Millisecond,
 			contenders:   func() ([]doctor.Contender, error) { return nil, nil },
 			probe:        func(context.Context, int) error { return errors.New("never ready") },
-			spawn: func(string, string, string, int) (*child, error) {
+			spawn: func(string, string, string, int, map[string]string) (*child, error) {
 				c := &child{wait: make(chan error, 1), port: 1}
 				kids = append(kids, c)
 				go func() {
@@ -888,7 +1188,7 @@ func TestServeSpawnFailureCleansGeneratedSecrets(t *testing.T) {
 		ModelsDir:  t.TempDir(),
 		RuntimeDir: runtimeDir,
 		Stderr:     io.Discard,
-		spawn: func(string, string, string, int) (*child, error) {
+		spawn: func(string, string, string, int, map[string]string) (*child, error) {
 			return nil, errors.New("runtime missing")
 		},
 	})
@@ -942,7 +1242,8 @@ func newInitialLoadHarness(t *testing.T, backend *httptest.Server) (*daemon, *by
 			},
 			contenders: func() ([]doctor.Contender, error) { return nil, nil },
 		},
-		conn: Conn{BaseURL: backend.URL},
+		conn:  Conn{BaseURL: backend.URL},
+		token: "harness-token",
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1245,7 +1546,7 @@ func TestServeWritesFirstRunMarkerBeforeSpawn(t *testing.T) {
 		ModelsDir:  t.TempDir(),
 		RuntimeDir: runtimeDir,
 		Stderr:     io.Discard,
-		spawn: func(_, _, _ string, _ int) (*child, error) {
+		spawn: func(_, _, _ string, _ int, _ map[string]string) (*child, error) {
 			atSpawn, _ = os.ReadFile(filepath.Join(checkout, "start_options.json"))
 			return nil, errors.New("runtime missing")
 		},
@@ -1444,7 +1745,7 @@ func TestStartReadyNeverReadyHasNoServePrefix(t *testing.T) {
 			RetryDelay:   time.Millisecond,
 			contenders:   func() ([]doctor.Contender, error) { return nil, nil },
 			probe:        func(context.Context, int) error { return errors.New("never ready") },
-			spawn: func(string, string, string, int) (*child, error) {
+			spawn: func(string, string, string, int, map[string]string) (*child, error) {
 				return &child{wait: make(chan error, 1), port: 1}, nil // stays alive
 			},
 		},
@@ -1462,5 +1763,54 @@ func TestStartReadyNeverReadyHasNoServePrefix(t *testing.T) {
 	}
 	if strings.Contains(msg, "serve: ") {
 		t.Errorf("Serve-returned error carries its own prefix (runServe doubles it): %q", msg)
+	}
+}
+
+// Defect 3: on the llama backend initialLoad POSTed /-/load, which
+// always refuses 409 backend_fixed_model (the GGUF is already resident
+// from spawn -m), so /-/status reported no model while one was served —
+// and the refusal told the user to re-run the command they just ran.
+// initialLoad records the spawn model instead; /-/load keeps refusing a
+// DIFFERENT model (backendwiring_test.go).
+func TestInitialLoadLlamaBackendReportsSpawnModel(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	gguf := filepath.Join(t.TempDir(), "SmolLM3-Q4_K_M.gguf")
+	if err := os.WriteFile(gguf, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.be = llamaBackend{}
+	d.cfgPath = gguf
+	d.opts.Now = time.Now // status handler needs opts.Now for uptime
+
+	d.initialLoad(context.Background(), "SmolLM3-Q4_K_M.gguf")
+
+	if errBuf.Len() != 0 {
+		t.Errorf("initialLoad wrote stderr on the llama path: %q", errBuf.String())
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://"+d.st.Addr()+"/-/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/-/status = %d: %s", resp.StatusCode, b)
+	}
+	var st Status
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatalf("decode /-/status: %v", err)
+	}
+	if st.Model != "SmolLM3-Q4_K_M.gguf" {
+		t.Errorf("status model = %q, want the spawn model the llama backend already serves", st.Model)
 	}
 }

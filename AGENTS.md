@@ -97,6 +97,12 @@ make dist                          # 5 bundles + dist/checksums.txt
 - **Zero-buffer SSE**: the proxy sets `FlushInterval: -1`; streaming first bytes must
   arrive while generation is running, not at completion. `internal/serve/serve_test.go`
   asserts chunks pass through in real time.
+- **Loopback is not "open"**: `serve` gates every request on `Host` (421 `loopback only`,
+  DNS-rebinding) and, when present, `Origin` (403 `browser_origin_forbidden`, CSRF) *before*
+  any handler — `/healthz` is bearer-exempt but not gate-exempt. `/-/status`, `/-/load`,
+  `/-/unload` always require the `daemon.json` token, loopback included; only the chat
+  surface is bearer-free on a loopback bind. `TestRejectsForeignHost`,
+  `TestRejectsForeignOrigin`, `TestControlRoutesRequireTokenOnLoopback` assert it.
 - **Pre-download gate**: architecture / quant format / fit are decided from KB of
   metadata **before any weight byte moves**, and refusals print the arithmetic, never a
   bare error (`internal/preflight/gate.go`).
@@ -114,17 +120,18 @@ make dist                          # 5 bundles + dist/checksums.txt
 - Log convention: `feat(scope):`, `fix(scope):`, `chore:`, `docs:` (with scope when
   touched). The release workflow builds notes from commit messages
   (`--generate-notes`, `.github/workflows/release.yml`), so the prefix is load-bearing.
-- Branch naming: `feature/<assignee>/<TICKET-ID>`. No `CONTRIBUTING.md` at this HEAD —
-  this section is the convention.
+- Branch naming: `feature/<assignee>/<TICKET-ID>`. The full flow — fork, branch, PR against
+  a protected `main`, `make check` green, PR-title check — is documented in `CONTRIBUTING.md`.
 
 ## Repo map
 
 | Path | Responsibility |
 |---|---|
 | `cmd/stone-llama/` | `main` → `cli.Run`, process exit code |
-| `internal/cli/` | subcommand dispatch, flags, exit codes |
+| `internal/cli/` | subcommand dispatch, flags, exit codes, chat history (`history.go`: sessions under `chats/`, `--continue`/`--history`, context-window trim) |
 | `internal/config/` | config load + XDG/env path resolution |
-| `internal/serve/` | daemon, reverse proxy, state; `tabby_backend.go`/`tabbyconf.go` = the seam |
+| `internal/serve/` | daemon, reverse proxy, state, Ollama shim (`ollama.go`); `tabby_backend.go`/`tabbyconf.go` = the seam |
+| `internal/runner/` | stone-llama's own serving runner: bounded Jinja2-subset chat-template renderer + expression/value model (`template.go`, `expr.go`, `value.go`) |
 | `internal/autofit/` | VRAM-fit ctx/cache decision from `config.json` + GPU |
 | `internal/preflight/` | pre-download gate (arch / quant / fit) |
 | `internal/pull/` | gate → consent → resumable sha256 download |
@@ -135,6 +142,7 @@ make dist                          # 5 bundles + dist/checksums.txt
 | `internal/estimate/` | tok/s prediction from metadata `[est]` |
 | `internal/fslock/` | cross-process flock (daemon spawn, downloads) |
 | `internal/brand/` | embedded icon for banners |
+| `internal/selfmgmt/` | self-update (sha256-verified binary swap), uninstall, `version` |
 | `docs/` | ARCHITECTURE, QUICKSTART, INSTALLATION, RELEASE, AGENT-SETUP |
 | `site/`, `scripts/`, `.github/workflows/` | homepage, `install.sh`, CI + release |
 
