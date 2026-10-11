@@ -190,8 +190,9 @@ func appendTurn(s *Session, user, assistant string) {
 }
 
 // sessionTokens is the fallback token estimate: the marshaled payload length
-// divided by four (UTF-8 ≈ 0.75 tokens/char, the heuristic the overflow guard
-// uses when the runtime exposes no /v1/token/encode endpoint).
+// divided by four — i.e. ~4 bytes per token (UTF-8 chars are not counted
+// individually, so this is a byte/token heuristic, not tokens/char). It is the
+// overflow guard used when the runtime exposes no /v1/token/encode endpoint.
 func sessionTokens(s *Session) int {
 	b, _ := json.Marshal(s)
 	return len(b) / 4

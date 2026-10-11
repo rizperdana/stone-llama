@@ -234,8 +234,11 @@ func (o Options) headroomFor(ctx int) int {
 // Fit runs the ladder (or the forced override) against real numbers.
 // The ladder maximizes ctx first (ctx tiers from target down to the
 // floor), preferring cache quality within a tier: FP16 → Q8 → Q4 → "4,2".
-// budgetMiB is the device budget: on a GPU it is VRAM; on a CPU-only device
-// it is a conservative share of system RAM.
+// budgetMiB is the device budget: in practice the callers pass GPU VRAM
+// (cli/fit.go:173, preflight/gate.go:65, serve/load.go:380) — there is no
+// CPU-only budget path in-tree, so the comment above does not describe
+// implemented behaviour. A CPU budget, if ever added, is a share of
+// system RAM minus the runtime's own footprint.
 func Fit(spec Spec, weightsBytes int64, budgetMiB int, opts Options) (Result, error) {
 	if spec.Layers <= 0 || spec.KVHeads <= 0 || spec.HeadDim <= 0 || spec.MaxCtx <= 0 {
 		return Result{}, fmt.Errorf("incomplete model spec: %+v", spec)

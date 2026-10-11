@@ -685,6 +685,8 @@ func (ep *exprParser) parseIndexOrSlice() (expr, error) {
 		if ep.tryOp(":") {
 			if ep.peek() == ']' {
 				ep.pos++
+				components = append(components, nil) // omitted hi
+				omit = append(omit, true)
 				break
 			}
 			continue

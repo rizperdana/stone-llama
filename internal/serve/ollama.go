@@ -265,7 +265,7 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:     created,
 			Message:       ollamaMessage{Role: "assistant", Content: content},
 			Done:          true,
-			DoneReason:    ollamaDoneReason(reason),
+			DoneReason:    d.doneReasonWithWarn(reason, "/api/chat"),
 			TotalDuration: time.Since(start).Nanoseconds(),
 			// load/prompt_eval/eval durations are not observable
 			// through the OpenAI surface — sent as 0, never invented.
@@ -306,7 +306,7 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 			Model: req.Model, CreatedAt: created,
 			Message:    ollamaMessage{Role: "assistant"},
 			Done:       true,
-			DoneReason: ollamaDoneReason(reason),
+			DoneReason: d.doneReasonWithWarn(reason, "/api/chat stream"),
 		}
 		if usage != nil {
 			final.PromptEvalCount = optr(usage.PromptTokens)
@@ -349,8 +349,19 @@ func ollamaThink(raw json.RawMessage) (*bool, string, error) {
 
 // ollamaDoneReason maps an OpenAI finish_reason onto ollama's
 // vocabulary. Only "length" has a direct ollama counterpart we can
-// honestly claim; everything else (stop, empty, any flavour this shim
-// never allows through — tools are rejected up front) reports "stop".
+// honestly claim; everything else (stop, any flavour this shim never
+// allows through — tools are rejected up front) reports "stop". An
+// EMPTY finish_reason means the upstream never sent one (truncated
+// stream or a finish_reason-less reply): the client still gets a
+// complete response — done:true, never a hang — but the operator is
+// told on stderr by doneReasonWithWarn.
+//
+// There is no truncation/error value to report instead: rodata of the
+// ollama binary (strings dump /home/anon/ai/_oll_strings.txt) carries
+// done_reason only as a JSON field tag ("json:\"done_reason\"",
+// "json:\"done_reason,omitempty\"") plus the DoneReason type/symbol
+// names — no truncation, "error" or other reason literal sits near it,
+// so inventing one would emit a string ollama clients never expect.
 func ollamaDoneReason(finishReason string) string {
 	if finishReason == "length" {
 		return "length"
@@ -358,8 +369,22 @@ func ollamaDoneReason(finishReason string) string {
 	return "stop"
 }
 
-// hasSystemMessage reports whether the conversation already opens with
-// a system message (top-level system is prepended only when absent).
+// doneReasonWithWarn is ollamaDoneReason plus the honesty valve: a
+// reply that never carried finish_reason still completes on the wire
+// (clients must not hang, and ollama's vocabulary has no truncation
+// value — see ollamaDoneReason), but the cut-off is stated on stderr
+// (same pattern as the keep_alive unload logging).
+func (d *daemon) doneReasonWithWarn(reason, what string) string {
+	if reason == "" {
+		fmt.Fprintf(d.opts.Stderr,
+			"stone-llama: %s: upstream ended without finish_reason (truncated?) — reporting done_reason \"stop\"\n", what)
+	}
+	return ollamaDoneReason(reason)
+}
+
+// hasSystemMessage reports whether the conversation already contains a system
+// message in any position; the top-level `system` field is prepended only
+// when none is present (a later system message suppresses it).
 func hasSystemMessage(msgs []ollamaMessage) bool {
 	for _, m := range msgs {
 		if m.Role == "system" {
@@ -463,7 +488,7 @@ func scanOpenAIStream(resp *http.Response, emit func(content string) bool, finis
 				}
 			}
 		}
-		if err != nil { // EOF without [DONE]: finish with what arrived
+		if err != nil { // EOF without [DONE]: finish with what arrived; an empty finish_reason (truncated stream) is disclosed by the caller via doneReasonWithWarn
 			break
 		}
 	}
@@ -829,7 +854,7 @@ func (d *daemon) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:     created,
 			Response:      text,
 			Done:          true,
-			DoneReason:    ollamaDoneReason(reason),
+			DoneReason:    d.doneReasonWithWarn(reason, "/api/generate"),
 			TotalDuration: time.Since(start).Nanoseconds(),
 			// load/prompt_eval/eval durations are not observable
 			// through the OpenAI surface — sent as 0, never invented.
@@ -864,7 +889,7 @@ func (d *daemon) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 	scanOpenAIStream(resp, emit, func(reason string, usage *openaiUsage) {
 		final := ollamaGenerateChunk{
 			Model: req.Model, CreatedAt: created,
-			Done: true, DoneReason: ollamaDoneReason(reason),
+			Done: true, DoneReason: d.doneReasonWithWarn(reason, "/api/generate stream"),
 		}
 		if usage != nil {
 			final.PromptEvalCount = optr(usage.PromptTokens)

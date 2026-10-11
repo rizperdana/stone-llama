@@ -322,6 +322,51 @@ func TestOllamaChatStreamChunks(t *testing.T) {
 	}
 }
 
+// TestOllamaChatStreamTruncatedWarnsAndStillCompletes: an upstream SSE
+// stream that dies before finish_reason (EOF, no [DONE]) must still
+// deliver a terminating done:true object — the client never hangs —
+// while the cut-off is stated on the daemon's stderr. ollama's
+// vocabulary has no truncation reason to send instead (strings dump of
+// the ollama binary: done_reason appears only as a JSON tag, never as
+// a value literal), so the wire keeps the protocol-compatible "stop"
+// and stderr carries the truth.
+func TestOllamaChatStreamTruncatedWarnsAndStillCompletes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		fl, _ := w.(http.Flusher)
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"partial ans"}}]}`+"\n\n")
+		fl.Flush()
+		// handler returns: EOF, no finish_reason, no [DONE]
+	})
+	up := httptest.NewServer(mux)
+	t.Cleanup(up.Close)
+	d := ollamaDaemon(up.URL, t.TempDir(), t.TempDir())
+	var stderr bytes.Buffer
+	d.opts.Stderr = &stderr
+	ts := ollamaTS(t, d)
+
+	code, body := postOllama(t, ts, "/api/chat",
+		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2 (delta + done): %s", len(lines), body)
+	}
+	if _, c := jsonKeys(t, []byte(lines[0])); c["message"].(map[string]any)["content"] != "partial ans" {
+		t.Errorf("delta chunk = %v, want content partial ans", c)
+	}
+	k, c := jsonKeys(t, []byte(lines[1]))
+	wantKeys(t, "truncated final chunk", k, []string{"created_at", "done", "done_reason", "message", "model"})
+	if c["done"] != true || c["done_reason"] != "stop" {
+		t.Errorf("final done/done_reason = %v/%v, want true/stop (wire completes)", c["done"], c["done_reason"])
+	}
+	if !strings.Contains(stderr.String(), "upstream ended without finish_reason") {
+		t.Errorf("stderr = %q, want the truncation warning", stderr.String())
+	}
+}
+
 // TestOllamaChatRejectsTools: an unsupported field is a clear JSON
 // error, never a silent drop, and never reaches the backend.
 func TestOllamaChatRejectsTools(t *testing.T) {

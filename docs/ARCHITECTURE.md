@@ -58,7 +58,7 @@ New amendments A5–A8, A10: §4 (A5 gate), §6 (A6 licensing + A7 setup preflig
 
 | Criterion | Go | Rust | Python control plane |
 |---|---|---|---|
-| Install | one static binary, measured 7,770,296 B ≈ 7.41 MiB (`-s -w -trimpath` — release builds are already stripped; `-buildvcs=false` measured 0 bytes saved) | same | needs the multi-GB venv before the UI works |
+| Install | one static binary, measured 8,265,912 B ≈ 7.88 MiB (`-s -w -trimpath` — release builds are already stripped; `-buildvcs=false` measured 0 bytes saved) | same | needs the multi-GB venv before the UI works |
 | Cold start | `version`/`list` ~4–6 ms, `doctor` ~24 ms median because it spawns `nvidia-smi` and probes the GPU (hardware-probe latency, not binary init); measured warm-cache on a quiet host — a loaded host taxes every process equally | < 10 ms [est] (no Rust build exists in this project — unverified) | 0.5–2 s (torch import alone is seconds) |
 | Idle daemon RSS | ~15–30 MB [est] | ~5–15 MB [est] | 100–300 MB [est] |
 | Stdlib fit | `net/http`, `httputil.ReverseProxy`, `encoding/json`, `os/exec` — all of it | no HTTP in stdlib | native, but competes with inference venv for deps |
@@ -124,7 +124,7 @@ scalars", so no YAML library is involved either.
 `pull` phase 0 fetches **metadata only**: repo tree, `config.json`, `quantization_config.json` (KBs), plus the safetensors headers behind the format check — at most 4 files, one ranged `GET` each, `header_size` validated and capped at 4 MiB before anything is allocated (≤ ~16 MiB worst case per repo), bodies closed as soon as the header is parsed; a header that cannot be read (gated, missing, oversize, transport error) is **warn / "unverified"**, never a silent pass and never a refusal for failing to look. Then three checks, in order:
 
 1. **Architecture support.** `config.architectures[]` checked against a list **embedded in the binary**, sourced from `internal/preflight/archlist.go` (verified against installed `architecture/*.py` + upstream README). Verified strings include: `Qwen2ForCausalLM`, `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM`, `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration`, `Qwen3NextForCausalLM`, `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`, `Qwen4ExpForCausalLM`, `LlamaForCausalLM`, `Gemma2ForCausalLM`, `Gemma3ForCausalLM`, `Gemma3ForConditionalGeneration`, `Gemma4ForConditionalGeneration` (E2B/E4B variants unsupported), `Phi3ForCausalLM`, `MistralForCausalLM`, `Mistral3ForConditionalGeneration`, `MixtralForCausalLM`, `DeepseekV3ForCausalLM`, `Glm4ForCausalLM`, `Glm4MoeForCausalLM`, `Glm4MoeLiteForCausalLM`, `GlmMoeDsaForCausalLM`, `GptOssForCausalLM`, `CohereForCausalLM`, `Cohere2ForCausalLM`, `Olmo3ForCausalLM`, `OlmoHybridForCausalLM`, `SmolLM3ForCausalLM`, `Lfm2ForCausalLM`, `Lfm2MoeForCausalLM`, `HYV3ForCausalLM`, `Step3p5ForCausalLM`, `SeedOssForCausalLM`, `SolarOpenForCausalLM`, `IQuestCoderForCausalLM`, `KimiLinearForCausalLM`, `HyperCLOVAXForCausalLM`, `LagunaForCausalLM`, `MiniMaxM2ForCausalLM`, `MuseGlimmerForCausalLM`, `ArceeForCausalLM`, `ApertusForCausalLM`, `Exaone4ForCausalLM`, `Dots1ForCausalLM`, `Ernie4_5_MoeForCausalLM`, `ArceeForCausalLM`. **Unknown arch → warn with the exact string + confirm on TTY (`--yes` to proceed), never silent.** The list is a snapshot that drifts with exllamav3 releases; warn-not-refuse means an incomplete list degrades to warnings, not false refusals (G13).
-2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so use ollama with GGUF for now; a llama.cpp 'llama' backend (`--backend llama`) serves GGUF and is verified and benchmarked in this release (median 55.43 tok/s, ~20% faster than the EXL3 path on the same GGUF); the default backend still loads EXL3 only, so a GGUF-only repo still refuses here." Missing/ambiguous metadata → warn + confirm; a header that cannot be read → warn / "unverified" (never a refusal for failing to look). Converts a 2 GB mistake into a KB-plus-headers check: KB of config, ≤ ~16 MiB of headers worst case per repo.
+2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so it refuses here. A llama.cpp 'llama' backend (`--backend llama`) serves GGUF, but `pull` refuses GGUF repos regardless of backend — import a local .gguf instead; look for an exl3 quantization_config in <repo>."
 3. **Fit projection.** Run §5 autofit against the fetching machine's GPU (VRAM from `nvidia-smi`): print `weights + KV(ctx) + overhead + headroom vs available`, then **proceed** / **proceed-with-warning** / **refuse** (with the numbers and *the largest ctx that would fit*). `min_vram` rule (§8) wired into `pull`, not just `doctor`.
 
 Verdict recorded in `manifest.json`; `list` shows it. **Residual risk:** G13.
@@ -245,6 +245,8 @@ stone-llama ps
 stone-llama stop
 stone-llama login
 stone-llama version
+stone-llama update [--check] [--version <tag>] [--force] [--yes]   # self-update, SHA-256 verified first
+stone-llama uninstall [--dry-run] [--keep-models] [--yes]          # remove the binary + its data
 ```
 
 Stdlib `flag` dispatch (no cobra). Sample output:
@@ -329,16 +331,14 @@ incarnation. `BackendFor` resolves the name — `""`/`tabby` → `tabbyBackend`
 probing, the child lifecycle, supervision and shutdown stay engine-agnostic, and
 both `Spawn`s delegate to one `startProcess`.
 
-**llama backend status: verified and benchmarked.** The full path runs end-to-end on
-this machine: HEAD `40e9ba7`+`b06dc8f` passes E2E on all shapes — content streaming and
-non-streaming, `/api/tags`, initial load, auth **401**/200, and hot-swap **409**
-`backend_fixed_model` refusal. Full benchmark (194 prompts × 2 conditions × 3 reps,
-n=1164/arm, artifacts in `/home/anon/ai/bench/llama-full/`): **A_llama median 55.43 tok/s
-/ 18.04 ms/token** vs the EXL3 incumbent 44.34 → **WINS +20%** (388/0/0, LEVER WINS
-−20.20/−20.14/−19.50%); vs ollama on the **same GGUF** (56.47 tok/s) → **loses
-1.40–3.52%**, inside the 1.5% noise floor. The same-GGUF comparison is clean; the EXL3
-comparison is product-level (different weight formats, different serving stack). Measured
-on an RTX 3050 Laptop 4 GB with full offload. It is still selected explicitly via
+**llama backend status: verified end-to-end.** The full path runs on this
+machine: streaming and non-streaming, `/api/tags`, initial load, auth
+**401**/200, and hot-swap **409** `backend_fixed_model` refusal. A full
+benchmark (194 prompts × 2 conditions × 3 reps, n=1164/arm) ran against
+this tree at an earlier revision; the headline figures and the bench
+artifacts live in a separate bench note (the numbers are not reproduced
+here — they rot on the next re-quant/hardware change, and the doc must
+not pin them). Measured on an RTX 3050 Laptop 4 GB with full offload.
 `--backend llama` (default remains TabbyAPI). Two structural limits are implemented, not
 guessed: the model is fixed at spawn (`-m`), so `/-/load` refuses **409**
 `backend_fixed_model` on this backend instead of falling back to TabbyAPI, while

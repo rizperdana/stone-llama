@@ -20,7 +20,7 @@ stone-llama setup
 
 Downloads into `~/.local/share/stone-llama/runtime/`: pinned `uv` → CPython 3.12 →
 TabbyAPI at a pinned commit → hash-locked wheels. Measured on this machine: torch
-+cu130 531 MB + exllamav3 419 MB + uv 24 MB = 950 MB announced (HTTP HEAD), free
++cu130 531 MB + exllamav3 419 MB + uv 24 MB = 974 MB announced (HTTP HEAD), free
 disk checked, then **one** confirmation. Resumable via a step journal; log at
 `logs/setup.log`. Details: [INSTALLATION.md](INSTALLATION.md#the-setup-provisioning-step-separate-from-install).
 

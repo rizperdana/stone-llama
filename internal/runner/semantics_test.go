@@ -154,3 +154,27 @@ func TestTojsonOrderAndUTF8(t *testing.T) {
 	expectRender(t, "tojson", `{{ obj | tojson }}`,
 		`{"b": 1, "a": "ü", "n": [1, 2], "s": "a'b"}`, vars)
 }
+
+// TestSliceForms covers the slice parser: a trailing open slice (`x[1:]`)
+// used to parse as a plain index `x[1]` because the colon was consumed and
+// the closing bracket broke with one component. Each form must land in
+// sliceExpr with the right omitted markers (hi/st nil) or, for `x[1]`, in
+// itemExpr — the only guard against this regression is this test; the
+// golden fixtures contain no `[n:]` form.
+func TestSliceForms(t *testing.T) {
+	vars := varsFrom(t, json.RawMessage(`{"x": [1, 2, 3, 4, 5]}`))
+	cases := []struct{ name, src, want string }{
+		{"trailing_open", `{{ x[1:] }}`, "[2, 3, 4, 5]"},
+		{"leading_open", `{{ x[:2] }}`, "[1, 2]"},
+		{"full", `{{ x[1:3] }}`, "[2, 3]"},
+		{"both_open", `{{ x[:] }}`, "[1, 2, 3, 4, 5]"},
+		{"step", `{{ x[::2] }}`, "[1, 3, 5]"},
+		{"step_full", `{{ x[1:4:2] }}`, "[2, 4]"},
+		{"neg_open", `{{ x[-2:] }}`, "[4, 5]"},
+	}
+	for _, c := range cases {
+		expectRender(t, c.name, c.src, c.want, vars)
+	}
+	// `x[1]` is NOT a slice: it must render the single element, not a list.
+	expectRender(t, "plain_index", `{{ x[1] }}`, "2", vars)
+}

@@ -236,7 +236,7 @@ type daemon struct {
 	port      int     // internal child port; 0 in attach mode
 	cfgPath   string  // generated child config, or the resolved GGUF (supervised only)
 	be        Backend // selected engine, set in Serve before the child starts
-	logPath   string  // logs/tabby.log (child stdout+stderr)
+	logPath   string  // logs/tabby.log (child stdout+stderr; carries llama-server output too)
 	child     *child  // current incarnation (supervised only)
 
 	mu     sync.Mutex
@@ -483,7 +483,7 @@ func Serve(ctx context.Context, opts Options) error {
 		token:     token,
 		needToken: !loopbackHost(opts.Host),
 		upKey:     loadUpstreamKey(opts.UpstreamKeyFile),
-		logPath:   filepath.Join(opts.DataDir, "logs", "tabby.log"),
+		logPath:   filepath.Join(opts.DataDir, "logs", "tabby.log"), // child stdout+stderr; carries llama-server output too
 		st: State{
 			PID:       os.Getpid(),
 			Host:      opts.Host,
@@ -825,12 +825,15 @@ func (d *daemon) sampleVRAM(ctx context.Context) {
 //  3. BaseURL streams SSE tokens with the proxy's FlushInterval -1
 //     (zero-buffer).
 //
-// Attach mode supplies exactly these three and no Backend; the
-// supervised backend (tabby_backend.go + tabbyconf.go) additionally
-// owns spawn/readiness/shutdown, the YAML config schema, start.py
-// argv, the api_tokens.yml name and auth scheme, and the probe detail —
-// none of which may leak past those files. Every user-facing backend
-// mention routes through Conn.Name.
+// Attach mode supplies exactly these three and no Backend; a supervised
+// backend additionally owns Prepare+Spawn — validation, the config schema
+// and the child's start argv live in its own file — while readiness probing,
+// the child lifecycle, supervision, shutdown and the readiness/state-down
+// failure text stay shared and engine-agnostic (backend.go:12-18; awaitReady
+// in tabby_backend.go:157, stateDownErr at serve.go:1290). Backend display
+// names route through Conn.Name (llama_backend.go:116-120); a few
+// refusal/error strings mention backends literally instead —
+// load.go:207-209 (hot-swap refusal) and llama_backend.go:105,129.
 type Conn struct {
 	BaseURL   string // proxy target, e.g. http://127.0.0.1:41337
 	Name      string // display name (banner); "" → errors stay generic
