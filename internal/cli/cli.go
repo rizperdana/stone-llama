@@ -147,10 +147,10 @@ func draftModeValue(v string) (string, bool) {
 // short note and the upstream's loaded model is used; "/bye" exits without
 // unloading (the upstream's lifecycle is not ours).
 func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--attach host:port] [--key-file path] [--local] [--continue] [--history] [-p "prompt"]`
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--attach host:port] [--key-file path] [--local] [--new] [--continue] [--history] [-p "prompt"]`
 	model, cacheMode, oneShot := "", "", ""
 	attach, keyFile := "", ""
-	ctxN, noAutofit, localForce, contFlag, histFlag := 0, false, false, false, false
+	ctxN, noAutofit, localForce, contFlag, histFlag, newFlag := 0, false, false, false, false, false
 	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
 	// defaultSystemMsg is overridable via --system, removed via --no-system.
 	systemMsg, noSystem := defaultSystemMsg, false
@@ -284,6 +284,8 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			oneShot = val
 		case a == "--continue":
 			contFlag = true
+		case a == "--new":
+			newFlag = true
 		case a == "--history":
 			histFlag = true
 		case a == "-h" || a == "--help":
@@ -302,6 +304,10 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if model == "" {
 		fmt.Fprintln(stderr, usageLine)
+		return 2
+	}
+	if newFlag && contFlag {
+		fmt.Fprintf(stderr, "stone-llama run: --new and --continue contradict each other\n")
 		return 2
 	}
 
@@ -375,12 +381,14 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "profile: max_tokens %s, %s, thinking %s, %s\n", capN, samp, th, sysDesc)
 	}
 
-	// Chat history: --continue resumes the newest persisted session, else a
-	// fresh one — every completed turn is saved under chats/<model>/. Only
-	// a genuinely empty history gets the no-session notice; a real error
-	// (unreadable dir) is reported as itself before starting fresh.
+	// Chat history: a plain run resumes the model's newest persisted
+	// session (ollama parity; --continue is the explicit form of the same
+	// default) — --new forces a fresh one. Every completed turn is saved
+	// under chats/<model>/. Only a genuinely empty history gets the
+	// no-session notice; a real error (unreadable dir) is reported as
+	// itself before starting fresh.
 	session := newSession(model, prof.System)
-	if contFlag {
+	if !newFlag {
 		switch s, err := lastSession(model, stderr); {
 		case err == nil:
 			session = s

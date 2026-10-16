@@ -491,7 +491,7 @@ func TestRunOneShotStreams(t *testing.T) {
 	// message; --thinking sets the template toggle.
 	out.Reset()
 	errb.Reset()
-	if code := runRun([]string{"fake-model", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+	if code := runRun([]string{"fake-model", "--new", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
 		t.Fatalf("run -p flags: code=%d err=%q", code, errb.String())
 	}
 	c = parse()
@@ -1807,5 +1807,150 @@ func TestHistoryUnreadableDirSurfacesError(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "stone-llama: history:") {
 		t.Errorf("--continue missing the real error: %q", errOut)
+	}
+}
+
+// fakeUpstream stands up a minimal chat-completions upstream capturing
+// every request body, so session persistence can be asserted from both
+// ends (file turns + what the second run actually sent).
+func fakeUpstream(t *testing.T) *sync.Map {
+	t.Helper()
+	bodies := &sync.Map{} // request # -> raw body
+	n := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"m"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu := n
+		n++
+		bodies.Store(mu, string(b))
+		fl := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+	return bodies
+}
+
+// Session resume is the DEFAULT (ollama parity): a plain `run` continues
+// the model's newest session — the second run's request carries the first
+// turn, and the session file gains a turn instead of a second file.
+func TestRunResumesSessionByDefault(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, out, errb := run("run", "m", "-p", "hello"); code != 0 {
+		t.Fatalf("first run: code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if code, out, errb := run("run", "m", "-p", "what did I just say"); code != 0 {
+		t.Fatalf("second run: code = %d, out = %q, err = %q", code, out, errb)
+	}
+
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("session files = %v (err %v), want exactly ONE (resume, not a fresh session)", ids, err)
+	}
+	s, err := loadSession("m", ids[0], io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Turns) != 2 {
+		t.Errorf("turns = %d, want 2 (both runs appended)", len(s.Turns))
+	}
+
+	raw, ok := bodies.Load(1)
+	if !ok {
+		t.Fatal("second chat request never arrived")
+	}
+	var sent struct {
+		Messages []struct{ Role, Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range sent.Messages {
+		if m.Role == "user" && m.Content == "hello" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("second run did not replay the first turn (no resume): %v", sent.Messages)
+	}
+}
+
+// --new forces a fresh session even when history exists.
+func TestRunNewFlagStartsFresh(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, _, errb := run("run", "m", "-p", "hello"); code != 0 {
+		t.Fatalf("seed run: code = %d, err = %q", code, errb)
+	}
+	if code, _, errb := run("run", "m", "--new", "-p", "fresh start"); code != 0 {
+		t.Fatalf("--new run: code = %d, err = %q", code, errb)
+	}
+
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("session files = %v (err %v), want TWO (--new must not resume)", ids, err)
+	}
+	raw, _ := bodies.Load(1)
+	var sent struct {
+		Messages []struct{ Role, Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range sent.Messages {
+		if m.Content == "hello" {
+			t.Errorf("--new run replayed prior history: %v", sent.Messages)
+		}
+	}
+}
+
+// --continue keeps working as the explicit form of the default.
+func TestRunContinueStillResumes(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, _, errb := run("run", "m", "-p", "hello"); code != 0 {
+		t.Fatalf("seed run: code = %d, err = %q", code, errb)
+	}
+	if code, _, errb := run("run", "m", "--continue", "-p", "again"); code != 0 {
+		t.Fatalf("--continue run: code = %d, err = %q", code, errb)
+	}
+
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("session files = %v (err %v), want exactly ONE (--continue must resume)", ids, err)
+	}
+	s, err := loadSession("m", ids[0], io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Turns) != 2 {
+		t.Errorf("turns = %d, want 2", len(s.Turns))
+	}
+	raw, ok := bodies.Load(1)
+	if !ok {
+		t.Fatal("second chat request never arrived")
+	}
+	if !strings.Contains(raw.(string), "hello") {
+		t.Errorf("--continue run did not replay the first turn: %v", raw)
 	}
 }
