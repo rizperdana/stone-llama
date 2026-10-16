@@ -12,9 +12,10 @@ import (
 
 // llamaBackend supervises llama-server (llama.cpp) over GGUF weights.
 // The model is chosen at SPAWN (-m): llama-server cannot hot-swap
-// models, so /-/load refuses a hot-swap with a clear message (no
-// silent TabbyAPI fallback) while initialLoad records the already-
-// spawned model for /-/status (load.go).
+// models, so /-/load refuses a DIFFERENT model with a clear message
+// (no silent TabbyAPI fallback) while a load resolving to the resident
+// GGUF itself is an idempotent no-op (load.go, sameGGUF) and
+// initialLoad records the spawned model for /-/status (load.go).
 type llamaBackend struct {
 	// deviceBudgetMiB: pre-spawn weights gate, 0 = off. llama-server
 	// has no MiB budget flag (its --fit already caps itself to device
@@ -76,6 +77,24 @@ func resolveGGUF(model, modelsDir string) (string, error) {
 		return "", fmt.Errorf("backend %q: %d GGUF files in %q (%s) — name one explicitly: %s",
 			BackendLlama, len(matches), path, strings.Join(names, ", "), supported)
 	}
+}
+
+// sameGGUF reports whether two resolved model paths name the SAME file:
+// os.SameFile compares the underlying file, so a full path, a relative
+// spelling, or a symlinked path of the resident GGUF all count as equal
+// (the typed string and /-/status's reported basename never need to
+// match textually). A stat failure on either side means NOT the same —
+// the caller falls back to the hot-swap refusal.
+func sameGGUF(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // Prepare validates the spawn inputs in order — GGUF routing first

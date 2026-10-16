@@ -52,6 +52,16 @@ func (d *daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, "use GET", "method_not_allowed")
 		return
 	}
+	resp := d.currentStatus()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// currentStatus assembles the /-/status payload from live state plus
+// one readiness probe — shared by GET /-/status and the llama
+// same-model no-op load answer, so both surfaces report identical
+// fields.
+func (d *daemon) currentStatus() Status {
 	d.mu.Lock()
 	st := d.st
 	fitSum := ""
@@ -85,8 +95,7 @@ func (d *daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Attach != "" {
 		resp.Mode = "attach"
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	return resp
 }
 
 // readyNow probes the backend per the contract.
@@ -204,10 +213,45 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 			"attach_mode")
 		return
 	}
+	var req LoadRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, "decode /-/load body: "+err.Error(), "invalid_request")
+		return
+	}
 	// llama-server cannot hot-swap a model: the GGUF is fixed at spawn
-	// (-m). Refuse rather than fall back to TabbyAPI silently — switching
-	// engines means restarting serve with --backend.
+	// (-m), and this build exposes no runtime model-load endpoint (help:
+	// -m loads at startup; the --models-* autoload flags belong to the
+	// router server, which Spawn never starts). Refuse rather than fall
+	// back to TabbyAPI silently — switching engines means restarting
+	// serve with --backend — EXCEPT when the request resolves to the
+	// resident GGUF itself: that load already happened at spawn, and
+	// since L7 /-/status reports the basename, `run <full gguf path>`
+	// would otherwise 409 over a mere string mismatch while the exact
+	// same file streams fine. That case is a no-op success; a resolution
+	// failure or a DIFFERENT file keeps the refusal.
 	if _, isLlama := d.be.(llamaBackend); isLlama {
+		if d.cfgPath == "" {
+			// Model-less spawn: nothing is served and llama-server loads a
+			// GGUF at spawn only — the honest answer names a restart, not a
+			// "switch".
+			writeJSON(w, http.StatusConflict,
+				fmt.Sprintf("backend %q is serving no model — llama-server loads its GGUF at spawn only (-m: no runtime model-load endpoint); "+
+					"stop the daemon and re-run 'stone-llama serve --backend %s <model.gguf>' naming the GGUF to serve",
+					BackendLlama, BackendLlama),
+				"backend_no_model")
+			return
+		}
+		if gguf, err := resolveGGUF(req.Model, d.opts.ModelsDir); err == nil && sameGGUF(gguf, d.cfgPath) {
+			// Same file already resident: idempotent no-op. Re-record the
+			// served basename (state may predate initialLoad) and answer
+			// with the /-/status-shaped payload — serve.Load consumes any
+			// 200 stream carrying no error event and re-reads status, which
+			// is exactly `run`'s success path (cli.go).
+			d.markLoaded(filepath.Base(d.cfgPath), 0, "")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(d.currentStatus())
+			return
+		}
 		writeJSON(w, http.StatusConflict,
 			fmt.Sprintf("backend %q cannot switch models at runtime — the GGUF is fixed at spawn; "+
 				"stop the daemon and re-run 'stone-llama serve --backend %s <model.gguf>' to change it",
@@ -218,11 +262,6 @@ func (d *daemon) handleLoad(w http.ResponseWriter, r *http.Request) {
 	d.loadMu.Lock()
 	defer d.loadMu.Unlock()
 
-	var req LoadRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, "decode /-/load body: "+err.Error(), "invalid_request")
-		return
-	}
 	if req.Model == "" {
 		writeJSON(w, http.StatusBadRequest, "load requires a model name — 'stone-llama list' for options", "invalid_request")
 		return

@@ -98,14 +98,26 @@ func TestSpawnChildSharesStartProcess(t *testing.T) {
 	}
 }
 
-// TestLlamaLoadRefusesNoHotSwap: /-/load on the llama backend must be
-// a clear 409, never a silent TabbyAPI fallback — llama-server's model
-// is fixed at spawn (-m), so a second model cannot be served.
+// TestLlamaLoadRefusesNoHotSwap: /-/load on a llama daemon WITH a
+// resident GGUF must be a clear 409, never a silent TabbyAPI fallback —
+// llama-server's model is fixed at spawn (-m), so a second, DIFFERENT
+// model cannot be served. Both spellings of "different" are pinned: a
+// name the resolver cannot map to any GGUF, and a resolvable GGUF that
+// is not the resident file. (A load resolving to the resident GGUF
+// itself is a 200 no-op — serve_test.go TestLlamaLoadSameModelNoOp.)
 //
 // handleLoad is called directly on a bare daemon with an
 // httptest.Recorder — no Serve, no listener, no child, so this can
 // never bind a port.
 func TestLlamaLoadRefusesNoHotSwap(t *testing.T) {
+	dir := t.TempDir()
+	resident := filepath.Join(dir, "resident.gguf")
+	other := filepath.Join(dir, "other.gguf")
+	for _, p := range []string{resident, other} {
+		if err := os.WriteFile(p, []byte("ggufbytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	d := &daemon{
 		opts: Options{
 			DataDir:   t.TempDir(),
@@ -114,21 +126,58 @@ func TestLlamaLoadRefusesNoHotSwap(t *testing.T) {
 			// attach is empty on purpose: this is the supervised branch,
 			// where the backend refusal is the only thing that can fire.
 		},
+		be:      llamaBackend{},
+		cfgPath: resident,
+		conn:    Conn{BaseURL: "http://127.0.0.1:1"},
+		token:   "harness-token",
+	}
+	for _, model := range []string{"m", other} { // unresolvable name, then a different GGUF by full path
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/-/load",
+			strings.NewReader(`{"model":"`+model+`"}`))
+		d.handleLoad(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("load %q on llama = %d, want 409 (body %q)", model, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, want := range []string{"fixed at spawn", "backend_fixed_model", "--backend llama"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("refusal for %q missing %q: %s", model, want, body)
+			}
+		}
+	}
+}
+
+// TestLlamaLoadWithoutResidentModelRefuses: a model-less llama spawn
+// (cfgPath "") serves nothing, and llama-server has NO runtime
+// model-load endpoint — the help text (-m, --model FNAME: "model path to
+// load") puts every GGUF load at startup, and the only model-autoload
+// flags (--models-dir/--models-preset/--models-max/--models-autoload)
+// belong to the router server, which this Spawn never starts (it passes
+// only --host/--port/--api-key-file/-m). So /-/load still 409s, with the
+// message truthful for THAT case: nothing is loaded to "switch", so
+// restart naming the GGUF (type backend_no_model).
+func TestLlamaLoadWithoutResidentModelRefuses(t *testing.T) {
+	d := &daemon{
+		opts: Options{
+			DataDir:   t.TempDir(),
+			ModelsDir: t.TempDir(),
+			Stderr:    io.Discard,
+		},
 		be:    llamaBackend{},
 		conn:  Conn{BaseURL: "http://127.0.0.1:1"},
 		token: "harness-token",
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/-/load",
-		strings.NewReader(`{"model":"m"}`))
-	d.handleLoad(rec, req)
+	d.handleLoad(rec, httptest.NewRequest(http.MethodPost, "/-/load",
+		strings.NewReader(`{"model":"/x/m.gguf"}`)))
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("load on llama = %d, want 409 (body %q)", rec.Code, rec.Body.String())
+		t.Fatalf("load on model-less llama = %d, want 409 (body %q)", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"fixed at spawn", "backend_fixed_model", "--backend llama"} {
+	for _, want := range []string{"serving no model", "backend_no_model", "--backend llama", "naming the GGUF"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("refusal missing %q: %s", want, body)
+			t.Errorf("model-less refusal missing %q: %s", want, body)
 		}
 	}
 }

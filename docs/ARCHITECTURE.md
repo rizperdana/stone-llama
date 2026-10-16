@@ -341,7 +341,11 @@ here — they rot on the next re-quant/hardware change, and the doc must
 not pin them). Measured on an RTX 3050 Laptop 4 GB with full offload.
 `--backend llama` (default remains TabbyAPI). Two structural limits are implemented, not
 guessed: the model is fixed at spawn (`-m`), so `/-/load` refuses **409**
-`backend_fixed_model` on this backend instead of falling back to TabbyAPI, while
+`backend_fixed_model` for a DIFFERENT model instead of falling back to TabbyAPI. A load
+that resolves to the resident GGUF itself (e.g. the full path typed at `run`, whose
+`/-/status` reports the basename since L7) is an idempotent **200** no-op, and a
+model-less spawn answers **409** `backend_no_model` (llama-server has no runtime
+model-load endpoint; its help puts every GGUF load at startup `-m`) — while
 `serve <model>`'s INITIAL load does not POST `/-/load` at all — the model is already
 resident from spawn, so `initialLoad` records it for `/-/status` instead of provoking the
 refusal; and `backend_device_budget_mib` is our own arithmetic over the GGUF file size —

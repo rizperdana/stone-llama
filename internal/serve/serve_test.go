@@ -1930,3 +1930,62 @@ func TestLlamaStatusAndTagsAgreeOnSpawnGGUF(t *testing.T) {
 		t.Errorf("status Model = %q, want the resolved basename SmolLM3-Q4_K_M.gguf", st.Model)
 	}
 }
+
+// Same-model load on the llama backend must be an idempotent NO-OP
+// success, not the hot-swap 409: since L7 /-/status reports the resident
+// GGUF's basename, so `run <full gguf path>` (or any alias) reaches
+// /-/load with a string that differs from status.Model while naming the
+// exact same file llama-server already serves — a refusal there exits
+// `run` 1 even though streaming would work. The request is resolved with
+// the spawn-time resolver (resolveGGUF) and compared per-file
+// (sameGGUF); the 200 answers with the /-/status-shaped payload that
+// serve.Load (run's client, cli.go) consumes before re-reading status.
+func TestLlamaLoadSameModelNoOp(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	gguf := filepath.Join(t.TempDir(), "SmolLM3-Q4_K_M.gguf")
+	if err := os.WriteFile(gguf, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.be = llamaBackend{}
+	d.cfgPath = gguf
+	d.opts.Now = time.Now
+	d.st.Token = d.token // the state-file token serve.Load (run's client) signs with
+	d.initialLoad(context.Background(), gguf)
+
+	// handler view: the full path typed at `run` answers 200 with a
+	// run-shaped status whose Model is the basename /-/status reports.
+	body, err := json.Marshal(LoadRequest{Model: gguf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	d.handleLoad(rec, httptest.NewRequest(http.MethodPost, "/-/load", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same-model load = %d, want 200 no-op (body %q)", rec.Code, rec.Body.String())
+	}
+	var st Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+		t.Fatalf("decode load response: %v (%s)", err, rec.Body.String())
+	}
+	if st.Model != "SmolLM3-Q4_K_M.gguf" {
+		t.Errorf("load status Model = %q, want the resident GGUF basename", st.Model)
+	}
+
+	// run's exact client path (cli.go → serve.Load): full path in, no
+	// error out, status carries the resident model — no exit 1.
+	loaded, lerr := Load(context.Background(), d.opts.DataDir, LoadRequest{Model: gguf})
+	if lerr != nil {
+		t.Fatalf("serve.Load with the full path typed: %v", lerr)
+	}
+	if loaded.Model != "SmolLM3-Q4_K_M.gguf" {
+		t.Errorf("serve.Load status Model = %q, want SmolLM3-Q4_K_M.gguf", loaded.Model)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("wrote stderr on a same-model load: %q", errBuf.String())
+	}
+}
