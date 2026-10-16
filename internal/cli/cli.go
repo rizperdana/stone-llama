@@ -29,6 +29,7 @@ import (
 	"github.com/rizperdana/stone-llama/internal/hf"
 	"github.com/rizperdana/stone-llama/internal/lineedit"
 	"github.com/rizperdana/stone-llama/internal/pull"
+	"github.com/rizperdana/stone-llama/internal/render"
 	"github.com/rizperdana/stone-llama/internal/selfmgmt"
 	"github.com/rizperdana/stone-llama/internal/serve"
 	"github.com/rizperdana/stone-llama/internal/setup"
@@ -470,7 +471,9 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // Every completed turn is appended to session and persisted under chats/.
 func streamDirect(dec Decision, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer) int {
 	nCtx := upstreamCtx(dec.Base, dec.Token) // context window, once per run
+	out, flush := chatOut(stdout)            // ollama-style markdown on a TTY only
 	ask := func(ctx context.Context, prompt string) error {
+		defer flush() // no buffered tail leaks into the next prompt
 		session.guard(nCtx, dec.Base, dec.Token, prof, prompt, stderr)
 		msgs := buildMessages(session, prof, prompt)
 		body := chatBody(dec.Model, msgs, prof)
@@ -482,7 +485,7 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, session *Sessio
 		if dec.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+dec.Token)
 		}
-		reply, err := streamSSE(req, prof.MaxTokens, stdout, stderr)
+		reply, err := streamSSE(req, prof.MaxTokens, out, stderr)
 		if err != nil {
 			return err
 		}
@@ -495,6 +498,18 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, session *Sessio
 	return repl(ask, oneShot, sessionPrompts(session), stdin, stdout, stderr)
 }
 
+// chatOut returns the stream writer for chat deltas: a markdown renderer
+// when stdout is a real terminal (ollama-parity simple formatting),
+// stdout itself otherwise — piped output stays byte-identical. The
+// returned flush drains the renderer's line buffer (no-op when raw).
+func chatOut(stdout io.Writer) (io.Writer, func()) {
+	if f, ok := stdout.(*os.File); ok && isTTY(f) {
+		rr := render.New(stdout)
+		return rr, rr.Flush
+	}
+	return stdout, func() {}
+}
+
 // streamDaemon posts a one-shot or REPL through our daemon's proxy
 // (supervised path). Unloads after /bye; attach mode leaves the upstream
 // model alone. Every completed turn is appended to session and persisted
@@ -502,7 +517,9 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, session *Sessio
 func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer) int {
 	base := "http://" + st.Addr()
 	nCtx := upstreamCtx(base, token) // context window, once per run
+	out, flush := chatOut(stdout)    // ollama-style markdown on a TTY only
 	ask := func(ctx context.Context, prompt string) error {
+		defer flush() // no buffered tail leaks into the next prompt
 		session.guard(nCtx, base, token, prof, prompt, stderr)
 		msgs := buildMessages(session, prof, prompt)
 		body := chatBody(st.Model, msgs, prof)
@@ -514,7 +531,7 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-		reply, err := streamSSE(req, prof.MaxTokens, stdout, stderr)
+		reply, err := streamSSE(req, prof.MaxTokens, out, stderr)
 		if err != nil {
 			return err
 		}

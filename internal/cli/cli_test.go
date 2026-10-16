@@ -1954,3 +1954,43 @@ func TestRunContinueStillResumes(t *testing.T) {
 		t.Errorf("--continue run did not replay the first turn: %v", raw)
 	}
 }
+
+// Markdown rendering applies ONLY when stdout is a real terminal: a
+// piped run (bytes.Buffer stand-in) must be byte-identical passthrough,
+// no ANSI escapes even when the model emits markdown.
+func TestRunPipedOutputHasNoANSI(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"m"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		fl := w.(http.Flusher)
+		for _, d := range []string{"**bold** and `code`", " and # heading"} {
+			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":"+strconv.Quote(d)+"}}]}\n\n")
+			fl.Flush()
+		}
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+
+	code, out, errb := run("run", "m", "--new", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("piped stdout carries ANSI escapes: %q", out)
+	}
+	for _, want := range []string{"**bold**", "`code`", "# heading"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("piped stdout must be byte-identical, missing %q: %q", want, out)
+		}
+	}
+}
