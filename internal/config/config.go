@@ -20,16 +20,32 @@ type Autofit struct {
 	OverheadMiB    int  `json:"overhead_mib"`
 	MinCtx         int  `json:"min_ctx"`
 	ChunkSize      int  `json:"chunk_size"` // TabbyAPI load chunk override: 0 auto (fit decides), else 512-4096
+	// Speculative drafting, all load-time tuning like ChunkSize. "" is the
+	// backend's own default and renders no draft_model block at all.
+	DraftMode      string `json:"draft_mode"`       // model | disabled | mtp | ngram
+	NgramMatchMin  int    `json:"ngram_match_min"`  // ngram_match_min: 0 backend default (2), else >= 1
+	DraftNumTokens int    `json:"draft_num_tokens"` // tokens drafted per iteration: 0 backend default, else >= 1
 }
 
 type Config struct {
-	ModelsDir       string  `json:"models_dir"`
-	Host            string  `json:"host"`
-	Port            int     `json:"port"`
-	Autofit         Autofit `json:"autofit"`
-	RuntimeDir      string  `json:"runtime_dir"`
-	UpstreamKeyFile string  `json:"upstream_key_file"` // attach-mode upstream Bearer source (file path only; secrets are not stored in config.json)
-	Upstream        string  `json:"upstream"`          // auto-attach probe address (default http://127.0.0.1:5002)
+	ModelsDir       string            `json:"models_dir"`
+	Host            string            `json:"host"`
+	Port            int               `json:"port"`
+	Autofit         Autofit           `json:"autofit"`
+	RuntimeDir      string            `json:"runtime_dir"`
+	UpstreamKeyFile string            `json:"upstream_key_file"` // attach-mode upstream Bearer source (file path only; secrets are not stored in config.json)
+	Upstream        string            `json:"upstream"`          // auto-attach probe address (default http://127.0.0.1:5002)
+	EngineEnv       map[string]string `json:"engine_env"`        // extra environment for the supervised backend child process; nil = none
+	// Backend selects the supervised inference engine: "" or "tabby" is
+	// TabbyAPI + ExLlamaV3 (the default, unchanged), "llama" is
+	// llama-server (llama.cpp) over GGUF. An unknown name is refused at
+	// serve time, never coerced to the default.
+	Backend string `json:"backend"`
+	// DeviceBudgetMiB caps the GGUF weights a llama spawn may load
+	// (0 = no check). Weights only — KV cache and runtime overhead are
+	// excluded, so this is a pre-spawn floor, not the engine's memory
+	// use. Tabby ignores it.
+	DeviceBudgetMiB int `json:"backend_device_budget_mib"`
 }
 
 // Default returns the built-in configuration. Missing file fields keep
@@ -46,6 +62,9 @@ func Default() Config {
 			CtxHeadroomMiB: 512,
 			OverheadMiB:    128,
 			MinCtx:         4096,
+			DraftMode:      "",
+			NgramMatchMin:  2,
+			DraftNumTokens: 0,
 		},
 		Upstream: "http://127.0.0.1:5002",
 	}
@@ -109,6 +128,9 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("STONE_LLAMA_UPSTREAM_KEY_FILE"); v != "" {
 		cfg.UpstreamKeyFile = v
+	}
+	if v := os.Getenv("STONE_LLAMA_BACKEND"); v != "" {
+		cfg.Backend = v
 	}
 	// schemeless upstream address (the documented attach form) wins a
 	// default scheme here so the rest of the code can treat Upstream as a URL

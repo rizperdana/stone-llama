@@ -20,7 +20,7 @@ stone-llama setup
 
 Downloads into `~/.local/share/stone-llama/runtime/`: pinned `uv` → CPython 3.12 →
 TabbyAPI at a pinned commit → hash-locked wheels. Measured on this machine: torch
-+cu130 531 MB + exllamav3 419 MB + uv 24 MB = 950 MB announced (HTTP HEAD), free
++cu130 531 MB + exllamav3 419 MB + uv 24 MB = 974 MB announced (HTTP HEAD), free
 disk checked, then **one** confirmation. Resumable via a step journal; log at
 `logs/setup.log`. Details: [INSTALLATION.md](INSTALLATION.md#the-setup-provisioning-step-separate-from-install).
 
@@ -112,6 +112,17 @@ runtime
 stone-llama.lock
 ```
 
+That `ls` capture predates persisted chat history: `run` now also keeps sessions under
+`chats/<model>/chat-<id>.json` in this state dir (files 0600, dirs 0700, written via
+atomic temp+rename). A plain `run` **resumes** the newest session for the model **by file
+mtime** (ollama parity; `--continue` is the explicit form of the same default, `--new`
+starts fresh); `--history` prints that session's turns as indented JSON and exits before any
+backend resolution — no HTTP request, no daemon spawn. Before each turn the session is
+trimmed to fit the context window (token count from the upstream's `/v1/token/encode`
+when reachable, a `len(json)/4` estimate otherwise); trimming is **persistent — dropped
+turns leave the file too**, deliberately: context overflow means they could not have
+been replayed anyway.
+
 `run` auto-tunes one profile line in the REPL (nothing extra in `-p` output):
 
 ```console
@@ -144,7 +155,11 @@ over the API.
 Two caveats:
 
 - Loading is the upstream's job in attach mode: `/-/load` answers 409
-  `attach_mode`, and a mismatched model name exits 1 with the same message.
+  `attach_mode` — but only to an **authenticated** request. `/-/load` is a
+  control route, so a bare `curl` with no `Authorization` header now gets
+  401 `unauthorized` first (bearer = the state token in `daemon.json`,
+  0600). A mismatched model name is reported as a local alias and the
+  upstream's loaded model is reused.
 
 ## 6. `serve` + `curl` — OpenAI-compatible API
 
