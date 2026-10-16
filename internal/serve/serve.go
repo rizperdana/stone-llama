@@ -1488,10 +1488,13 @@ func classifyListener(ctx context.Context, st State) probeClass {
 
 // statusAnswers cross-checks /-/status with the recorded token:
 // (answered, ok, refused). ok proves our daemon (token unguessable);
-// refused — HTTP 401 — is our own control route rejecting the probe
-// because the state carries no usable token: our daemon behind
-// damaged state, not a foreign process. answered with !ok (and not
-// refused) is a foreign HTTP server; no answer at all is a
+// refused — a 401 that carries our own refusal envelope (the
+// WWW-Authenticate: Bearer header AND the writeJSON error body) — is
+// our own control route rejecting the probe because the state carries
+// no usable token: our daemon behind damaged state, not a foreign
+// process. A 401 WITHOUT both markers is a foreign server that happens
+// to answer 401: answered with !ok, so probeForeign. answered with !ok
+// (and not refused) is a foreign HTTP server; no answer at all is a
 // booting/stalled listener — not yet dead.
 func statusAnswers(ctx context.Context, st State) (answered, ok, refused bool) {
 	rctx, cancel := context.WithTimeout(ctx, time.Second)
@@ -1508,8 +1511,16 @@ func statusAnswers(ctx context.Context, st State) (answered, ok, refused bool) {
 		return false, false, false
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	return true, resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusUnauthorized
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusUnauthorized {
+		return true, resp.StatusCode == http.StatusOK, false
+	}
+	// M5: only OUR refusal envelope (header + writeJSON type marker)
+	// proves "our daemon, damaged state"; a bare foreign 401 stays
+	// probeForeign.
+	ours := strings.TrimSpace(resp.Header.Get("WWW-Authenticate")) == "Bearer" &&
+		strings.Contains(string(body), `"type":"unauthorized"`)
+	return true, false, ours
 }
 
 // writeSecret writes a 0600 file atomically (child config/tokens —

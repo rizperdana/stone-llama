@@ -331,8 +331,23 @@ func (ev *evaluator) evalBinary(t binaryExpr, f *frame) (any, error) {
 }
 
 // binaryArith follows Python: int64 op int64 stays int64, anything else
-// widens to float64; non-numbers are a template error.
+// widens to float64; non-numbers are a template error. bool coerces to
+// int64 first — Python's bool is an int subclass (True+1==2, int).
 func binaryArith(op string, l, r any) (any, error) {
+	if b, ok := l.(bool); ok {
+		if b {
+			l = int64(1)
+		} else {
+			l = int64(0)
+		}
+	}
+	if b, ok := r.(bool); ok {
+		if b {
+			r = int64(1)
+		} else {
+			r = int64(0)
+		}
+	}
 	if li, ok := l.(int64); ok {
 		if ri, ok := r.(int64); ok {
 			if op == "+" {

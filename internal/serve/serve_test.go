@@ -501,6 +501,36 @@ func TestProbeRefusedNamesOurDaemonNotForeign(t *testing.T) {
 	}
 }
 
+// TestProbeRefusedForeign401IsForeignNotOurs: M5 — a 401 on /-/status
+// without OUR refusal envelope (no WWW-Authenticate: Bearer, no
+// writeJSON "type":"unauthorized" body) is a foreign server that
+// happens to answer 401, not our daemon behind damaged state.
+// classifyListener must return probeForeign, and the message must say
+// "foreign process holds" — never "our own control route".
+func TestProbeRefusedForeign401IsForeignNotOurs(t *testing.T) {
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == statusPath {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized"}`)) // no "type":"unauthorized"
+			return
+		}
+		http.NotFound(w, r) // /healthz without the X-Stone-Llama marker
+	}))
+	t.Cleanup(foreign.Close)
+	st := State{Host: "127.0.0.1", Port: serverPort(t, foreign), Token: ""}
+
+	if cls := classifyListener(context.Background(), st); cls != probeForeign {
+		t.Fatalf("foreign 401 classify = %v, want probeForeign", cls)
+	}
+	msg := stateDownErr(t.TempDir(), st, probeForeign, nil).Error()
+	if !strings.Contains(msg, "foreign process holds") {
+		t.Errorf("foreign 401 message lacks diagnosis: %s", msg)
+	}
+	if strings.Contains(msg, "our own control route") || strings.Contains(msg, "damaged daemon.json") {
+		t.Errorf("foreign 401 misclassified as our daemon: %s", msg)
+	}
+}
+
 // TestRewriteOOMEnriches: an upstream OOM error gains the levers and
 // keeps the original message; anything else passes through untouched.
 func TestRewriteOOMEnriches(t *testing.T) {

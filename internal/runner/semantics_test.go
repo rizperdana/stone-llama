@@ -123,6 +123,13 @@ func TestArithPreservesInt64(t *testing.T) {
 		{`{{ 2 - 5 }}`, "-3"},
 		{`{{ 1 + 1.5 }}`, "2.5"},
 		{`{{ 2 - 0.5 }}`, "1.5"},
+		// Python: bool is an int subclass — True+1==2, True-1==0,
+		// True+True==2 (all int), True+1.5==2.5 (widens only with float).
+		{`{{ 1 + true }}`, "2"},
+		{`{{ true + 1 }}`, "2"},
+		{`{{ true - 1 }}`, "0"},
+		{`{{ true + true }}`, "2"},
+		{`{{ 1.5 + true }}`, "2.5"},
 	}
 	for _, c := range cases {
 		expectRender(t, "arith", c.src, c.want, nil)

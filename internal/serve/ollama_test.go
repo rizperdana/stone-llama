@@ -989,3 +989,217 @@ func TestOllamaChatStreamReasoningHeldBack(t *testing.T) {
 		t.Errorf("mixed chunks = %q, want exactly [42]; raw = %q", got, raw)
 	}
 }
+
+// M3 defect: on the llama backend /api/show scanned ModelsDir and 404'd
+// for the GGUF the daemon actually spawned (tags had the llama branch;
+// show never did). The llama path answers the honest subset for a bare
+// GGUF with optional config.json/template beside it; a model-less llama
+// spawn serves nothing (404, never the store).
+func TestOllamaShowLlamaServesSpawnGGUF(t *testing.T) {
+	dir := t.TempDir()
+	gguf := filepath.Join(dir, "SmolLM3-Q4_K_M.gguf")
+	if err := os.WriteFile(gguf, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"model_type":"llama","num_hidden_layers":36,"parameter_size":3.0}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "template"), []byte("{{ .Prompt }}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := ollamaDaemon("http://127.0.0.1:1", ollamaFixture(t), t.TempDir())
+	d.be = llamaBackend{}
+	d.cfgPath = gguf
+	ts := ollamaTS(t, d)
+
+	code, body := postOllama(t, ts, "/api/show", `{"name":"SmolLM3-Q4_K_M.gguf"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	if bytes.Contains(body, []byte(`"digest"`)) {
+		t.Errorf("llama show fabricates a digest: %s", body)
+	}
+	keys, got := jsonKeys(t, body)
+	wantKeys(t, "llama show reply", keys, []string{"details", "model_info", "template"})
+	if det := got["details"].(map[string]any); det["format"] != "gguf" {
+		t.Errorf("details = %v, want format gguf", det)
+	}
+	info := got["model_info"].(map[string]any)
+	if info["model_type"] != "llama" || info["num_hidden_layers"] != float64(36) {
+		t.Errorf("model_info = %v, want the config.json verbatim subset", info)
+	}
+	if _, present := info["parameter_size"]; present {
+		t.Errorf("parameter_size is not a showInfoKey and must be omitted: %v", info)
+	}
+	if got["template"] != "{{ .Prompt }}" {
+		t.Errorf("template = %v", got["template"])
+	}
+
+	// bare GGUF, nothing beside it: honest {details} only
+	bare := filepath.Join(t.TempDir(), "bare.gguf")
+	if err := os.WriteFile(bare, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d2 := ollamaDaemon("http://127.0.0.1:1", ollamaFixture(t), t.TempDir())
+	d2.be = llamaBackend{}
+	d2.cfgPath = bare
+	ts2 := ollamaTS(t, d2)
+	code, body = postOllama(t, ts2, "/api/show", `{"name":"bare.gguf"}`)
+	if code != http.StatusOK {
+		t.Fatalf("bare status = %d, body = %s", code, body)
+	}
+	keys, got = jsonKeys(t, body)
+	wantKeys(t, "bare llama show reply", keys, []string{"details"})
+	if det := got["details"].(map[string]any); det["format"] != "gguf" {
+		t.Errorf("bare details = %v, want format gguf", det)
+	}
+	// a store name is not the spawned file → 404
+	code, body = postOllama(t, ts2, "/api/show", `{"name":"smollm3-exl3"}`)
+	if code != http.StatusNotFound || !strings.Contains(string(body), "not found") {
+		t.Errorf("wrong name on llama = %d %s, want 404 naming not found", code, body)
+	}
+
+	// model-less llama spawn serves nothing → 404, never the store
+	d3 := ollamaDaemon("http://127.0.0.1:1", ollamaFixture(t), t.TempDir())
+	d3.be = llamaBackend{}
+	ts3 := ollamaTS(t, d3)
+	code, body = postOllama(t, ts3, "/api/show", `{"name":"smollm3-exl3"}`)
+	if code != http.StatusNotFound || !strings.Contains(string(body), "not found") {
+		t.Errorf("model-less llama show = %d %s, want 404", code, body)
+	}
+}
+
+// M4 defect: in attach mode the daemon has no backend of its own, so
+// tags/show scanned the LOCAL store — the models of a machine that is
+// not serving anything here. tags must list the upstream's
+// /v1/models ids in ollama shape; size/modified_at have no honest
+// source on the OpenAI surface and are omitted.
+func TestOllamaTagsAttachReportsUpstream(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sekret" {
+			t.Errorf("attach models Authorization = %q, want Bearer sekret", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, `{"object":"list","data":[{"id":"up-model"},{"id":"other"}]}`)
+	}))
+	t.Cleanup(up.Close)
+
+	// ModelsDir holds ONE local model — attach must never report it.
+	d := ollamaDaemon(up.URL, ollamaFixture(t), t.TempDir())
+	d.opts.Attach = up.URL
+	ts := ollamaTS(t, d)
+
+	resp, err := http.Get(ts.URL + "/api/tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte("smollm3-exl3")) {
+		t.Errorf("attach tags leaked the LOCAL store: %s", body)
+	}
+	keys, got := jsonKeys(t, body)
+	wantKeys(t, "attach tags reply", keys, []string{"models"})
+	models := got["models"].([]any)
+	if len(models) != 2 {
+		t.Fatalf("models = %d, want the 2 upstream ids: %s", len(models), body)
+	}
+	var names []string
+	for _, m := range models {
+		mm := m.(map[string]any)
+		names = append(names, mm["name"].(string))
+		if mm["model"] != mm["name"] {
+			t.Errorf("model/name mismatch: %v", mm)
+		}
+		if _, present := mm["size"]; present {
+			t.Errorf("size has no honest source on the attach surface, must be omitted: %v", mm)
+		}
+		if _, present := mm["modified_at"]; present {
+			t.Errorf("modified_at has no honest source on the attach surface, must be omitted: %v", mm)
+		}
+	}
+	if strings.Join(names, ",") != "up-model,other" {
+		t.Errorf("names = %v, want up-model,other in upstream order", names)
+	}
+}
+
+// M4: an unreachable attach upstream degrades to the honest empty list
+// — the upstream is the ONLY model source in attach mode, a dead one
+// never falls back to the local store — and the failure is stated on
+// stderr (loud beats silent).
+func TestOllamaTagsAttachUpstreamDownDegrades(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	up.Close() // connection refused
+
+	var errlog bytes.Buffer
+	d := ollamaDaemon(up.URL, ollamaFixture(t), t.TempDir())
+	d.opts.Attach = up.URL
+	d.opts.Stderr = &errlog
+	ts := ollamaTS(t, d)
+
+	resp, err := http.Get(ts.URL + "/api/tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`{"models":[]}`)) {
+		t.Errorf("attach tags with dead upstream = %d %s, want 200 {\"models\":[]}", resp.StatusCode, body)
+	}
+	if bytes.Contains(body, []byte("smollm3-exl3")) {
+		t.Errorf("dead upstream must never fall back to the LOCAL store: %s", body)
+	}
+	if !strings.Contains(errlog.String(), "stone-llama: ") {
+		t.Errorf("silent failure — stderr must state it: %q", errlog.String())
+	}
+}
+
+// M4: /api/show in attach mode answers only ids the upstream's
+// /v1/models lists ({details} — the OpenAI surface carries no
+// model_info/template source), a listed-name miss is 404, and a failed
+// upstream GET is a loud 502.
+func TestOllamaShowAttachUpstream(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sekret" {
+			t.Errorf("attach models Authorization = %q, want Bearer sekret", r.Header.Get("Authorization"))
+		}
+		io.WriteString(w, `{"object":"list","data":[{"id":"up-model"},{"id":"other"}]}`)
+	}))
+	t.Cleanup(up.Close)
+
+	d := ollamaDaemon(up.URL, ollamaFixture(t), t.TempDir())
+	d.opts.Attach = up.URL
+	ts := ollamaTS(t, d)
+
+	code, body := postOllama(t, ts, "/api/show", `{"name":"up-model"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, body)
+	}
+	keys, got := jsonKeys(t, body)
+	wantKeys(t, "attach show reply", keys, []string{"details"})
+	if det := got["details"].(map[string]any); len(det) != 0 {
+		t.Errorf("details = %v, want {} (nothing answerable on the OpenAI surface)", det)
+	}
+
+	// a local-store id is not on the upstream surface → 404
+	code, body = postOllama(t, ts, "/api/show", `{"name":"smollm3-exl3"}`)
+	if code != http.StatusNotFound || !strings.Contains(string(body), "not found") {
+		t.Errorf("local-store name in attach mode = %d %s, want 404", code, body)
+	}
+
+	// dead upstream: the GET itself failed → 502 naming it, never 200/404
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	up2.Close()
+	d2 := ollamaDaemon(up2.URL, ollamaFixture(t), t.TempDir())
+	d2.opts.Attach = up2.URL
+	ts2 := ollamaTS(t, d2)
+	code, body = postOllama(t, ts2, "/api/show", `{"name":"up-model"}`)
+	if code != http.StatusBadGateway || !bytes.Contains(body, []byte(`"error"`)) {
+		t.Errorf("dead upstream show = %d %s, want 502 with an error", code, body)
+	}
+}

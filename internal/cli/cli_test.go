@@ -1537,7 +1537,7 @@ func TestContinueResumesNewestSession(t *testing.T) {
 	if err := os.Chtimes(sessionFile("m", "200"), past, past); err != nil {
 		t.Fatal(err)
 	}
-	got, err := lastSession("m")
+	got, err := lastSession("m", io.Discard)
 	if err != nil {
 		t.Fatalf("lastSession: %v", err)
 	}
@@ -1626,5 +1626,140 @@ func TestHistoryDropsOldestWhenOverBudget(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "history trimmed 1 turns") || !strings.Contains(errb.String(), "exact") {
 		t.Errorf("trim notice missing or not labelled exact: %q", errb.String())
+	}
+}
+
+// M6: with /v1/token/encode dead, the fallback must count the payload
+// actually sent (system + turns + current prompt) — a huge pasted
+// prompt, which the session file cannot see, still forces the trim.
+func TestHistoryFallbackCountsPromptAndSystem(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // endpoint absent → fallback path
+	}))
+	defer srv.Close()
+	prof := runProfile{MaxTokens: 100, System: "sys"}
+	prompt := strings.Repeat("P", 3000)
+	s := &Session{Model: "m", System: "sys", Turns: []Turn{
+		{User: strings.Repeat("u1", 20), Assistant: strings.Repeat("a1", 20)},
+		{User: strings.Repeat("u2", 20), Assistant: strings.Repeat("a2", 20)},
+	}}
+	fc := func(sess *Session) int {
+		b, _ := json.Marshal(buildMessages(sess, prof, prompt))
+		return len(b) / 4
+	}
+	full := fc(s)
+	oneLess := fc(&Session{Model: s.Model, System: s.System, Turns: s.Turns[1:]})
+	sb, _ := json.Marshal(s)
+	oldDefect := len(sb) / 4 // what the defect counted: no prompt, no system
+	if !(oldDefect < oneLess && oneLess < full) {
+		t.Fatalf("fixture: old=%d oneLess=%d full=%d", oldDefect, oneLess, full)
+	}
+	// Land the budget in [oneLess, full): the session file fits, the
+	// sent payload does not — only the correct count trims.
+	nCtx := 1
+	for {
+		if b := int(0.95*float64(nCtx)) - 100; b >= oneLess && b < full {
+			break
+		}
+		nCtx++
+		if nCtx > 100000 {
+			t.Fatal("no ctx lands the budget in [oneLess, full)")
+		}
+	}
+	var errb bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, prompt, &errb)
+	if len(s.Turns) != 1 {
+		t.Errorf("turns = %d, want 1 — the fallback must see the %d-byte prompt", len(s.Turns), len(prompt))
+	}
+	if !strings.Contains(errb.String(), "history trimmed 1 turns") || !strings.Contains(errb.String(), "estimated") {
+		t.Errorf("trim notice missing or not labelled estimated: %q", errb.String())
+	}
+}
+
+// M7: a dead /v1/token/encode is probed exactly ONCE per process run —
+// never once per dropped turn (2s × N on a wedged endpoint), never
+// again on the next guard call.
+func TestHistoryDeadEncodeProbedOncePerRun(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound) // endpoint absent
+	}))
+	defer srv.Close()
+	getHits := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits
+	}
+	prof := runProfile{MaxTokens: 100, System: "sys"}
+	s := &Session{Model: "m", System: "sys", Turns: []Turn{
+		{User: strings.Repeat("u1", 60), Assistant: strings.Repeat("a1", 60)},
+		{User: strings.Repeat("u2", 60), Assistant: strings.Repeat("a2", 60)},
+		{User: strings.Repeat("u3", 60), Assistant: strings.Repeat("a3", 60)},
+	}}
+	prompt := "q"
+	fc := func(sess *Session) int {
+		b, _ := json.Marshal(buildMessages(sess, prof, prompt))
+		return len(b) / 4
+	}
+	c0 := fc(s)
+	c1 := fc(&Session{Model: s.Model, System: s.System, Turns: s.Turns[1:]})
+	c2 := fc(&Session{Model: s.Model, System: s.System, Turns: s.Turns[2:]})
+	if !(c2 < c1 && c1 < c0) {
+		t.Fatalf("fixture: c2=%d c1=%d c0=%d", c2, c1, c0)
+	}
+	// Budget in [c2, c1): two drops are needed — a multi-drop trim.
+	nCtx := 1
+	for {
+		if b := int(0.95*float64(nCtx)) - 100; b >= c2 && b < c1 {
+			break
+		}
+		nCtx++
+		if nCtx > 100000 {
+			t.Fatal("no ctx lands the budget in [c2, c1)")
+		}
+	}
+	var errb bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, prompt, &errb)
+	if len(s.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1 (two drops)", len(s.Turns))
+	}
+	if !strings.Contains(errb.String(), "history trimmed 2 turns") {
+		t.Errorf("want a multi-drop trim: %q", errb.String())
+	}
+	if got := getHits(); got != 1 {
+		t.Errorf("dead /v1/token/encode probed %d times across the trim, want 1", got)
+	}
+	// next turn, same process run: still no probe
+	var errb2 bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, prompt, &errb2)
+	if got := getHits(); got != 1 {
+		t.Errorf("probed again on a later guard call: %d hits, want 1", got)
+	}
+}
+
+// M8: a corrupt session file is reported loudly on stderr (loud beats
+// silent) and the run still proceeds as no-session — never a silent
+// errNoSession that lets the transcript rot.
+func TestHistoryCorruptFileReportsLoudly(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := os.MkdirAll(sessionDir("m"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionFile("m", "999"), []byte("{definitely not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errb := run("run", "m", "--history")
+	if code != 0 {
+		t.Errorf("--history: code = %d, want 0 (proceeds)", code)
+	}
+	if !strings.Contains(errb, "history at") || !strings.Contains(errb, "corrupt") {
+		t.Errorf("silent corrupt file — no warning: %q", errb)
+	}
+	if !strings.Contains(errb, "no prior session") {
+		t.Errorf("must still proceed as no-session: %q", errb)
 	}
 }

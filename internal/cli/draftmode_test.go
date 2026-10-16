@@ -61,3 +61,31 @@ func TestDraftModeFlagParsesNgram(t *testing.T) {
 		t.Errorf("serve --draft-mode ngram: code/err = %d/%q, want 1 (flag parsed)", code, errb)
 	}
 }
+
+// M9: run --draft-mode is validated but inert — it must SAY so at
+// parse time instead of being swallowed, and the exit code stays
+// whatever the run would have been without the flag.
+func TestRunDraftModeFlagNoticesNoEffect(t *testing.T) {
+	if os.Getenv("SL_H4_CHILD") == "1" {
+		t.Skip("recursive starter guard (base re-execs the test binary)")
+	}
+	t.Setenv("SL_H4_CHILD", "1")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	t.Setenv("STONE_LLAMA_UPSTREAM", "http://127.0.0.1:1")
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	notice := "--draft-mode applies to 'serve', not 'run'"
+	for _, args := range [][]string{
+		{"run", "somemodel", "--draft-mode", "ngram", "-p", "hi"},
+		{"run", "somemodel", "--draft-mode=off", "-p", "hi"},
+	} {
+		code, _, errb := run(args...)
+		if code != 1 {
+			t.Errorf("%v: code = %d, want 1 (exit code unchanged)", args, code)
+		}
+		if !strings.Contains(errb, notice) {
+			t.Errorf("%v: no notice in stderr: %q", args, errb)
+		}
+	}
+}

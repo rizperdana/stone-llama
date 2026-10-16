@@ -199,6 +199,9 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "stone-llama run: bad --draft-mode %q (want ngram|off)\n", val)
 				return 2
 			}
+			// validated, then discarded — drafting is boot-config +
+			// serve only, so say it; never swallow the flag silently.
+			fmt.Fprintf(stderr, "stone-llama run: --draft-mode applies to 'serve', not 'run' — no effect\n")
 		case a == "--no-autofit":
 			noAutofit = true
 		case a == "--max-tokens" || strings.HasPrefix(a, "--max-tokens="):
@@ -304,7 +307,7 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// --history prints the newest session's turns and exits before backend
 	// resolution: no HTTP request, no daemon spawn.
 	if histFlag {
-		s, herr := lastSession(model)
+		s, herr := lastSession(model, stderr)
 		if herr != nil {
 			fmt.Fprintf(stderr, "stone-llama: no prior session for %s\n", model)
 			return 0
@@ -369,7 +372,7 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// fresh one — every completed turn is saved under chats/<model>/.
 	session := newSession(model, prof.System)
 	if contFlag {
-		if s, err := lastSession(model); err == nil {
+		if s, err := lastSession(model, stderr); err == nil {
 			session = s
 			fmt.Fprintf(stderr, "stone-llama: resumed session with %d turns\n", len(s.Turns))
 		} else {

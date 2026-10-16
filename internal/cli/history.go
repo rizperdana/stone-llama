@@ -43,6 +43,10 @@ type Session struct {
 	Updated int64  `json:"updated"`
 	System  string `json:"system,omitempty"`
 	Turns   []Turn `json:"turns"`
+
+	// encodeMiss memoizes a failed /v1/token/encode probe for this
+	// process run (unexported: never persisted; a new run probes again).
+	encodeMiss bool
 }
 
 func newSession(model, system string) *Session {
@@ -103,22 +107,26 @@ func listSessionIDs(model string) ([]string, error) {
 	return ids, nil
 }
 
-// lastSession loads the newest session for model; errNoSession if none exists.
-func lastSession(model string) (*Session, error) {
+// lastSession loads the newest session for model; errNoSession if none
+// exists. stderr reports a corrupt file loudly (loud beats silent) —
+// callers still proceed with errNoSession, never silently.
+func lastSession(model string, stderr io.Writer) (*Session, error) {
 	ids, err := listSessionIDs(model)
 	if err != nil || len(ids) == 0 {
 		return nil, errNoSession
 	}
-	return loadSession(model, ids[0])
+	return loadSession(model, ids[0], stderr)
 }
 
-func loadSession(model, id string) (*Session, error) {
-	b, err := os.ReadFile(sessionFile(model, id))
+func loadSession(model, id string, stderr io.Writer) (*Session, error) {
+	path := sessionFile(model, id)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errNoSession
 	}
 	var s Session
 	if err := json.Unmarshal(b, &s); err != nil {
+		fmt.Fprintf(stderr, "stone-llama: history at %s is corrupt (%v)\n", path, err)
 		return nil, errNoSession
 	}
 	return &s, nil
@@ -189,15 +197,6 @@ func appendTurn(s *Session, user, assistant string) {
 	s.Updated = time.Now().Unix()
 }
 
-// sessionTokens is the fallback token estimate: the marshaled payload length
-// divided by four — i.e. ~4 bytes per token (UTF-8 chars are not counted
-// individually, so this is a byte/token heuristic, not tokens/char). It is the
-// overflow guard used when the runtime exposes no /v1/token/encode endpoint.
-func sessionTokens(s *Session) int {
-	b, _ := json.Marshal(s)
-	return len(b) / 4
-}
-
 // trimSession drops the OLDEST turn pairs until count(s) fits the context
 // budget, never the system message. Trimming is intentionally persistent:
 // the caller saves the trimmed session, so dropped pairs leave the file too
@@ -240,11 +239,13 @@ func trimSession(s *Session, nCtx, reserved int, count func(*Session) (int, bool
 
 // guard trims this session to fit the context window before the next chat
 // request. nCtx is resolved once per run (upstreamCtx). The token count
-// comes from POST {base}/v1/token/encode on the exact message array,
-// re-measured after every drop; the len(json)/4 estimate is only the
-// fallback when that endpoint never answers, and the stderr figures are
-// labelled exact vs estimated accordingly. reserved defaults to 2048 (the
-// REPL cap) when --max-tokens 0 (unbounded) is in effect.
+// comes from POST {base}/v1/token/encode on the exact message array; once
+// that endpoint fails, the failure is memoized for the process run
+// (absence is a stable property — a dead probe never costs 2s × N drops),
+// and the len(json)/4 estimate of that same array — prompt + system
+// included — carries the rest, labelled exact vs estimated on stderr.
+// reserved defaults to 2048 (the REPL cap) when --max-tokens 0
+// (unbounded) is in effect.
 func (s *Session) guard(nCtx int, base, token string, prof runProfile, prompt string, stderr io.Writer) {
 	if nCtx <= 0 {
 		return // no context length known: guard skipped
@@ -254,10 +255,20 @@ func (s *Session) guard(nCtx int, base, token string, prof runProfile, prompt st
 		reserved = 2048
 	}
 	count := func(sess *Session) (int, bool) {
-		if n, ok := encodeTokens(base, token, buildMessages(sess, prof, prompt)); ok {
-			return n, true
+		// The fallback counts the payload ACTUALLY SENT — buildMessages
+		// (system + turns + current prompt), not the session file, which
+		// hides the prompt (the main overflow risk). ~4 bytes/token.
+		msgs := buildMessages(sess, prof, prompt)
+		if !sess.encodeMiss {
+			if n, ok := encodeTokens(base, token, msgs); ok {
+				return n, true
+			}
+			// ponytail: per-run memo of "endpoint absent"; drop this line
+			// if /v1/token/encode recovering mid-run becomes a real case.
+			sess.encodeMiss = true
 		}
-		return sessionTokens(sess), false
+		b, _ := json.Marshal(msgs)
+		return len(b) / 4, false
 	}
 	trimmed, before, after, guarded, exact := trimSession(s, nCtx, reserved, count)
 	if guarded && trimmed > 0 {
@@ -296,7 +307,8 @@ func upstreamCtx(base, token string) int {
 
 // encodeTokens asks the upstream to count the message array (POST
 // {base}/v1/token/encode). Any failure (endpoint absent, unexpected shape)
-// returns ok=false so the caller falls back to sessionTokens.
+// returns ok=false so the caller falls back to the len(json)/4 estimate
+// of that same array.
 func encodeTokens(base, token string, msgs []map[string]string) (int, bool) {
 	body, err := json.Marshal(map[string]any{"messages": msgs})
 	if err != nil {

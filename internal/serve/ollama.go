@@ -540,10 +540,54 @@ func (d *daemon) ollamaKeepAliveUnload(ctx context.Context, raw json.RawMessage)
 	}
 }
 
+// attachModels lists the attach upstream's model ids (OpenAI
+// /v1/models data[].id, in order) with the attach-mode bearer — the
+// only model source attach mode has. Any failure is an error: callers
+// report it and answer the honest empty/404/502, never the local store.
+func (d *daemon) attachModels() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.conn.BaseURL+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if d.upKey != "" {
+		req.Header.Set("Authorization", "Bearer "+d.upKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, extractMessage(b))
+	}
+	var p struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&p); err != nil {
+		return nil, fmt.Errorf("decode /v1/models: %w", err)
+	}
+	ids := make([]string, 0, len(p.Data))
+	for _, m := range p.Data {
+		if m.ID != "" {
+			ids = append(ids, m.ID)
+		}
+	}
+	return ids, nil
+}
+
 // handleOllamaTags: GET /api/tags — the model store in ollama's shape.
 // Fields without an honest source are omitted, never faked: no digest
 // (our manifests carry per-file sha256, not a manifest digest), no
 // parameter_size (no honest source in config.json/manifest).
+// Attach path: exactly what the upstream's /v1/models lists — the
+// local store belongs to another machine in attach mode, and size/
+// modified_at have no honest source on the OpenAI surface. An
+// unreachable upstream reports the honest empty list, never the store.
 // TabbyAPI path: the ModelsDir store scan. llama path: exactly the GGUF
 // the daemon spawned with -m — the model it actually serves — because
 // resolveGGUF accepts a path outside ModelsDir, where a scan sees
@@ -556,14 +600,24 @@ func (d *daemon) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
 	type tag struct {
 		Model      string         `json:"model"`
 		Name       string         `json:"name"`
-		Size       int64          `json:"size"`
+		Size       int64          `json:"size,omitempty"`
 		ModifiedAt string         `json:"modified_at,omitempty"`
 		Details    map[string]any `json:"details"`
 	}
 	out := struct {
 		Models []tag `json:"models"`
 	}{Models: []tag{}}
-	if _, isLlama := d.be.(llamaBackend); isLlama {
+	if d.opts.Attach != "" {
+		ids, err := d.attachModels()
+		if err != nil {
+			fmt.Fprintf(d.opts.Stderr, "stone-llama: attach /v1/models: %v\n", err)
+			// honest empty — the upstream is the only source; a dead
+			// one never falls back to the local store.
+		}
+		for _, id := range ids {
+			out.Models = append(out.Models, tag{Model: id, Name: id, Details: map[string]any{}})
+		}
+	} else if _, isLlama := d.be.(llamaBackend); isLlama {
 		if d.cfgPath != "" {
 			fi, err := os.Stat(d.cfgPath)
 			if err != nil {
@@ -667,7 +721,9 @@ type ollamaShowResponse struct {
 // handleOllamaShow: POST /api/show — the answerable subset only:
 // details, a limited verbatim model_info, and template only when a
 // template file genuinely exists on disk. Everything else (modelfile,
-// parameters, license, info, capabilities…) is omitted.
+// parameters, license, info, capabilities…) is omitted. Attach mode
+// answers only the upstream's listed ids ({} details); the llama path
+// answers the spawned GGUF beside its config.json/template.
 func (d *daemon) handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeOllamaError(w, http.StatusMethodNotAllowed, "use POST")
@@ -689,6 +745,61 @@ func (d *daemon) handleOllamaShow(w http.ResponseWriter, r *http.Request) {
 		writeOllamaError(w, http.StatusBadRequest, "model name is required")
 		return
 	}
+	// Attach: the upstream's /v1/models is the only model source —
+	// answer only ids it lists ({} details: the OpenAI surface carries
+	// no model_info/template source), a miss is 404, and a failed
+	// upstream GET is a loud 502 — never the local store.
+	if d.opts.Attach != "" {
+		ids, err := d.attachModels()
+		if err != nil {
+			writeOllamaError(w, http.StatusBadGateway, "attach /v1/models: "+err.Error())
+			return
+		}
+		for _, id := range ids {
+			if id == name {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(ollamaShowResponse{Details: map[string]any{}})
+				return
+			}
+		}
+		writeOllamaError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", name))
+		return
+	}
+	// llama: mirror the tags branch — the spawned GGUF is the model;
+	// its directory's config.json/template supply the honest subset.
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		if d.cfgPath == "" || filepath.Base(d.cfgPath) != name {
+			writeOllamaError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", name))
+			return
+		}
+		dir := filepath.Dir(d.cfgPath)
+		out := ollamaShowResponse{Details: map[string]any{"format": "gguf"}}
+		cfg, err := readModelConfig(dir)
+		if err != nil {
+			writeOllamaError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if cfg != nil {
+			info := map[string]any{}
+			for _, k := range showInfoKeys {
+				if v, ok := cfg[k]; ok {
+					info[k] = v
+				}
+			}
+			if len(info) > 0 {
+				out.ModelInfo = info
+			}
+		}
+		if f, err := os.Open(filepath.Join(dir, "template")); err == nil {
+			b, _ := io.ReadAll(io.LimitReader(f, 1<<20))
+			f.Close()
+			out.Template = string(b)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+		return
+	}
+
 	models, _, err := store.Scan(d.opts.ModelsDir)
 	if err != nil {
 		writeOllamaError(w, http.StatusInternalServerError, "scan models: "+err.Error())
