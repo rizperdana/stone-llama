@@ -60,7 +60,10 @@ func (e *Editor) SetHistory(h []string) {
 // empty line returns io.EOF. Raw-mode termios handling is the caller's
 // job (see Raw) so that tests can drive an ordinary io.Reader.
 func (e *Editor) ReadLine(in io.Reader) (string, error) {
-	br := bufio.NewReader(in)
+	br, ok := in.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReader(in)
+	}
 	e.redraw()
 	for {
 		b, err := br.ReadByte()
@@ -73,7 +76,10 @@ func (e *Editor) ReadLine(in io.Reader) (string, error) {
 			switch b {
 			case '\r', '\n':
 				io.WriteString(e.out, "\r\n")
-				return string(e.buf), nil
+				line := string(e.buf)
+				e.buf, e.pos = nil, 0 // fresh line next call (editors are reused)
+				e.hidx = len(e.hist)
+				return line, nil
 			case 0x7f, 0x08: // Backspace / Ctrl-H
 				if e.pos > 0 {
 					e.buf = append(e.buf[:e.pos-1], e.buf[e.pos:]...)

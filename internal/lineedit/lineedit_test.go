@@ -1,6 +1,7 @@
 package lineedit
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -170,5 +171,21 @@ func TestEmptyEnter(t *testing.T) {
 	line, _, err := feed(t, "\r", nil)
 	if err != nil || line != "" {
 		t.Errorf("line=%q err=%v, want empty/nil", line, err)
+	}
+}
+
+// The REPL shares ONE bufio.Reader across prompt lines: ReadLine must
+// not lose buffered type-ahead (a paste or scripted pty delivers several
+// lines in one read — a per-line fresh reader would slurp and drop them,
+// starving the next prompt until timeout).
+func TestReadLinePreservesTypeAhead(t *testing.T) {
+	var out bytes.Buffer
+	e := New(&out, ">>> ")
+	br := bufio.NewReader(strings.NewReader("one\ntwo\nthree\n"))
+	for i, want := range []string{"one", "two", "three"} {
+		line, err := e.ReadLine(br)
+		if err != nil || line != want {
+			t.Fatalf("line %d: line=%q err=%v, want %q/nil", i, line, err, want)
+		}
 	}
 }

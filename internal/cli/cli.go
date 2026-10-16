@@ -660,7 +660,7 @@ func repl(ask func(context.Context, string) error, oneShot string, histFn func()
 		var line string
 		var rerr error
 		if tty {
-			line, rerr = readLineRaw(f, stdout, histFn)
+			line, rerr = readLineRaw(f, in, stdout, histFn) // shared reader: type-ahead survives across lines
 			if errors.Is(rerr, lineedit.ErrInterrupted) {
 				continue // ^C drawn; stay in the REPL
 			}
@@ -709,8 +709,10 @@ func sessionPrompts(s *Session) func() []string {
 // on only for the edit, and the saved termios is restored on return, on
 // panic (defer), and on SIGTERM/SIGHUP landing mid-edit. SIGINT cannot
 // land mid-edit — ISIG is off in raw mode, so ^C arrives as a byte and
-// lineedit abandons the line instead.
-func readLineRaw(f *os.File, stdout io.Writer, histFn func() []string) (string, error) {
+// lineedit abandons the line instead. The reader is shared across prompt
+// lines: a fresh bufio.Reader per line would slurp and drop type-ahead
+// (a paste or scripted pty delivers several lines in one read).
+func readLineRaw(f *os.File, in *bufio.Reader, stdout io.Writer, histFn func() []string) (string, error) {
 	restore, rerr := lineedit.Raw(f)
 	if rerr != nil {
 		return "", rerr
@@ -736,7 +738,7 @@ func readLineRaw(f *os.File, stdout io.Writer, histFn func() []string) (string, 
 	if histFn != nil {
 		ed.SetHistory(histFn())
 	}
-	return ed.ReadLine(f)
+	return ed.ReadLine(in)
 }
 
 // profileSampling reads a model's generation_config.json from the local
