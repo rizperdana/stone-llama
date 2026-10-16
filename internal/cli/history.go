@@ -107,12 +107,19 @@ func listSessionIDs(model string) ([]string, error) {
 	return ids, nil
 }
 
-// lastSession loads the newest session for model; errNoSession if none
-// exists. stderr reports a corrupt file loudly (loud beats silent) —
-// callers still proceed with errNoSession, never silently.
+// lastSession loads the newest session for model; errNoSession ONLY when
+// the model genuinely has no sessions (missing dir or empty listing). Any
+// other listSessionIDs error (EACCES, ...) is returned verbatim so callers
+// report the real failure instead of a bogus "no prior session" — a real
+// error must never read as an empty history. stderr reports a corrupt file
+// loudly (loud beats silent) — callers still proceed with errNoSession,
+// never silently.
 func lastSession(model string, stderr io.Writer) (*Session, error) {
 	ids, err := listSessionIDs(model)
-	if err != nil || len(ids) == 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
 		return nil, errNoSession
 	}
 	return loadSession(model, ids[0], stderr)

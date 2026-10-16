@@ -305,10 +305,16 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	// --history prints the newest session's turns and exits before backend
-	// resolution: no HTTP request, no daemon spawn.
+	// resolution: no HTTP request, no daemon spawn. A real history error
+	// (unreadable dir) is reported as such and exits 1 — only a genuinely
+	// empty history gets the no-session notice (exit 0).
 	if histFlag {
 		s, herr := lastSession(model, stderr)
 		if herr != nil {
+			if !errors.Is(herr, errNoSession) {
+				fmt.Fprintf(stderr, "stone-llama: history: %v\n", herr)
+				return 1
+			}
 			fmt.Fprintf(stderr, "stone-llama: no prior session for %s\n", model)
 			return 0
 		}
@@ -369,14 +375,19 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	// Chat history: --continue resumes the newest persisted session, else a
-	// fresh one — every completed turn is saved under chats/<model>/.
+	// fresh one — every completed turn is saved under chats/<model>/. Only
+	// a genuinely empty history gets the no-session notice; a real error
+	// (unreadable dir) is reported as itself before starting fresh.
 	session := newSession(model, prof.System)
 	if contFlag {
-		if s, err := lastSession(model, stderr); err == nil {
+		switch s, err := lastSession(model, stderr); {
+		case err == nil:
 			session = s
 			fmt.Fprintf(stderr, "stone-llama: resumed session with %d turns\n", len(s.Turns))
-		} else {
+		case errors.Is(err, errNoSession):
 			fmt.Fprintf(stderr, "stone-llama: no prior session for %s, starting a new one\n", model)
+		default:
+			fmt.Fprintf(stderr, "stone-llama: history: %v, starting a new one\n", err)
 		}
 	}
 

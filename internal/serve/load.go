@@ -149,8 +149,13 @@ func (d *daemon) initialLoad(ctx context.Context, model string) {
 		// are unknown on this path — both are omitempty, never faked).
 		// cfgPath guard: a llama daemon with no resolved GGUF serves
 		// nothing and reports nothing.
+		// The recorded identifier is filepath.Base(cfgPath) — the same
+		// string /api/tags reports as Name and /api/show looks up. The
+		// user's typed model may be a directory or relative path; one
+		// served GGUF gets one identifier on every surface (ollama
+		// clients reference models by the tags Name).
 		if model != "" && d.cfgPath != "" {
-			d.markLoaded(model, 0, "")
+			d.markLoaded(filepath.Base(d.cfgPath), 0, "")
 		}
 		return
 	}

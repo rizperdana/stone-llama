@@ -523,7 +523,10 @@ func Serve(ctx context.Context, opts Options) error {
 		// GET /v1/models on every new install). Provision the dir before
 		// Prepare renders the config that points at it; BackendFor above
 		// already refused a bad backend name without writing anything.
-		if err := os.MkdirAll(opts.ModelsDir, 0o755); err != nil {
+		// 0700: every state dir (logs/, runtime/, history, and pull's own
+		// models-dir creation) is 0700 — first creator wins, so one mode
+		// only. The child runs as the same user; 0700 is safe for it.
+		if err := os.MkdirAll(opts.ModelsDir, 0o700); err != nil {
 			return fmt.Errorf("create models dir: %w", err)
 		}
 		conn, cfgPath, perr2 := be.Prepare(&opts, port)

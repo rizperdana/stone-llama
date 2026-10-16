@@ -637,6 +637,10 @@ func TestServeSpawnFailureNoState(t *testing.T) {
 // its very first request — an absent dir made TabbyAPI's listdir 500
 // GET /v1/models on every new install. Serve must provision the dir
 // before the backend spawns; hermetic (spawn seam, no real child).
+// L6: the mode matches every other state dir (pull.go's models dir,
+// logs/, runtime/, history: all 0700) — first creator wins, so 0755
+// here would make the perms depend on which command ran first. The
+// child reads it as the same user; 0700 is safe.
 func TestServeCreatesModelsDirBeforeSpawn(t *testing.T) {
 	p, err := freePort()
 	if err != nil {
@@ -645,13 +649,19 @@ func TestServeCreatesModelsDirBeforeSpawn(t *testing.T) {
 	dataDir := t.TempDir()
 	models := filepath.Join(dataDir, "models") // deliberately never created here
 	var statErr error
+	var perm os.FileMode
 	serr := Serve(context.Background(), Options{
 		Host:      "127.0.0.1",
 		Port:      p,
 		DataDir:   dataDir,
 		ModelsDir: models,
 		spawn: func(string, string, string, int, map[string]string) (*child, error) {
-			_, statErr = os.Stat(models)
+			fi, err := os.Stat(models)
+			if err != nil {
+				statErr = err
+			} else {
+				perm = fi.Mode().Perm()
+			}
 			return nil, errors.New("stop before a real child")
 		},
 	})
@@ -660,6 +670,9 @@ func TestServeCreatesModelsDirBeforeSpawn(t *testing.T) {
 	}
 	if statErr != nil {
 		t.Fatalf("models dir absent at spawn time: %v", statErr)
+	}
+	if perm != 0o700 {
+		t.Errorf("fresh models dir mode = %04o, want 0700 (state-dir convention, pull.go:118)", perm)
 	}
 }
 
@@ -1842,5 +1855,78 @@ func TestInitialLoadLlamaBackendReportsSpawnModel(t *testing.T) {
 	}
 	if st.Model != "SmolLM3-Q4_K_M.gguf" {
 		t.Errorf("status model = %q, want the spawn model the llama backend already serves", st.Model)
+	}
+}
+
+// L7: the llama backend must identify the served GGUF with ONE string on
+// both surfaces — /-/status Model and /api/tags Name — chosen as the
+// resolved basename (filepath.Base(cfgPath)): ollama clients reference
+// models by the tags Name, and /api/show already looks up that basename,
+// so a raw user string (a dir or relative path) on /-/status was the
+// disagreeing side. The typed model is intentionally a DIRECTORY here.
+func TestLlamaStatusAndTagsAgreeOnSpawnGGUF(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(backend.Close)
+	d, errBuf := newInitialLoadHarness(t, backend)
+
+	gguf := filepath.Join(t.TempDir(), "SmolLM3-Q4_K_M.gguf")
+	if err := os.WriteFile(gguf, []byte("ggufbytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d.be = llamaBackend{}
+	d.cfgPath = gguf
+	d.opts.Now = time.Now
+
+	d.initialLoad(context.Background(), filepath.Dir(gguf)) // a dir, not the file
+	if errBuf.Len() != 0 {
+		t.Fatalf("initialLoad wrote stderr on the llama path: %q", errBuf.String())
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+d.st.Addr()+"/-/status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/-/status = %d: %s", resp.StatusCode, b)
+	}
+	var st Status
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatalf("decode /-/status: %v", err)
+	}
+
+	tresp, err := http.Get("http://" + d.st.Addr() + "/api/tags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tresp.Body.Close()
+	tb, _ := io.ReadAll(tresp.Body)
+	if tresp.StatusCode != http.StatusOK {
+		t.Fatalf("/api/tags = %d: %s", tresp.StatusCode, tb)
+	}
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(tb, &tags); err != nil {
+		t.Fatalf("decode /api/tags: %v", err)
+	}
+	if len(tags.Models) != 1 {
+		t.Fatalf("tags models = %d, want 1: %s", len(tags.Models), tb)
+	}
+	if st.Model != tags.Models[0].Name {
+		t.Errorf("status Model = %q, tags Name = %q — must agree on the served GGUF", st.Model, tags.Models[0].Name)
+	}
+	if st.Model != "SmolLM3-Q4_K_M.gguf" {
+		t.Errorf("status Model = %q, want the resolved basename SmolLM3-Q4_K_M.gguf", st.Model)
 	}
 }

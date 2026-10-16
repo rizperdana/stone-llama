@@ -1203,3 +1203,142 @@ func TestOllamaShowAttachUpstream(t *testing.T) {
 		t.Errorf("dead upstream show = %d %s, want 502 with an error", code, body)
 	}
 }
+
+// L8: a non-stream answer must reach the client WITHOUT waiting behind
+// the keep_alive:0 unload round-trip. The unload stub blocks on release;
+// the response headers therefore only arrive while the unload is still
+// in flight if the handler wrote (and flushed) the answer first. Covers
+// both non-stream handlers: /api/chat and /api/generate.
+func TestOllamaNonStreamRespondsBeforeKeepAliveUnload(t *testing.T) {
+	for _, tc := range []struct{ route, body string }{
+		{"/api/chat", `{"model":"m","stream":false,"keep_alive":0,"messages":[{"role":"user","content":"hi"}]}`},
+		{"/api/generate", `{"model":"m","prompt":"hi","stream":false,"keep_alive":0}`},
+	} {
+		func() {
+			up, _ := cannedUpstream(t)
+			release := make(chan struct{})
+			defer func() { // never leave the stub blocked, even on failure
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			hits := make(chan string, 1)
+			uts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits <- r.Header.Get("Authorization")
+				<-release // hold the round-trip open for the whole assertion
+				io.WriteString(w, `{"status":"unloaded"}`)
+			}))
+			t.Cleanup(uts.Close)
+			host, portStr, err := net.SplitHostPort(strings.TrimPrefix(uts.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dataDir := t.TempDir()
+			if err := WriteState(dataDir, State{PID: os.Getpid(), Host: host, Port: port, Token: "state-token"}); err != nil {
+				t.Fatal(err)
+			}
+			d := ollamaDaemon(up.URL, t.TempDir(), dataDir)
+			ts := ollamaTS(t, d)
+
+			type posted struct {
+				code int
+				body []byte
+				err  error
+			}
+			headers := make(chan *http.Response, 1)
+			done := make(chan posted, 1)
+			go func() {
+				resp, perr := http.Post(ts.URL+tc.route, "application/json", strings.NewReader(tc.body))
+				if perr != nil {
+					done <- posted{err: perr}
+					return
+				}
+				headers <- resp
+				b, rerr := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				done <- posted{code: resp.StatusCode, body: b, err: rerr}
+			}()
+
+			select {
+			case <-headers:
+				// response started while the unload stub is still holding —
+				// the answer did not wait behind the unload I/O
+			case res := <-done:
+				t.Fatalf("%s: request finished before the unload stub was even reached (err=%v code=%d)", tc.route, res.err, res.code)
+			case <-time.After(3 * time.Second):
+				t.Fatalf("%s: no response while the keep_alive unload round-trip was blocked — the client waits behind the unload", tc.route)
+			}
+			close(release)
+			select {
+			case auth := <-hits:
+				if auth != "Bearer state-token" {
+					t.Errorf("%s: unload Authorization = %q, want Bearer state-token", tc.route, auth)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("%s: keep_alive 0 never hit the unload stub", tc.route)
+			}
+			res := <-done
+			if res.err != nil || res.code != http.StatusOK {
+				t.Fatalf("%s: code=%d err=%v body=%s", tc.route, res.code, res.err, res.body)
+			}
+			if !bytes.Contains(res.body, []byte(`"done":true`)) && !bytes.Contains(res.body, []byte(`"response"`)) {
+				t.Errorf("%s: unexpected non-stream body: %s", tc.route, res.body)
+			}
+		}()
+	}
+}
+
+// L9: a quoted "true"/"false" is a boolean, not an effort string — it
+// maps to the enable_thinking shapes and must never ride through as
+// reasoning_effort "true"/"false". Other quoted strings stay efforts.
+func TestOllamaChatThinkQuotedBools(t *testing.T) {
+	up, last := cannedUpstream(t)
+	ts := ollamaTS(t, ollamaDaemon(up.URL, t.TempDir(), t.TempDir()))
+
+	postThink := func(think string) map[string]any {
+		t.Helper()
+		code, body := postOllama(t, ts, "/api/chat",
+			`{"model":"m","stream":false,"think":`+think+`,"messages":[{"role":"user","content":"hi"}]}`)
+		if code != http.StatusOK {
+			t.Fatalf("think %s: status = %d, body = %s", think, code, body)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(last("/v1/chat/completions"), &out); err != nil {
+			t.Fatalf("decode outbound: %v", err)
+		}
+		return out
+	}
+
+	out := postThink(`"true"`)
+	if out["enable_thinking"] != true {
+		t.Errorf(`think "true" enable_thinking = %v, want true`, out["enable_thinking"])
+	}
+	if _, present := out["reasoning_effort"]; present {
+		t.Errorf(`think "true" must not emit reasoning_effort, got %v`, out["reasoning_effort"])
+	}
+	if kw, _ := out["chat_template_kwargs"].(map[string]any); kw == nil || kw["enable_thinking"] != true {
+		t.Errorf(`think "true" chat_template_kwargs = %v, want enable_thinking true`, out["chat_template_kwargs"])
+	}
+
+	out = postThink(`"false"`)
+	if out["enable_thinking"] != false {
+		t.Errorf(`think "false" enable_thinking = %v, want false`, out["enable_thinking"])
+	}
+	if _, present := out["reasoning_effort"]; present {
+		t.Errorf(`think "false" must not emit reasoning_effort, got %v`, out["reasoning_effort"])
+	}
+	if kw, _ := out["chat_template_kwargs"].(map[string]any); kw == nil || kw["enable_thinking"] != false {
+		t.Errorf(`think "false" chat_template_kwargs = %v, want enable_thinking false`, out["chat_template_kwargs"])
+	}
+
+	out = postThink(`"high"`) // other quoted strings stay effort strings
+	if out["enable_thinking"] != true || out["reasoning_effort"] != "high" {
+		t.Errorf(`think "high" → enable_thinking/effort = %v/%v, want true/high`, out["enable_thinking"], out["reasoning_effort"])
+	}
+}

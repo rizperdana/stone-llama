@@ -247,7 +247,6 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 			writeOllamaError(w, http.StatusBadGateway, "decode upstream chat reply: "+err.Error())
 			return
 		}
-		d.ollamaKeepAliveUnload(r.Context(), req.KeepAlive)
 		content, reason := "", ""
 		if len(cr.Choices) > 0 {
 			content, reason = cr.Choices[0].Message.Content, cr.Choices[0].FinishReason
@@ -276,6 +275,18 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+		// The answer goes on the wire BEFORE the keep_alive unload
+		// round-trip: the client must never wait behind unload I/O for
+		// a reply that is already complete. Flush pushes the buffered
+		// bytes (headers + body) out now — without it a small JSON
+		// reply would sit in the connection buffer until handler
+		// return, i.e. until the unload finishes. The unload runs
+		// synchronously, still before the handler returns (r.Context
+		// stays valid until then), so ordering is deterministic.
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		d.ollamaKeepAliveUnload(r.Context(), req.KeepAlive)
 		return
 	}
 
@@ -325,7 +336,11 @@ func (d *daemon) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
 // enable_thinking true PLUS reasoning_effort verbatim (the backend
 // forwards it to the chat template; accepted values are the model's);
 // absent/null → no keys. Anything else is an error — a client's
-// request is never silently downgraded or dropped.
+// request is never silently downgraded or dropped. A QUOTED boolean
+// ("true"/"false" as JSON strings) is what it means — the boolean
+// mapping, never an effort string forwarded verbatim as the invalid
+// reasoning_effort "true"/"false"; any other quoted string stays an
+// effort.
 func ollamaThink(raw json.RawMessage) (*bool, string, error) {
 	if !rawPresent(raw) {
 		return nil, "", nil
@@ -341,6 +356,12 @@ func ollamaThink(raw json.RawMessage) (*bool, string, error) {
 		var effort string
 		if err := json.Unmarshal(raw, &effort); err != nil {
 			return nil, "", fmt.Errorf("malformed string: %s", s)
+		}
+		switch effort {
+		case "true":
+			return optr(true), "", nil
+		case "false":
+			return optr(false), "", nil
 		}
 		return optr(true), effort, nil
 	}
@@ -955,7 +976,6 @@ func (d *daemon) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 			writeOllamaError(w, http.StatusBadGateway, "decode upstream completions reply: "+err.Error())
 			return
 		}
-		d.ollamaKeepAliveUnload(r.Context(), req.KeepAlive)
 		text, reason := "", ""
 		if len(cr.Choices) > 0 {
 			text, reason = cr.Choices[0].Text, cr.Choices[0].FinishReason
@@ -976,6 +996,14 @@ func (d *daemon) handleOllamaGenerate(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+		// Answer first, unload second — same rule as /api/chat: the
+		// buffered reply is flushed to the client before the
+		// keep_alive round-trip runs (still synchronously, before the
+		// handler returns, so r.Context stays valid).
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		d.ollamaKeepAliveUnload(r.Context(), req.KeepAlive)
 		return
 	}
 

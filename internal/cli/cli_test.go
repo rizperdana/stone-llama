@@ -1763,3 +1763,47 @@ func TestHistoryCorruptFileReportsLoudly(t *testing.T) {
 		t.Errorf("must still proceed as no-session: %q", errb)
 	}
 }
+
+// L5: an unreadable chats dir is a REAL error — --history and --continue
+// must surface it, never fold it into the "no prior session" notice
+// (errNoSession is reserved for a genuinely empty history).
+func TestHistoryUnreadableDirSurfacesError(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	t.Setenv("STONE_LLAMA_UPSTREAM", "http://127.0.0.1:1")
+	isolateConfig(t)
+	dir := sessionDir("m")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil { // EACCES on ReadDir (non-root)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if _, err := lastSession("m", io.Discard); err == nil || err == errNoSession {
+		t.Fatalf("lastSession = %v, want the real listSessionIDs error, not errNoSession", err)
+	}
+
+	// --history: exits 1 with the actual error, not the empty notice
+	code, _, errOut := run("run", "m", "--history")
+	if code != 1 {
+		t.Errorf("--history code = %d, want 1 (real error, not the empty-history notice)", code)
+	}
+	if strings.Contains(errOut, "no prior session") {
+		t.Errorf("--history hid the error behind the empty notice: %q", errOut)
+	}
+	if !strings.Contains(errOut, "stone-llama: history:") {
+		t.Errorf("--history missing the real error: %q", errOut)
+	}
+
+	// --continue: reports the actual error, then starts fresh (never claims
+	// "no prior session" for a dir it could not read)
+	_, _, errOut = run("run", "m", "--continue", "-p", "hi")
+	if strings.Contains(errOut, "no prior session") {
+		t.Errorf("--continue hid the error behind the empty notice: %q", errOut)
+	}
+	if !strings.Contains(errOut, "stone-llama: history:") {
+		t.Errorf("--continue missing the real error: %q", errOut)
+	}
+}
