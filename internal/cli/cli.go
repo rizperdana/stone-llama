@@ -27,6 +27,7 @@ import (
 	"github.com/rizperdana/stone-llama/internal/config"
 	"github.com/rizperdana/stone-llama/internal/doctor"
 	"github.com/rizperdana/stone-llama/internal/hf"
+	"github.com/rizperdana/stone-llama/internal/lineedit"
 	"github.com/rizperdana/stone-llama/internal/pull"
 	"github.com/rizperdana/stone-llama/internal/selfmgmt"
 	"github.com/rizperdana/stone-llama/internal/serve"
@@ -483,7 +484,7 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, session *Sessio
 		}
 		return nil
 	}
-	return repl(ask, oneShot, stdin, stdout, stderr)
+	return repl(ask, oneShot, sessionPrompts(session), stdin, stdout, stderr)
 }
 
 // streamDaemon posts a one-shot or REPL through our daemon's proxy
@@ -516,7 +517,7 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 		return nil
 	}
 	loadUnload := st.Mode != "attach"
-	code := repl(ask, oneShot, stdin, stdout, stderr)
+	code := repl(ask, oneShot, sessionPrompts(session), stdin, stdout, stderr)
 	if loadUnload {
 		if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
 			fmt.Fprintln(stdout, "unloaded.")
@@ -595,9 +596,13 @@ var errInterrupted = errors.New("interrupted")
 // Interactive mode catches SIGINT only while a request is in flight: the
 // ask's context is cancelled, the prompt returns, and the default
 // disposition is restored — so a Ctrl-C at the idle prompt still exits.
+// On a real terminal the idle prompt itself is raw-mode edited (lineedit):
+// Ctrl-C there abandons the line and stays in the REPL, Ctrl-D on an
+// empty line exits. Raw mode is on only while a line is being edited —
+// the streaming answer runs cooked, so output never fights the editor.
 // The one-shot path installs no handler: -p keeps default signal
 // behaviour (C).
-func repl(ask func(context.Context, string) error, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+func repl(ask func(context.Context, string) error, oneShot string, histFn func() []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if oneShot != "" {
 		if err := ask(context.Background(), oneShot); err != nil {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
@@ -624,13 +629,24 @@ func repl(ask func(context.Context, string) error, oneShot string, stdin io.Read
 		}
 	}
 	in := bufio.NewReader(stdin)
+	f, isFile := stdin.(*os.File)
+	tty := isFile && isTTY(f) && lineedit.RawSupported()
 	for {
-		fmt.Fprint(stdout, ">>> ")
-		line, rerr := in.ReadString('\n')
+		var line string
+		var rerr error
+		if tty {
+			line, rerr = readLineRaw(f, stdout, histFn)
+			if errors.Is(rerr, lineedit.ErrInterrupted) {
+				continue // ^C drawn; stay in the REPL
+			}
+		} else {
+			fmt.Fprint(stdout, ">>> ")
+			line, rerr = in.ReadString('\n')
+		}
 		text := strings.TrimSpace(line)
 		if text == "" {
 			if rerr != nil {
-				break
+				break // EOF (pipe closed, or Ctrl-D on an empty prompt)
 			}
 			continue
 		}
@@ -649,6 +665,53 @@ func repl(ask func(context.Context, string) error, oneShot string, stdin io.Read
 		}
 	}
 	return 0
+}
+
+// sessionPrompts snapshots the session's user turns most-recent-first —
+// the REPL's Up/Down recall history. Freshly completed turns land in
+// session before the next prompt reads it.
+func sessionPrompts(s *Session) func() []string {
+	return func() []string {
+		h := make([]string, 0, len(s.Turns))
+		for i := len(s.Turns) - 1; i >= 0; i-- {
+			h = append(h, s.Turns[i].User)
+		}
+		return h
+	}
+}
+
+// readLineRaw reads one edited prompt line on a real terminal: raw mode is
+// on only for the edit, and the saved termios is restored on return, on
+// panic (defer), and on SIGTERM/SIGHUP landing mid-edit. SIGINT cannot
+// land mid-edit — ISIG is off in raw mode, so ^C arrives as a byte and
+// lineedit abandons the line instead.
+func readLineRaw(f *os.File, stdout io.Writer, histFn func() []string) (string, error) {
+	restore, rerr := lineedit.Raw(f)
+	if rerr != nil {
+		return "", rerr
+	}
+	defer restore()
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigc)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case s := <-sigc:
+			restore() // the deferred restore does not run on signal death
+			signal.Reset(s)
+			if p, perr := os.FindProcess(os.Getpid()); perr == nil {
+				p.Signal(s) // default disposition: die as the signal intends
+			}
+		case <-done:
+		}
+	}()
+	ed := lineedit.New(stdout, ">>> ")
+	if histFn != nil {
+		ed.SetHistory(histFn())
+	}
+	return ed.ReadLine(f)
 }
 
 // profileSampling reads a model's generation_config.json from the local

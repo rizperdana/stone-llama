@@ -1084,6 +1084,7 @@ func TestRunUnreadableModelListKeepsTypedName(t *testing.T) {
 func TestServePositionalModelAttachNoteAndUsage(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t)) // never probe a live daemon's port
 	// (a) attach + model: note first, then attach attempt ends at the dead port
 	code, out, errb := run("serve", "mymodel", "--attach", "127.0.0.1:9")
 	if code != 1 {
@@ -1112,6 +1113,7 @@ func TestServePositionalModelAttachNoteAndUsage(t *testing.T) {
 func TestServeModelNoRuntimeOneRemedyBlock(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t)) // never probe a live daemon's port
 	code, out, errb := run("serve", "mymodel")
 	if code != 1 {
 		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
