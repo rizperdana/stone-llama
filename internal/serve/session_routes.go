@@ -195,6 +195,10 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			newMsgs = append(newMsgs, map[string]any{"role": "system", "content": s.SystemPrompt})
 		}
 	}
+	recap := s.Recap
+	if recap != "" {
+		newMsgs = append(newMsgs, map[string]any{"role": "system", "content": recap})
+	}
 	for _, t := range s.Turns {
 		newMsgs = append(newMsgs, map[string]any{"role": "user", "content": t.User})
 		newMsgs = append(newMsgs, map[string]any{"role": "assistant", "content": t.Assistant})
@@ -220,19 +224,56 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw["messages"] = newMsgs
-	// trim via trimSession? Need ctx limit. We'll call trimSession on a temp session copy? Reuse s with Turns representing stored+incoming? Simpler: build s.Turns candidate = stored turns + incoming user (as pending) not recorded yet. Trim operates on Turns. We'll trim stored turns only based on count estimate.
-	// Use cli-style count: len(json)/4
-	countFn := func(sess *Session) (int, bool) {
-		// estimate tokens of messages
-		bb, _ := json.Marshal(raw)
-		return len(bb) / 4, false
-	}
-	// trimSession expects Session with Turns; temporarily set Turns to stored turns (already there). It drops oldest until fits. But incoming not included in count; add reserved. We'll just call with nCtx from model? Unknown -> 0 disables. Use 0 (no trim) unless ctx known. Spec wants trim. We'll attempt using d.st.Ctx.
+	// Trim oldest turns until the full payload (stored turns + incoming + recap)
+	// fits the context window, recording a recap of dropped turns.
 	nCtx := d.st.Ctx
 	if nCtx <= 0 {
 		nCtx = 4096
 	}
+	countFn := func(sess *Session) (int, bool) {
+		// rebuild message list from sess.Turns so trimming actually reduces count
+		var msgs []map[string]any
+		if s.SystemPrompt != "" {
+			msgs = append(msgs, map[string]any{"role": "system", "content": s.SystemPrompt})
+		}
+		if sess.Recap != "" {
+			msgs = append(msgs, map[string]any{"role": "system", "content": sess.Recap})
+		}
+		for _, t := range sess.Turns {
+			msgs = append(msgs, map[string]any{"role": "user", "content": t.User})
+			msgs = append(msgs, map[string]any{"role": "assistant", "content": t.Assistant})
+		}
+		for _, m := range incoming {
+			if m["role"] == "system" {
+				continue
+			}
+			msgs = append(msgs, m)
+		}
+		bb, _ := json.Marshal(map[string]any{"messages": msgs})
+		return len(bb) / 4, false
+	}
 	trimSession(s, nCtx, 2048, countFn)
+	// rebuild raw["messages"] after trim
+	var rebuilt []map[string]any
+	if s.SystemPrompt != "" {
+		rebuilt = append(rebuilt, map[string]any{"role": "system", "content": s.SystemPrompt})
+	}
+	if s.Recap != "" {
+		rebuilt = append(rebuilt, map[string]any{"role": "system", "content": s.Recap})
+	}
+	s.mu.RLock()
+	for _, t := range s.Turns {
+		rebuilt = append(rebuilt, map[string]any{"role": "user", "content": t.User})
+		rebuilt = append(rebuilt, map[string]any{"role": "assistant", "content": t.Assistant})
+	}
+	s.mu.RUnlock()
+	for _, m := range incoming {
+		if m["role"] == "system" {
+			continue
+		}
+		rebuilt = append(rebuilt, m)
+	}
+	raw["messages"] = rebuilt
 
 	// persist
 	_ = d.saveSession(s)
