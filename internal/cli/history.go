@@ -37,12 +37,15 @@ type Turn struct {
 // Session is one persisted chat. JSON layout:
 // {"id","model","created","updated","system","turns":[{"user","assistant"}]}
 type Session struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Created int64  `json:"created"`
-	Updated int64  `json:"updated"`
-	System  string `json:"system,omitempty"`
-	Turns   []Turn `json:"turns"`
+	ID      string            `json:"id"`
+	Model   string            `json:"model"`
+	Created int64             `json:"created"`
+	Updated int64             `json:"updated"`
+	Name    string            `json:"name,omitempty"`
+	System  string            `json:"system,omitempty"`
+	Recap   string            `json:"recap,omitempty"`
+	Turns   []Turn            `json:"turns"`
+	Params  map[string]string `json:"params,omitempty"`
 
 	// encodeMiss memoizes a failed /v1/token/encode probe for this
 	// process run (unexported: never persisted; a new run probes again).
@@ -174,18 +177,30 @@ func saveSession(s *Session) error {
 // buildMessages flattens a session into the chat completions message list:
 // system (if any) + alternating turns + the current user prompt.
 func buildMessages(s *Session, prof runProfile, prompt string) []map[string]string {
+	system := prof.System
+	if s != nil && s.System != "" {
+		if prof.System == "" || prof.System == defaultSystemMsg {
+			system = s.System
+		}
+	}
 	n := 1
-	if prof.System != "" {
+	if system != "" {
 		n++
 	}
 	if s != nil {
+		if s.Recap != "" {
+			n++
+		}
 		n += len(s.Turns) * 2
 	}
 	msgs := make([]map[string]string, 0, n)
-	if prof.System != "" {
-		msgs = append(msgs, map[string]string{"role": "system", "content": prof.System})
+	if system != "" {
+		msgs = append(msgs, map[string]string{"role": "system", "content": system})
 	}
 	if s != nil {
+		if s.Recap != "" {
+			msgs = append(msgs, map[string]string{"role": "system", "content": s.Recap})
+		}
 		for _, t := range s.Turns {
 			msgs = append(msgs, map[string]string{"role": "user", "content": t.User})
 			msgs = append(msgs, map[string]string{"role": "assistant", "content": t.Assistant})
@@ -199,6 +214,13 @@ func buildMessages(s *Session, prof runProfile, prompt string) []map[string]stri
 func appendTurn(s *Session, user, assistant string) {
 	if assistant == "" {
 		return
+	}
+	if s.Name == "" && user != "" {
+		r := []rune(user)
+		if len(r) > 30 {
+			r = r[:30]
+		}
+		s.Name = string(r)
 	}
 	s.Turns = append(s.Turns, Turn{User: user, Assistant: assistant})
 	s.Updated = time.Now().Unix()
@@ -215,6 +237,25 @@ func appendTurn(s *Session, user, assistant string) {
 // and the stderr figures always come from the same source. Returns pairs
 // removed, before/after counts, guarded, and exact (every count came from
 // the upstream encode endpoint).
+func recapText(dropped []string, prev string) string {
+	parts := []string{}
+	if prev != "" {
+		parts = append(parts, strings.TrimPrefix(prev, "[Recap] Previous conversation summarized: "))
+	}
+	for _, u := range dropped {
+		r := []rune(u)
+		if len(r) > 40 {
+			r = r[:40]
+		}
+		parts = append(parts, strings.TrimSpace(string(r)))
+	}
+	out := "[Recap] Previous conversation summarized: " + strings.Join(parts, "; ")
+	if len(out) > 200 {
+		out = out[:200]
+	}
+	return out
+}
+
 func trimSession(s *Session, nCtx, reserved int, count func(*Session) (int, bool)) (trimmed, before, after int, guarded, exact bool) {
 	if nCtx <= 0 {
 		return 0, 0, 0, false, false
@@ -229,16 +270,20 @@ func trimSession(s *Session, nCtx, reserved int, count func(*Session) (int, bool
 	if before <= budget {
 		return 0, before, before, true, exact
 	}
-	for len(s.Turns) > 0 {
+	var dropped []string
+	for len(s.Turns) > 0 && before > budget {
+		dropped = append(dropped, s.Turns[0].User)
 		s.Turns = s.Turns[1:]
 		trimmed++
 		after, ok = count(s)
 		exact = exact && ok
+		before = after
 		if after <= budget {
 			break
 		}
 	}
 	if trimmed > 0 {
+		s.Recap = recapText(dropped, s.Recap)
 		s.Updated = time.Now().Unix()
 	}
 	return trimmed, before, after, true, exact
@@ -283,6 +328,7 @@ func (s *Session) guard(nCtx int, base, token string, prof runProfile, prompt st
 		if !exact {
 			label = "estimated"
 		}
+		fmt.Fprintf(stderr, "dropped %d turns (recapped)\n", trimmed)
 		fmt.Fprintf(stderr, "stone-llama: history trimmed %d turns (tokens %d -> %d, ctx %d, %s)\n", trimmed, before, after, nCtx, label)
 	}
 }

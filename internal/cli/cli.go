@@ -472,11 +472,13 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func streamDirect(dec Decision, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer) int {
 	nCtx := upstreamCtx(dec.Base, dec.Token) // context window, once per run
 	out, flush := chatOut(stdout)            // ollama-style markdown on a TTY only
+	rc := &replCtx{session: session, base: dec.Base, token: dec.Token, model: dec.Model, prof: &prof, stdout: stdout, stderr: stderr}
 	ask := func(ctx context.Context, prompt string) error {
 		defer flush() // no buffered tail leaks into the next prompt
-		session.guard(nCtx, dec.Base, dec.Token, prof, prompt, stderr)
-		msgs := buildMessages(session, prof, prompt)
-		body := chatBody(dec.Model, msgs, prof)
+		p := *rc.prof
+		session.guard(nCtx, dec.Base, dec.Token, p, prompt, stderr)
+		msgs := buildMessages(session, p, prompt)
+		body := chatBody(dec.Model, msgs, p)
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, dec.Base+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
@@ -495,7 +497,7 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, session *Sessio
 		}
 		return nil
 	}
-	return repl(ask, oneShot, sessionPrompts(session), stdin, stdout, stderr)
+	return repl(ask, oneShot, sessionPrompts(session), rc, stdin, stdout, stderr)
 }
 
 // chatOut returns the stream writer for chat deltas: a markdown renderer
@@ -518,11 +520,13 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 	base := "http://" + st.Addr()
 	nCtx := upstreamCtx(base, token) // context window, once per run
 	out, flush := chatOut(stdout)    // ollama-style markdown on a TTY only
+	rc := &replCtx{session: session, base: base, token: token, model: st.Model, prof: &prof, stdout: stdout, stderr: stderr}
 	ask := func(ctx context.Context, prompt string) error {
 		defer flush() // no buffered tail leaks into the next prompt
-		session.guard(nCtx, base, token, prof, prompt, stderr)
-		msgs := buildMessages(session, prof, prompt)
-		body := chatBody(st.Model, msgs, prof)
+		p := *rc.prof
+		session.guard(nCtx, base, token, p, prompt, stderr)
+		msgs := buildMessages(session, p, prompt)
+		body := chatBody(st.Model, msgs, p)
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
@@ -542,7 +546,7 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 		return nil
 	}
 	loadUnload := st.Mode != "attach"
-	code := repl(ask, oneShot, sessionPrompts(session), stdin, stdout, stderr)
+	code := repl(ask, oneShot, sessionPrompts(session), rc, stdin, stdout, stderr)
 	if loadUnload {
 		if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
 			fmt.Fprintln(stdout, "unloaded.")
@@ -616,6 +620,17 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (stri
 // returns instead of an error line.
 var errInterrupted = errors.New("interrupted")
 
+// replCtx carries mutable run state the REPL slash commands need.
+type replCtx struct {
+	session *Session
+	base    string
+	token   string
+	model   string
+	prof    *runProfile
+	stdout  io.Writer
+	stderr  io.Writer
+}
+
 // repl runs one-shot or interactive, flushing tokens live. /bye ends it.
 //
 // Interactive mode catches SIGINT only while a request is in flight: the
@@ -627,7 +642,222 @@ var errInterrupted = errors.New("interrupted")
 // the streaming answer runs cooked, so output never fights the editor.
 // The one-shot path installs no handler: -p keeps default signal
 // behaviour (C).
-func repl(ask func(context.Context, string) error, oneShot string, histFn func() []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func patchSession(base, token, id string, body map[string]any) {
+	if base == "" || id == "" {
+		return
+	}
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPatch, strings.TrimRight(base, "/")+"/v1/sessions/"+id, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := probeClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func handleReplCmd(text string, rc *replCtx, stdin io.Reader, stdout, stderr io.Writer) {
+	fields := strings.Fields(text)
+	switch {
+	case text == "/help":
+		fmt.Fprintln(stdout, "Available Commands:")
+		fmt.Fprintln(stdout, "  /help        Show help for commands")
+		fmt.Fprintln(stdout, "  /bye         Exit")
+		fmt.Fprintln(stdout, "  /clear       Clear conversation history")
+		fmt.Fprintln(stdout, "  /list        List available models")
+		fmt.Fprintln(stdout, "  /ps          List running sessions")
+		fmt.Fprintln(stdout, "  /sessions    Alias for /ps")
+		fmt.Fprintln(stdout, "  /show        Show model information")
+		fmt.Fprintln(stdout, "  /set         Set parameters")
+		fmt.Fprintln(stdout, "  /rename      Rename the current session")
+	case text == "/clear":
+		if rc.session != nil {
+			rc.session.Turns = nil
+			rc.session.Recap = ""
+			_ = saveSession(rc.session)
+			patchSession(rc.base, rc.token, rc.session.ID, map[string]any{"turns": []any{}, "recap": ""})
+		}
+		fmt.Fprintln(stdout, "Cleared.")
+	case text == "/list":
+		runList(nil, stdout, stderr)
+	case text == "/ps", text == "/sessions":
+		listReplSessions(rc, stdout, stderr)
+	case strings.HasPrefix(text, "/show"):
+		model := rc.model
+		if len(fields) >= 3 {
+			model = fields[len(fields)-1]
+		}
+		if rc.base == "" {
+			fmt.Fprintf(stderr, "stone-llama: no daemon\n")
+			return
+		}
+		b, _ := json.Marshal(map[string]string{"name": model})
+		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(rc.base, "/")+"/api/show", bytes.NewReader(b))
+		if err != nil {
+			fmt.Fprintf(stderr, "stone-llama: %v\n", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if rc.token != "" {
+			req.Header.Set("Authorization", "Bearer "+rc.token)
+		}
+		resp, err := probeClient.Do(req)
+		if err != nil {
+			fmt.Fprintf(stderr, "stone-llama: %v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		fmt.Fprintln(stdout, string(rb))
+	case strings.HasPrefix(text, "/set"):
+		if len(fields) < 2 {
+			fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+			return
+		}
+		switch fields[1] {
+		case "parameter":
+			if len(fields) < 4 {
+				fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+				return
+			}
+			name := fields[2]
+			value := strings.Join(fields[3:], " ")
+			if rc.session != nil {
+				if rc.session.Params == nil {
+					rc.session.Params = map[string]string{}
+				}
+				rc.session.Params[name] = value
+				_ = saveSession(rc.session)
+			}
+			if rc.prof != nil {
+				f, err := strconv.ParseFloat(value, 64)
+				if err == nil {
+					if name == "temperature" {
+						rc.prof.Temperature = &f
+					}
+					if name == "top_p" || name == "top-p" {
+						rc.prof.TopP = &f
+					}
+				}
+			}
+			fmt.Fprintf(stdout, "Set parameter %q to %q\n", name, value)
+			patchSession(rc.base, rc.token, sessionID(rc.session), map[string]any{"params": map[string]string{name: value}})
+		case "system":
+			sys := strings.TrimSpace(strings.TrimPrefix(text, "/set system"))
+			if rc.session != nil {
+				rc.session.System = sys
+				_ = saveSession(rc.session)
+			}
+			patchSession(rc.base, rc.token, sessionID(rc.session), map[string]any{"system": sys})
+			fmt.Fprintln(stdout, "Set system message.")
+		case "wordwrap":
+			if rc.session != nil {
+				if rc.session.Params == nil {
+					rc.session.Params = map[string]string{}
+				}
+				rc.session.Params["wordwrap"] = "true"
+				_ = saveSession(rc.session)
+			}
+			fmt.Fprintln(stdout, "Set 'wordwrap'")
+		case "nowordwrap":
+			if rc.session != nil {
+				if rc.session.Params == nil {
+					rc.session.Params = map[string]string{}
+				}
+				rc.session.Params["wordwrap"] = "false"
+				_ = saveSession(rc.session)
+			}
+			fmt.Fprintln(stdout, "Set 'nowordwrap'")
+		default:
+			fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+		}
+	case strings.HasPrefix(text, "/rename"):
+		name := strings.TrimSpace(strings.TrimPrefix(text, "/rename"))
+		if rc.session != nil {
+			rc.session.Name = name
+			_ = saveSession(rc.session)
+		}
+		patchSession(rc.base, rc.token, sessionID(rc.session), map[string]any{"name": name})
+		fmt.Fprintf(stdout, "Renamed session to %q\n", name)
+	case strings.HasPrefix(text, "/"):
+		fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+	}
+}
+
+func sessionID(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	return s.ID
+}
+
+func listReplSessions(rc *replCtx, stdout, stderr io.Writer) {
+	if rc.base != "" {
+		req, err := http.NewRequest(http.MethodGet, strings.TrimRight(rc.base, "/")+"/v1/sessions", nil)
+		if err == nil {
+			if rc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+rc.token)
+			}
+			resp, err := probeClient.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+					var arr []map[string]any
+					if json.Unmarshal(rb, &arr) == nil {
+						for _, s := range arr {
+							id, _ := s["id"].(string)
+							model, _ := s["model"].(string)
+							name, _ := s["name"].(string)
+							if name == "" {
+								name = "(unnamed)"
+							}
+							fmt.Fprintf(stdout, "%s  %s  %s\n", id, model, name)
+						}
+						if len(arr) == 0 {
+							fmt.Fprintln(stdout, "no sessions")
+						}
+						return
+					}
+					fmt.Fprintln(stdout, string(rb))
+					return
+				}
+			}
+		}
+	}
+	// fallback local
+	found := false
+	entries, _ := os.ReadDir(sessionRoot())
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		model := e.Name()
+		ids, _ := listSessionIDs(model)
+		for _, id := range ids {
+			s, err := loadSession(model, id, io.Discard)
+			if err != nil {
+				continue
+			}
+			name := s.Name
+			if name == "" {
+				name = "(unnamed)"
+			}
+			fmt.Fprintf(stdout, "%s  %s  %s  %d turns\n", id, model, name, len(s.Turns))
+			found = true
+		}
+	}
+	if !found {
+		fmt.Fprintln(stdout, "no sessions")
+	}
+}
+
+func repl(ask func(context.Context, string) error, oneShot string, histFn func() []string, rc *replCtx, stdin io.Reader, stdout, stderr io.Writer) int {
 	if oneShot != "" {
 		if err := ask(context.Background(), oneShot); err != nil {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
@@ -679,7 +909,7 @@ func repl(ask func(context.Context, string) error, oneShot string, histFn func()
 			break
 		}
 		if strings.HasPrefix(text, "/") {
-			fmt.Fprintln(stdout, "unknown command (try /bye to quit)")
+			handleReplCmd(text, rc, stdin, stdout, stderr)
 			continue
 		}
 		if err := askGuarded(text); err != nil && !errors.Is(err, errInterrupted) {
@@ -1410,6 +1640,9 @@ func runPs(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  vram peak: %d MiB\n", st.VRAMPeak)
 	}
 	fmt.Fprintf(stdout, "  uptime:   %s\n", time.Duration(st.UptimeS)*time.Second)
+	if st.Until != "" {
+		fmt.Fprintf(stdout, "  until:    %s\n", st.Until)
+	}
 	return 0
 }
 
