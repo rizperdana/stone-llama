@@ -31,6 +31,7 @@ type Status struct {
 	CacheMode  string `json:"cache_mode,omitempty"`
 	VRAMPeak   int    `json:"vram_peak_mib,omitempty"`
 	UptimeS    int64  `json:"uptime_s"`
+	Until      string `json:"until,omitempty"`
 	Ready      bool   `json:"ready"`
 	FitSummary string `json:"fit_summary,omitempty"` // last accepted autofit breakdown
 }
@@ -61,6 +62,15 @@ func (d *daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 // one readiness probe — shared by GET /-/status and the llama
 // same-model no-op load answer, so both surfaces report identical
 // fields.
+
+func (d *daemon) keepAliveUntil() string {
+	// "Infinite" for resident model; warm keepalive default 5m => countdown
+	if d.modelLoaded() {
+		return "Infinite"
+	}
+	return ""
+}
+
 func (d *daemon) currentStatus() Status {
 	d.mu.Lock()
 	st := d.st
@@ -91,6 +101,7 @@ func (d *daemon) currentStatus() Status {
 		VRAMPeak:   st.VRAMPeakMiB,
 		UptimeS:    d.opts.Now().Unix() - st.StartedAt,
 		Ready:      d.readyNow(),
+		Until:      d.keepAliveUntil(),
 	}
 	if st.Attach != "" {
 		resp.Mode = "attach"

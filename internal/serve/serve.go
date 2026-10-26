@@ -102,6 +102,9 @@ type Options struct {
 	procCmd    func(pid int) string
 	contenders func() ([]doctor.Contender, error)
 	probeGPU   func() (doctor.Report, error)
+
+	SessionTTL time.Duration // idle TTL for sessions, default 1h
+	KeepAlive  time.Duration // warm-model keepalive, default 5m
 }
 
 func (o *Options) withDefaults() {
@@ -239,10 +242,14 @@ type daemon struct {
 	logPath   string  // logs/tabby.log (child stdout+stderr; carries llama-server output too)
 	child     *child  // current incarnation (supervised only)
 
-	mu     sync.Mutex
-	loadMu sync.Mutex // serializes /-/load and /-/unload
-	st     State
-	fit    *autofit.Result // last accepted fit for OOM advice (nil = unknown)
+	mu              sync.Mutex
+	loadMu          sync.Mutex // serializes /-/load and /-/unload
+	st              State
+	sessions        sync.Map // sessionID -> *Session
+	keepAliveValue  time.Duration
+	sessionTTLValue time.Duration
+
+	fit *autofit.Result // last accepted fit for OOM advice (nil = unknown)
 }
 
 func (d *daemon) setChild(c *child) {
@@ -583,6 +590,7 @@ func Serve(ctx context.Context, opts Options) error {
 		supCh = nil
 	}
 	go d.sampleVRAM(supCtx)
+	go d.sessionMaintenance(supCtx)
 	// `stone-llama serve <model>`: load the positional model through our own
 	// /-/load — the same supervised path `run` uses — once the listener is up.
 	// Attach mode never reaches this (the upstream owns loading there; the CLI
@@ -869,6 +877,11 @@ func (d *daemon) mux() http.Handler {
 	mux.HandleFunc("/api/tags", d.handleOllamaTags)
 	mux.HandleFunc("/api/show", d.handleOllamaShow)
 	mux.HandleFunc("/api/generate", d.handleOllamaGenerate)
+
+	// Server-side session memory + chat completions session handling.
+	mux.HandleFunc("/v1/sessions", d.handleSessions)
+	mux.HandleFunc("/v1/sessions/", d.handleSessions)
+	mux.HandleFunc("/v1/chat/completions", d.handleChatCompletions)
 
 	target, _ := url.Parse(d.conn.BaseURL)
 	rp := &httputil.ReverseProxy{
