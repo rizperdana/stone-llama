@@ -182,6 +182,7 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// prepend stored turns
+	s.mu.Lock()
 	var newMsgs []map[string]any
 	if s.SystemPrompt != "" {
 		hasSys := false
@@ -250,7 +251,6 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		bb, _ := json.Marshal(map[string]any{"messages": msgs})
 		return len(bb) / 4, false
 	}
-	s.mu.Lock()
 	trimSession(s, nCtx, 2048, countFn)
 	// rebuild raw["messages"] after trim
 	var rebuilt []map[string]any
