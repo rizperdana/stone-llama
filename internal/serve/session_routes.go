@@ -183,7 +183,6 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	// prepend stored turns
 	var newMsgs []map[string]any
-	s.mu.RLock()
 	if s.SystemPrompt != "" {
 		hasSys := false
 		for _, m := range incoming {
@@ -210,7 +209,6 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		newMsgs = append(newMsgs, m)
 	}
-	s.mu.RUnlock()
 
 	// capture last user content for turn recording
 	lastUser := ""
@@ -252,6 +250,7 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		bb, _ := json.Marshal(map[string]any{"messages": msgs})
 		return len(bb) / 4, false
 	}
+	s.mu.Lock()
 	trimSession(s, nCtx, 2048, countFn)
 	// rebuild raw["messages"] after trim
 	var rebuilt []map[string]any
@@ -261,12 +260,11 @@ func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.Recap != "" {
 		rebuilt = append(rebuilt, map[string]any{"role": "system", "content": s.Recap})
 	}
-	s.mu.RLock()
 	for _, t := range s.Turns {
 		rebuilt = append(rebuilt, map[string]any{"role": "user", "content": t.User})
 		rebuilt = append(rebuilt, map[string]any{"role": "assistant", "content": t.Assistant})
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	for _, m := range incoming {
 		if m["role"] == "system" {
 			continue
