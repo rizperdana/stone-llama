@@ -36,9 +36,9 @@ type Config struct {
 	UpstreamKeyFile string            `json:"upstream_key_file"` // attach-mode upstream Bearer source (file path only; secrets are not stored in config.json)
 	Upstream        string            `json:"upstream"`          // auto-attach probe address (default http://127.0.0.1:5002)
 	EngineEnv       map[string]string `json:"engine_env"`        // extra environment for the supervised backend child process; nil = none
-	// Backend selects the supervised inference engine: "" or "tabby" is
-	// TabbyAPI + ExLlamaV3 (the default, unchanged), "llama" is
-	// llama-server (llama.cpp) over GGUF. An unknown name is refused at
+	// Backend selects the supervised inference engine: "" or "llama" is
+	// llama-server (llama.cpp) over GGUF (the default), "tabby" is
+	// TabbyAPI + ExLlamaV3. An unknown name is refused at
 	// serve time, never coerced to the default.
 	Backend string `json:"backend"`
 	// DeviceBudgetMiB caps the GGUF weights a llama spawn may load

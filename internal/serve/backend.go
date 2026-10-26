@@ -27,22 +27,22 @@ type Backend interface {
 }
 
 const (
-	// BackendTabby is the default: TabbyAPI + ExLlamaV3 (existing behaviour).
+	// BackendTabby is TabbyAPI + ExLlamaV3 (legacy backend, opt-in).
 	BackendTabby = "tabby"
-	// BackendLlama supervises llama-server (llama.cpp) over GGUF weights.
+	// BackendLlama supervises llama-server (llama.cpp) over GGUF weights; the default backend.
 	BackendLlama = "llama"
 )
 
 // BackendFor resolves a configured backend name to its implementation.
-// "" or BackendTabby → tabbyBackend — the default stays TabbyAPI.
+// "" or BackendLlama → llamaBackend — the default is now llama.cpp.
 // deviceBudgetMiB is the llama weights budget (0 = no check); tabby
 // ignores it. Unknown names are refused, never coerced.
 func BackendFor(name string, deviceBudgetMiB int) (Backend, error) {
 	switch name {
-	case "", BackendTabby:
-		return tabbyBackend{}, nil
-	case BackendLlama:
+	case "", BackendLlama:
 		return llamaBackend{deviceBudgetMiB: deviceBudgetMiB}, nil
+	case BackendTabby:
+		return tabbyBackend{}, nil
 	default:
 		return nil, fmt.Errorf("unknown backend %q (want %q or %q)", name, BackendTabby, BackendLlama)
 	}

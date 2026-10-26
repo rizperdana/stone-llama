@@ -11,8 +11,8 @@ import (
 	"testing"
 )
 
-// TestBackendSelection table: "" and "tabby" must resolve to the
-// pre-seam TabbyAPI engine (the default must not change), "llama" to
+// TestBackendSelection table: "" and "llama" must resolve to the
+// llama-server engine (the new default), "tabby" to TabbyAPI, and
 // llama-server, and anything else to a refusal — never a silent
 // coercion to the default.
 func TestBackendSelection(t *testing.T) {
@@ -21,9 +21,9 @@ func TestBackendSelection(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"", "serve.tabbyBackend", false},
-		{BackendTabby, "serve.tabbyBackend", false},
+		{"", "serve.llamaBackend", false},
 		{BackendLlama, "serve.llamaBackend", false},
+		{BackendTabby, "serve.tabbyBackend", false},
 		{"cuda", "", true},
 		{"Tabby", "", true}, // case-sensitive on purpose
 	} {
@@ -44,16 +44,16 @@ func TestBackendSelection(t *testing.T) {
 	}
 }
 
-// TestDefaultBackendIsTabby pins the production default: a zero
+// TestDefaultBackendIsLlama pins the production default: a zero
 // Options (and so a config file with no "backend" key) supervises
-// TabbyAPI exactly as before the seam.
-func TestDefaultBackendIsTabby(t *testing.T) {
+// llama-server exactly as after the flip.
+func TestDefaultBackendIsLlama(t *testing.T) {
 	be, err := BackendFor(Options{}.Backend, Options{}.DeviceBudgetMiB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := be.(tabbyBackend); !ok {
-		t.Errorf("zero Options selected %T, want tabbyBackend", be)
+	if _, ok := be.(llamaBackend); !ok {
+		t.Errorf("zero Options selected %T, want llamaBackend", be)
 	}
 }
 

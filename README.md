@@ -54,8 +54,8 @@ running daemon and has no effect. Config `engine_env` adds extra environment for
 supervised backend child (parent env preserved; config keys win). Env: `STONE_LLAMA_HOST`,
 `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`,
 `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`. `serve --backend tabby|llama` selects the
-supervised engine (default `tabby` = TabbyAPI + ExLlamaV3; `llama` = `llama-server`
-over GGUF weights — status in `docs/ARCHITECTURE.md`); an unknown value is a usage
+supervised engine (default `llama` = `llama-server` over GGUF; `tabby` = TabbyAPI +
+ExLlamaV3 — status in `docs/ARCHITECTURE.md`); an unknown value is a usage
 error, never a silent fallback. Env `STONE_LLAMA_BACKEND` and config `backend` do the
 same. State (`models/`, `runtime/`, `daemon.json`, logs, `chats/`) is
 `$XDG_DATA_HOME/stone-llama`, config `$XDG_CONFIG_HOME/stone-llama/config.json`.

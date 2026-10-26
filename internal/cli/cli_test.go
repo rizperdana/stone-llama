@@ -603,7 +603,7 @@ func TestRunHonoursNoAutostart(t *testing.T) {
 func TestServeStartFailurePrintsRemediesOnce(t *testing.T) {
 	isolateConfig(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	code, _, errb := run("serve", "--port", freeLocalPort(t))
+	code, _, errb := run("serve", "--backend", "tabby", "--port", freeLocalPort(t))
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1; err = %q", code, errb)
 	}
@@ -1114,7 +1114,7 @@ func TestServeModelNoRuntimeOneRemedyBlock(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
 	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t)) // never probe a live daemon's port
-	code, out, errb := run("serve", "mymodel")
+	code, out, errb := run("serve", "--backend", "tabby", "mymodel")
 	if code != 1 {
 		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
 	}

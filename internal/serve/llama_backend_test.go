@@ -19,7 +19,7 @@ func TestBackendFor(t *testing.T) {
 		name string
 		want string
 	}{
-		{"", "tabbyBackend"},
+		{"", "llamaBackend"},
 		{BackendTabby, "tabbyBackend"},
 		{BackendLlama, "llamaBackend"},
 	} {

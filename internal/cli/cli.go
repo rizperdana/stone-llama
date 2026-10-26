@@ -1331,7 +1331,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	if draftMode != "" {
 		cfg.Autofit.DraftMode = draftMode
 	}
-	if backend != "" { // flag > env > config file > default ("" = tabby)
+	if backend != "" { // flag > env > config file > default ("" = llama)
 		cfg.Backend = backend
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -87,7 +87,7 @@ type Options struct {
 	PinnedCommit    string            // for the startup banner ("" = omit)
 	Fit             config.Autofit    // autofit knobs for /-/load
 	EngineEnv       map[string]string // config engine_env: extra environment for the supervised child
-	Backend         string            // supervised engine: "" | "tabby" (default, TabbyAPI + ExLlamaV3) | "llama" (llama-server over GGUF); unknown names are refused
+	Backend         string            // supervised engine: "" or "llama" (default, llama-server over GGUF) | "tabby" (TabbyAPI + ExLlamaV3); unknown names are refused
 	DeviceBudgetMiB int               // llama weights budget in MiB (0 = no check); tabby ignores it
 
 	Stdout, Stderr io.Writer

@@ -1583,6 +1583,7 @@ func TestServeWritesFirstRunMarkerBeforeSpawn(t *testing.T) {
 	}
 	atSpawn := []byte("never read")
 	serr := Serve(context.Background(), Options{
+		Backend:    "tabby",
 		Host:       "127.0.0.1",
 		Port:       p,
 		DataDir:    dataDir,

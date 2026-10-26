@@ -57,7 +57,7 @@ func TestDraftModeFlagParsesNgram(t *testing.T) {
 	}
 	isolateConfig(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	if code, _, errb := run("serve", "--draft-mode", "ngram", "--port", freeLocalPort(t)); code != 1 {
+	if code, _, errb := run("serve", "--backend", "tabby", "--draft-mode", "ngram", "--port", freeLocalPort(t)); code != 1 {
 		t.Errorf("serve --draft-mode ngram: code/err = %d/%q, want 1 (flag parsed)", code, errb)
 	}
 }
