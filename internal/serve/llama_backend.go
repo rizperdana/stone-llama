@@ -120,9 +120,11 @@ func (b llamaBackend) Prepare(o *Options, port int) (Conn, string, error) {
 			}
 		}
 	}
-	if _, err := exec.LookPath("llama-server"); err != nil {
-		return Conn{}, "", fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the default engine with 'stone-llama serve --backend tabby'): %w",
-			BackendLlama, err)
+	if o.spawn == nil {
+		if _, err := exec.LookPath("llama-server"); err != nil {
+			return Conn{}, "", fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the default engine with 'stone-llama serve --backend tabby'): %w",
+				BackendLlama, err)
+		}
 	}
 	key, err := generateToken()
 	if err != nil {
