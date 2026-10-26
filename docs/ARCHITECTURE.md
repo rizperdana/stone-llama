@@ -124,7 +124,7 @@ scalars", so no YAML library is involved either.
 `pull` phase 0 fetches **metadata only**: repo tree, `config.json`, `quantization_config.json` (KBs), plus the safetensors headers behind the format check — at most 4 files, one ranged `GET` each, `header_size` validated and capped at 4 MiB before anything is allocated (≤ ~16 MiB worst case per repo), bodies closed as soon as the header is parsed; a header that cannot be read (gated, missing, oversize, transport error) is **warn / "unverified"**, never a silent pass and never a refusal for failing to look. Then three checks, in order:
 
 1. **Architecture support.** `config.architectures[]` checked against a list **embedded in the binary**, sourced from `internal/preflight/archlist.go` (verified against installed `architecture/*.py` + upstream README). Verified strings include: `Qwen2ForCausalLM`, `Qwen3ForCausalLM`, `Qwen3MoeForCausalLM`, `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration`, `Qwen3NextForCausalLM`, `Qwen3_5ForCausalLM`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`, `Qwen4ExpForCausalLM`, `LlamaForCausalLM`, `Gemma2ForCausalLM`, `Gemma3ForCausalLM`, `Gemma3ForConditionalGeneration`, `Gemma4ForConditionalGeneration` (E2B/E4B variants unsupported), `Phi3ForCausalLM`, `MistralForCausalLM`, `Mistral3ForConditionalGeneration`, `MixtralForCausalLM`, `DeepseekV3ForCausalLM`, `Glm4ForCausalLM`, `Glm4MoeForCausalLM`, `Glm4MoeLiteForCausalLM`, `GlmMoeDsaForCausalLM`, `GptOssForCausalLM`, `CohereForCausalLM`, `Cohere2ForCausalLM`, `Olmo3ForCausalLM`, `OlmoHybridForCausalLM`, `SmolLM3ForCausalLM`, `Lfm2ForCausalLM`, `Lfm2MoeForCausalLM`, `HYV3ForCausalLM`, `Step3p5ForCausalLM`, `SeedOssForCausalLM`, `SolarOpenForCausalLM`, `IQuestCoderForCausalLM`, `KimiLinearForCausalLM`, `HyperCLOVAXForCausalLM`, `LagunaForCausalLM`, `MiniMaxM2ForCausalLM`, `MuseGlimmerForCausalLM`, `ArceeForCausalLM`, `ApertusForCausalLM`, `Exaone4ForCausalLM`, `Dots1ForCausalLM`, `Ernie4_5_MoeForCausalLM`, `ArceeForCausalLM`. **Unknown arch → warn with the exact string + confirm on TTY (`--yes` to proceed), never silent.** The list is a snapshot that drifts with exllamav3 releases; warn-not-refuse means an incomplete list degrades to warnings, not false refusals (G13).
-2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so it refuses here. A llama.cpp 'llama' backend (`--backend llama`) serves GGUF, but `pull` refuses GGUF repos regardless of backend — import a local .gguf instead; look for an exl3 quantization_config in <repo>."
+2. **Quant format.** `quantization_config.quant_method` must be **`exl3`**, and the safetensors header must agree: the per-module tensor-suffix group (`.trellis`, plus `.su`/`.suh` and `.sv`/`.svh`) for EXL3 storage, with the quant-group tensors' dtypes validated against the installed engine's supported set — a dtype the engine cannot load → **refuse**, naming the dtype and the limitation. `exl2` → **refuse**: "EXL2 quant (ExLlamaV2 format) — exllamav3 cannot load it." GGUF-only repo (`.gguf` files, no exl3) → **refuse**: "no EXL3 weights — this repo ships GGUF; `pull` refuses GGUF repos regardless of backend (the TabbyAPI/ExLlamaV3 path is EXL3-only; a local .gguf must be `import`ed for the `llama` backend). A llama.cpp 'llama' backend (`--backend llama`) serves GGUF, but `pull` refuses GGUF repos regardless of backend — import a local .gguf instead; look for an exl3 quantization_config in <repo>."
 3. **Fit projection.** Run §5 autofit against the fetching machine's GPU (VRAM from `nvidia-smi`): print `weights + KV(ctx) + overhead + headroom vs available`, then **proceed** / **proceed-with-warning** / **refuse** (with the numbers and *the largest ctx that would fit*). `min_vram` rule (§8) wired into `pull`, not just `doctor`.
 
 Verdict recorded in `manifest.json`; `list` shows it. **Residual risk:** G13.
@@ -315,7 +315,7 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
   "autofit": { "enabled": true, "headroom_mib": 512, "overhead_mib": 128, "min_ctx": 4096 },
   "runtime_dir": "",
   "engine_env": { "CUDA_MODULE_LOADING": "LAZY" },
-  "backend": "tabby",
+  "backend": "llama",
   "backend_device_budget_mib": 0
 }
 ```
@@ -324,9 +324,9 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
 the supervision loop and the engine it supervises: `Prepare` owns everything that
 must exist before the child starts (validation, 0600 config/key files, the `Conn`
 the proxy probes and injects the upstream Bearer from) and `Spawn` is one
-incarnation. `BackendFor` resolves the name — `""`/`tabby` → `tabbyBackend`
-(TabbyAPI + ExLlamaV3, the default and unchanged behaviour), `llama` →
-`llamaBackend` (llama-server over GGUF); anything else is refused, never coerced.
+`BackendFor` resolves the name — `""`/`llama` → `llamaBackend`
+(llama-server over GGUF, the default since 9efe6cd), `tabby` →
+`tabbyBackend` (TabbyAPI + ExLlamaV3); anything else is refused, never coerced.
 `serve --backend` > `STONE_LLAMA_BACKEND` > config `backend` > default. Readiness
 probing, the child lifecycle, supervision and shutdown stay engine-agnostic, and
 both `Spawn`s delegate to one `startProcess`.
@@ -339,7 +339,7 @@ this tree at an earlier revision; the headline figures and the bench
 artifacts live in a separate bench note (the numbers are not reproduced
 here — they rot on the next re-quant/hardware change, and the doc must
 not pin them). Measured on an RTX 3050 Laptop 4 GB with full offload.
-`--backend llama` (default remains TabbyAPI). Two structural limits are implemented, not
+`--backend llama` (the default since 9efe6cd). Two structural limits are implemented, not
 guessed: the model is fixed at spawn (`-m`), so `/-/load` refuses **409**
 `backend_fixed_model` for a DIFFERENT model instead of falling back to TabbyAPI. A load
 that resolves to the resident GGUF itself (e.g. the full path typed at `run`, whose

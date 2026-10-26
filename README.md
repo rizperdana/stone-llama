@@ -35,9 +35,9 @@ consent-gated `setup` step (≈ 1 GB announced before you confirm):
 | `rm <model>` | remove a model (import symlinks: link only, target untouched) |
 | `login` | HuggingFace token for gated repos (stored 0600) |
 | `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
-| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream; the model positional is ignored in attach mode) |
-| `ps` / `stop` | loaded model + sampled VRAM peak of the supervised child (line omitted in attach mode — no child to sample) / stop the daemon |
-| `run <model> [--new] [--continue] [--history] [-p "prompt"]` | streaming CLI chat with persistent history — a plain run **resumes the newest saved session** (by file mtime; `--continue` is the explicit form of the same default), `--new` starts a fresh session, `--history` prints that session's turns as JSON and exits without touching the backend |
+| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API + server-side session memory (`/v1/sessions*`, session-aware `/v1/chat/completions` via `"session"` field, keepalive, idle TTL sweep); attach = existing TabbyAPI upstream; the model positional is ignored in attach mode |
+| `ps` / `stop` | loaded model + sampled VRAM peak of the supervised child (line omitted in attach mode — no child to sample); `ps` also prints an `until` (keepalive expiry) line. `stop` stops the daemon. Idle server-side sessions are swept on a TTL (default 1h) |
+| `run <model> [--new] [--continue] [--history] [-p "prompt"]` | streaming CLI chat with persistent history — a plain run **resumes the newest saved session** (by file mtime; `--continue` is the explicit form of the same default), `--new` starts a fresh session, `--history` prints that session's turns as JSON and exits without touching the backend. REPL slash commands: `/help /bye /clear /list /ps /sessions /show /set /rename`; on resume the system prompt is restored; named sessions; recap compaction on context overflow |
 | `version` | version |
 | `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
 | `uninstall [--dry-run] [--keep-models] [--yes]` | remove the install (weights optional to keep) |
@@ -57,11 +57,17 @@ supervised backend child (parent env preserved; config keys win). Env: `STONE_LL
 supervised engine (default `llama` = `llama-server` over GGUF; `tabby` = TabbyAPI +
 ExLlamaV3 — status in `docs/ARCHITECTURE.md`); an unknown value is a usage
 error, never a silent fallback. Env `STONE_LLAMA_BACKEND` and config `backend` do the
-same. State (`models/`, `runtime/`, `daemon.json`, logs, `chats/`) is
+same. State (`models/`, `runtime/`, `daemon.json`, logs, `chats/`, `sessions/`) is
 `$XDG_DATA_HOME/stone-llama`, config `$XDG_CONFIG_HOME/stone-llama/config.json`.
 `chats/<model>/chat-<id>.json` holds `run` history (files 0600, dirs 0700); when a
 session would overflow the context window it is trimmed to fit — **destructively:
-dropped turns leave the file too** (deliberate — they could not be replayed anyway).
+dropped turns leave the file too** (deliberate — they could not be replayed anyway);
+the dropped turns are folded into a ≤200-char recap (chained via `prev`) prepended
+as a system message so memory from ~3 turns ago survives. Server-side sessions
+(daemon) live under `sessions/<id>.json` (0600, dir 0700) and are reachable via
+`/v1/sessions*`; a `/v1/chat/completions` request may carry `"session": "<id>"`.
+`/ps` shows an `until` (keepalive expiry) line; idle sessions are swept on a TTL
+(default 1h). Ollama's `/api/chat` stays stateless — stone-llama adds memory.
 
 ## Platform support
 
@@ -90,7 +96,7 @@ verdict — with your actual GPU and driver numbers — before anything gets ins
 | [docs/INSTALLATION.md](docs/INSTALLATION.md) | prerequisites, install paths, `setup` provisioning, uninstall |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | first-run walkthrough with real output |
 | [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) | copy-paste prompt for a coding agent |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | full plan, milestones, open gaps |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | full plan, milestones, open gaps — incl. backend selection (default `llama`), server-side session memory + keepalive + idle TTL sweep, CLI REPL slash commands & recap compaction |
 | [docs/RELEASE.md](docs/RELEASE.md) | release process, provenance, artifact shape |
 
 ## License
