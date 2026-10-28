@@ -239,7 +239,7 @@ stone-llama fit <repo[@branch][:quant]>  # gate + verdict + tok/s [est] — HF m
 stone-llama rank --collection <id> | --file <path> [--ratings <file>]  # fit-ordered candidate table
 stone-llama rm <model>
 stone-llama import <path> [--name N]     # symlink (zero-copy); name defaults to base dir
-stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]   # shipped (M6)
+stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [--backend tabby|llama] [-p "prompt"]   # shipped (M6)
 stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>] [--backend tabby|llama]   # OpenAI-compatible API (shipped M5)
 stone-llama ps
 stone-llama stop
