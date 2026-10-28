@@ -1,37 +1,63 @@
-# Benchmark: stone-llama vs ollama (real measurements)
+# bench — measured stone-llama vs ollama
 
-Compares **stone-llama** (tabby/exllamav3, EXL3) against **ollama** on localhost on the same machine. All numbers are real (timed via OpenAI-compatible streaming API, VRAM sampled with `nvidia-smi`). No fabricated/estimated values.
-
-## Inventory (at time of run)
-- GPU: NVIDIA GeForce RTX 3050 Laptop GPU (4096 MiB), driver 580.178.04
-- stone-llama models: `SmolLM3-3B-exl3_4.0bpw` (EXL3, on disk), `Qwen_Qwen3-4B-Instruct-2507-EXL3`
-- ollama models: `smollm3:3b` (Q4_K_M), `smollm3-withsystem:latest`, `smollm3-nosystem:latest`, `qwen3.5:2b`, etc.
-- Comparable pair: `SmolLM3-3B-exl3_4.0bpw` (stone-llama) vs `smollm3:3b` (ollama) — same base model family
-
-## Workload
-- Prompt: `"Explain quantum entanglement in simple terms."`
-- `max_tokens=128`, `temperature=0.7`, stream=true
-- `N=5` repeats per server, gap 1s between runs, VRAM sampled at ~100ms intervals
-- TTFT = time to first token (streaming). decode tok/s computed from completion tokens when reported else stream chunks as approximation.
+Reproducible localhost benchmark: same machine, same prompt, same max_tokens/
+temperature, N=5 repeats, streaming OpenAI-compatible API. Numbers are real;
+the harness exits non-zero when a measurement is impossible.
 
 ## Reproduce
-```bash
-./bench/run.sh                # measure against already-running servers on 5199/11434
-STONE_START=1 ./bench/run.sh  # also start/stop a stone-llama daemon on STONE_PORT
+
+```sh
+# canonical clean run: harness starts/stops its own stone-llama daemon on
+# STONE_PORT (default 5199) and asks ollama (probe-only) to unload its cached
+# copy via keep_alive=0 so each engine is measured with the full card.
+STONE_START=1 bench/run.sh
 ```
-Script uses `bash + curl + python3 stdlib` only. Only probes/read-only queries `nvidia-smi`; never downloads, never restarts/stops/kills ollama, never signals other processes.
 
-## Results (2026-10-28)
-See `bench/results-20261028.json` for full raw measurements and per-process VRAM peaks.
+- Dependencies: bash, curl, python3 stdlib, nvidia-smi. Nothing downloaded.
+- Only HTTP probes + read-only `nvidia-smi`. ollama is never restarted/killed;
+  unload uses the documented `POST /api/generate {"keep_alive":0}` API call.
+- Only the stone-llama daemon the harness started is stopped (exact `stone-llama stop`).
+- With `STONE_START=0` the harness warns that a resident stone model confounds
+  ollama's window (measured and confirmed: 7.6 tok/s vs 55.8 tok/s warm).
 
-### Summary
-| Metric | stone-llama (tabby/exl3, SmolLM3-3B-exl3_4.0bpw) | ollama (smollm3:3b Q4_K_M) |
-|--------|---------------------------------------------------|----------------------------|
-| Runs OK | 5/5 | 5/5 |
-| TTFT mean (s) | 0.168 | 3.786 |
-| TTFT min/max (s) | 0.127 / 0.233 | 0.106 / 18.248 |
-| Wall mean (s) | 2.968 | 21.625 |
-| Decode tok/s mean | 45.4 | 7.2 |
-| Peak VRAM used (MiB, sampled in windows) | 2283 | 2724 |
+## Workload
 
-**Stone-llama won** on TTFT, wall time, and decode tok/s by a large margin. Ollama showed a large cold-start penalty on first run in this measurement; even with subsequent runs much faster, stone-llama remained substantially faster overall. Bottleneck observed: ollama had much higher TTFT/cold start and lower decode throughput on this setup; stone-llama (exl3/tabby) loaded faster and sustained higher tokens/s with lower peak VRAM in the measured windows.
+- Prompt: "Explain quantum entanglement in simple terms." (same both sides)
+- `max_tokens=128`, `temperature=0.7`, `stream=true`, 5 repeats, ~1s gap
+- TTFT = first content chunk; decode tok/s from streamed content chunks
+  (servers did not report usage on this path; basis recorded in JSON)
+- VRAM: `nvidia-smi` sampled at ~100 ms; peak total GPU used + per-process
+  peaks inside each engine's measurement window
+- Comparable pair: `SmolLM3-3B-exl3_4.0bpw` (stone-llama, EXL3 ~3.5 bpw
+  per quantization_config.json, dir name says 4.0) vs `smollm3:3b` (Q4_K_M,
+  ollama ctx 8192). Same base model; quant not bit-identical (EXL3 mixed 3–5
+  bpw vs Q4_K_M) — closest pair on disk, no downloads.
+
+## Results — 2026-10-28 (results-20261028.json, run 20261028T154053Z)
+
+RTX 3050 Laptop 4 GB, driver 580.178.04. Warm = model resident; cold = first
+request after unload (ollama) / daemon start (stone).
+
+| metric (5 runs) | stone-llama (tabby, EXL3) | ollama (Q4_K_M) |
+|---|---|---|
+| TTFT mean (s) | 0.130 | 0.885 (incl. 4.27 s cold) |
+| TTFT warm-only (s) | ~0.13 | 0.040 |
+| wall mean (s) | 2.878 | 3.162 |
+| decode tok/s | 46.2 | 55.8 warm (7.6 when VRAM-starved) |
+| peak VRAM, own process (MiB) | 2274 (tabby python) | 2568 (llama-server) |
+| ctx used | 32768 (Q4 KV cache) | 8192 |
+
+## Honest reading
+
+- **Warm decode: ollama wins on this workload** (~56 vs ~46 tok/s) once it has
+  the whole card. Earlier runs (kept in git history) showed ollama at ~7 tok/s —
+  that was an artifact: stone's 2274 MiB model was still resident, starving
+  ollama to ~450 MiB VRAM and partial CPU offload (`/api/ps` showed
+  `size_vram` 371 MiB vs model size 2.6 GB).
+- **VRAM: stone-llama wins** for this pair: 2274 MiB (EXL3) vs 2568 MiB
+  (Q4_K_M) while holding 4× the context (32768 vs 8192).
+- **TTFT: stone wins cold** (daemon start→ready in ~10 s; steady 0.13 s TTFT);
+  ollama warm TTFT (0.04 s) is lower than stone's (0.13 s).
+- Claimed honestly: stone-llama's edge on a 4 GB card is **VRAM efficiency and
+  context capacity**, not raw warm decode speed on a 3 B model. Speed claims
+  need longer prompts/loads where EXL3 prompt processing may differentiate.

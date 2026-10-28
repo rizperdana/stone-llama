@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "20261028T150811Z",
+  "timestamp_utc": "20261028T154053Z",
   "harness": "bench.sh (bash + curl + python3 stdlib)",
   "config": {
     "prompt": "Explain quantum entanglement in simple terms.",
@@ -24,8 +24,8 @@
   "gpu": {
     "name": "NVIDIA GeForce RTX 3050 Laptop GPU",
     "total_mib": 4096,
-    "used_mib_at_start": 2283,
-    "free_mib_at_start": 1489,
+    "used_mib_at_start": 2724,
+    "free_mib_at_start": 1048,
     "driver": "580.178.04"
   },
   "measurements": {
@@ -34,155 +34,161 @@
       "runs_failed": 0,
       "failures": [],
       "ttft_s": {
-        "mean": 0.16818346977233886,
-        "min": 0.1268765926361084,
-        "max": 0.23304009437561035
+        "mean": 0.1300363063812256,
+        "min": 0.11962366104125977,
+        "max": 0.1650710105895996
       },
       "wall_s": {
-        "mean": 2.967874813079834,
-        "min": 2.887991428375244,
-        "max": 3.047565460205078,
-        "median": 2.9823052883148193
+        "mean": 2.8783713817596435,
+        "min": 2.867558479309082,
+        "max": 2.90392804145813,
+        "median": 2.874894857406616
       },
       "decode_tok_s": {
-        "mean": 45.37662770248723,
-        "min": 44.13408901193545,
-        "max": 46.19416136354294,
+        "mean": 46.21001362156061,
+        "min": 46.098731774861804,
+        "max": 46.369707716991165,
         "basis": "stream_chunks(approx)"
       },
-      "peak_vram_used_mib": 2283,
-      "vram_samples_in_window": 83,
-      "per_process_peak_mib": {}
+      "peak_vram_used_mib": 2724,
+      "vram_samples_in_window": 100,
+      "per_process_peak_mib": {
+        "/usr/local/lib/ollama/llama-server": 436,
+        "/home/anon/.local/share/stone-llama/runtime/venv/bin/python": 2274
+      }
     },
     "ollama": {
       "runs_ok": 5,
       "runs_failed": 0,
       "failures": [],
       "ttft_s": {
-        "mean": 3.7857622623443605,
-        "min": 0.10588383674621582,
-        "max": 18.248042345046997
+        "mean": 0.8852136135101318,
+        "min": 0.03689146041870117,
+        "max": 4.267848253250122
       },
       "wall_s": {
-        "mean": 21.625170612335204,
-        "min": 16.688475370407104,
-        "max": 38.037434577941895,
-        "median": 17.85824728012085
+        "mean": 3.16210994720459,
+        "min": 2.312993049621582,
+        "max": 6.5405895709991455,
+        "median": 2.320770025253296
       },
       "decode_tok_s": {
-        "mean": 7.152473932526785,
-        "min": 6.417579605547177,
-        "max": 7.681448193797649,
+        "mean": 55.777959858083115,
+        "min": 55.59331832272175,
+        "max": 55.92373041415509,
         "basis": "stream_chunks(approx)"
       },
-      "peak_vram_used_mib": 2724,
-      "vram_samples_in_window": 370,
-      "per_process_peak_mib": {}
+      "peak_vram_used_mib": 2577,
+      "vram_samples_in_window": 104,
+      "per_process_peak_mib": {
+        "/usr/local/bin/ollama": 18,
+        "/usr/local/lib/ollama/llama-server": 2568
+      }
     }
   },
   "raw": {
     "stone": [
       {
         "ok": true,
-        "ttft_s": 0.23304009437561035,
-        "wall_s": 2.9823052883148193,
+        "ttft_s": 0.1650710105895996,
+        "wall_s": 2.90392804145813,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200092.081168,
-        "t1": 1793200095.0634732
+        "t0": 1793202066.2133057,
+        "t1": 1793202069.1172338
       },
       {
         "ok": true,
-        "ttft_s": 0.1268765926361084,
-        "wall_s": 2.887991428375244,
+        "ttft_s": 0.12284612655639648,
+        "wall_s": 2.867558479309082,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200096.1839285,
-        "t1": 1793200099.07192
+        "t0": 1793202070.213107,
+        "t1": 1793202073.0806656
       },
       {
         "ok": true,
-        "ttft_s": 0.20722579956054688,
-        "wall_s": 3.047565460205078,
+        "ttft_s": 0.11962366104125977,
+        "wall_s": 2.8688690662384033,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200100.443947,
-        "t1": 1793200103.4915125
+        "t0": 1793202074.1620502,
+        "t1": 1793202077.0309193
       },
       {
         "ok": true,
-        "ttft_s": 0.13193392753601074,
-        "wall_s": 2.9020767211914062,
+        "ttft_s": 0.12164998054504395,
+        "wall_s": 2.8766064643859863,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200104.6248515,
-        "t1": 1793200107.5269282
+        "t0": 1793202078.1325731,
+        "t1": 1793202081.0091796
       },
       {
         "ok": true,
-        "ttft_s": 0.14184093475341797,
-        "wall_s": 3.019435167312622,
+        "ttft_s": 0.12099075317382812,
+        "wall_s": 2.874894857406616,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200108.7440515,
-        "t1": 1793200111.7634866
+        "t0": 1793202082.1188455,
+        "t1": 1793202084.9937403
       }
     ],
     "ollama": [
       {
         "ok": true,
-        "ttft_s": 18.248042345046997,
-        "wall_s": 38.037434577941895,
+        "ttft_s": 4.267848253250122,
+        "wall_s": 6.5405895709991455,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200112.9790053,
-        "t1": 1793200151.01644
+        "t0": 1793202093.6918335,
+        "t1": 1793202100.232423
       },
       {
         "ok": true,
-        "ttft_s": 0.34044504165649414,
-        "wall_s": 16.873785734176636,
+        "ttft_s": 0.04390835762023926,
+        "wall_s": 2.3148584365844727,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200152.343749,
-        "t1": 1793200169.2175348
+        "t0": 1793202101.3968391,
+        "t1": 1793202103.7116976
       },
       {
         "ok": true,
-        "ttft_s": 0.11568379402160645,
-        "wall_s": 18.66791009902954,
+        "ttft_s": 0.03767275810241699,
+        "wall_s": 2.312993049621582,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200170.329634,
-        "t1": 1793200188.997544
+        "t0": 1793202104.7925496,
+        "t1": 1793202107.1055427
       },
       {
         "ok": true,
-        "ttft_s": 0.11875629425048828,
-        "wall_s": 17.85824728012085,
+        "ttft_s": 0.03689146041870117,
+        "wall_s": 2.321338653564453,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200190.1425416,
-        "t1": 1793200208.000789
+        "t0": 1793202108.1927388,
+        "t1": 1793202110.5140774
       },
       {
         "ok": true,
-        "ttft_s": 0.10588383674621582,
-        "wall_s": 16.688475370407104,
+        "ttft_s": 0.03974723815917969,
+        "wall_s": 2.320770025253296,
         "chunks": 128,
         "completion_tokens": 0,
         "prompt_tokens": null,
-        "t0": 1793200209.1212068,
-        "t1": 1793200225.8096821
+        "t0": 1793202111.6442845,
+        "t1": 1793202113.9650545
       }
     ]
   }

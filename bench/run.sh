@@ -64,6 +64,14 @@ if [ "$STONE_START" = 1 ]; then
     curl -sf -m 2 "${STONE_URL}/v1/models" >/dev/null 2>&1 && break
     sleep 1
   done
+  # model load: chat answers 503 until the backend is resident
+  for _ in $(seq 1 180); do
+    code=$(curl -s -o /dev/null -w "%{http_code}" -m 10 -X POST "${STONE_URL}/v1/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"'"$STONE_MODEL"'","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}' 2>/dev/null || echo 000)
+    [ "$code" = "200" ] && break
+    sleep 1
+  done
 fi
 
 preflight
@@ -77,7 +85,7 @@ echo "stone /v1/models: $(curl -s -m 5 ${STONE_URL}/v1/models | python3 -c 'impo
 echo "ollama /v1/models: $(curl -s -m 5 ${OLLAMA_URL}/v1/models | python3 -c 'import sys,json;print([m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null)"
 echo ""
 
-# --- VRAM sampler: one line per tick -> ts_ns gpu_used_mib per-proc "pid:name:mib;..." ---
+# --- VRAM sampler: one line per tick -> ts_ns gpu_used_mib per-proc "pid,name,mib;..." ---
 (
   while :; do
     ts=$(date +%s%N)
@@ -150,6 +158,28 @@ PY
 }
 
 STONE_RAW=$(measure stone "$STONE_URL" "$STONE_MODEL")
+
+# stop the daemon WE started before measuring ollama, so ollama gets the full
+# card — otherwise its numbers are confounded by stone's resident weights.
+if [ "$STONE_OWNED" = 1 ]; then
+  stone-llama stop >/dev/null 2>&1 || true
+  STONE_OWNED=0
+  sleep 3
+else
+  echo "WARNING: stone daemon still resident during ollama window — ollama" >&2
+  echo "WARNING: shares VRAM with stone's loaded model; ollama numbers are" >&2
+  echo "WARNING: confounded. Prefer STONE_START=1 for a clean run." >&2
+fi
+
+# give ollama a fair shot at the whole card: ask (API-level, service stays up)
+# to unload its cached copy, so the next request reloads with full free VRAM.
+# This is not a service restart — just the documented keep_alive=0 unload.
+if [ "${OLLAMA_RELOAD:-1}" = 1 ]; then
+  curl -sf -m 10 "${OLLAMA_URL}/api/generate" \
+    -d '{"model":"'"$OLLAMA_MODEL"'","keep_alive":0}' >/dev/null 2>&1 || true
+  sleep 2
+fi
+
 OLLAMA_RAW=$(measure ollama "$OLLAMA_URL" "$OLLAMA_MODEL")
 
 sleep 0.5
@@ -224,9 +254,7 @@ def peak_vram(t0, t1):
     for ts, u, pl in samples_parsed:
         if lo <= ts <= hi:
             for part in pl.split(";"):
-                if not part:
-                    continue
-                fields = part.split(":")
+                fields = [f for f in part.split(",") if f]
                 if len(fields) >= 3 and fields[2].isdigit():
                     procs[fields[1]] = max(procs.get(fields[1], 0), int(fields[2]))
     return (max(win) if win else None), len(win), procs
