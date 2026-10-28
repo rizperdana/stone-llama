@@ -292,6 +292,7 @@ stone-llama: running (pid 419204)
   ctx:      32768  cache: Q4
   vram peak: 2529 MiB
   uptime:   4m12s
+  until:    Infinite
 
 $ stone-llama serve
 stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
@@ -424,7 +425,7 @@ CI runs 1–4: no GPU, no Python, no external network.
 | M3 | Autofit: config parse, ladder + Q3 guard rails (clamp/overrides/always-print), failure breakdown, YAML emission | **M** | M0 | fixture table tests (§10.1); M2∥M3 |
 | M4 | Runtime bootstrap: lock file, consent gate, step journal (resume), **proven entirely on stubs + throwaway `runtime_dir`**; `doctor` deep; repair; error mapping. **Real multi-GB provisioning = BLOCKED step (Q6), separately authorized** | **L** | M0 | stubbed-binary tests; no network fetches in tests |
 | M5 | Serve: daemon + auto-start/stop, TabbyAPI supervision, config generation, proxy, health/backoff, `ps`, daemon-spawn flock usage, `daemon.json` 0600 | **L** | M2+M3+M4 | fake-tabby suite + real E2E with on-disk SmolLM3 |
-| M6 | Run: streaming REPL, flag passthrough, load progress, `/bye`, error polish | **M** | M5 | interactive + SSE tests |
+| M6 | Run: streaming REPL, flag passthrough, load progress, `/bye`, error polish — plus shipped slash commands (`/help /clear /list /ps /sessions /show /set /rename`), system-prompt restore on resume, named sessions, and recap compaction on context overflow | **M** | M5 | interactive + SSE tests |
 | M7 | Packaging: tarball, sha256, install.sh, honest README, `THIRD-PARTY.md` final — **licences all verified (A6 gate cleared in `1aaa785`)** | **S** | M5 | install.sh dry-run in clean dir |
 
 ## 12. GAP ANALYSIS
