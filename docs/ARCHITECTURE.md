@@ -240,7 +240,7 @@ stone-llama rank --collection <id> | --file <path> [--ratings <file>]  # fit-ord
 stone-llama rm <model>
 stone-llama import <path> [--name N]     # symlink (zero-copy); name defaults to base dir
 stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [-p "prompt"]   # shipped (M6)
-stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>]   # OpenAI-compatible API (shipped M5)
+stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>] [--backend tabby|llama]   # OpenAI-compatible API (shipped M5)
 stone-llama ps
 stone-llama stop
 stone-llama login
@@ -325,7 +325,7 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
 the supervision loop and the engine it supervises: `Prepare` owns everything that
 must exist before the child starts (validation, 0600 config/key files, the `Conn`
 the proxy probes and injects the upstream Bearer from) and `Spawn` is one
-`BackendFor` resolves the name — `""`/`llama` → `llamaBackend`
+incarnation. `BackendFor` resolves the name — `""`/`llama` → `llamaBackend`
 (llama-server over GGUF, the default since 9efe6cd), `tabby` →
 `tabbyBackend` (TabbyAPI + ExLlamaV3); anything else is refused, never coerced.
 `serve --backend` > `STONE_LLAMA_BACKEND` > config `backend` > default. Readiness
