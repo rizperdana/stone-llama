@@ -147,10 +147,64 @@ func draftModeValue(v string) (string, bool) {
 // /-/load: the upstream owns its model. A name mismatch is reported with one
 // short note and the upstream's loaded model is used; "/bye" exits without
 // unloading (the upstream's lifecycle is not ours).
+// modelIsEXL3Dir reports whether a model directory looks like an EXL3
+// layout (safetensors + quantization_config.json). Used to infer a
+// non-default backend when the user did not choose one explicitly.
+func modelIsEXL3Dir(modelsDir, model string) bool {
+	p := model
+	if !filepath.IsAbs(p) && modelsDir != "" {
+		cand := filepath.Join(modelsDir, model)
+		if st, err := os.Stat(cand); err == nil && st.IsDir() {
+			p = cand
+		}
+	}
+	st, err := os.Stat(p)
+	if err != nil || !st.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(p, "quantization_config.json")); err != nil {
+		return false
+	}
+	m, _ := filepath.Glob(filepath.Join(p, "*.safetensors"))
+	return len(m) > 0
+}
+
+// modelIsGGUF reports whether model names/resolves to GGUF that the
+// llama backend can serve.
+func modelIsGGUF(modelsDir, model string) bool {
+	candidates := []string{model}
+	if !filepath.IsAbs(model) && modelsDir != "" && filepath.Join(modelsDir, model) != model {
+		candidates = append(candidates, filepath.Join(modelsDir, model))
+	}
+	for _, c := range candidates {
+		st, err := os.Stat(c)
+		if err != nil {
+			continue
+		}
+		if !st.IsDir() {
+			return strings.EqualFold(filepath.Ext(c), ".gguf")
+		}
+		g, _ := filepath.Glob(filepath.Join(c, "*.gguf"))
+		return len(g) == 1
+	}
+	return false
+}
+
+func inferBackendForModel(modelsDir, model string) string {
+	if modelIsEXL3Dir(modelsDir, model) {
+		return serve.BackendTabby
+	}
+	if modelIsGGUF(modelsDir, model) {
+		return serve.BackendLlama
+	}
+	return ""
+}
+
 func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--attach host:port] [--key-file path] [--local] [--new] [--continue] [--history] [-p "prompt"]`
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--backend tabby|llama] [--attach host:port] [--key-file path] [--local] [--new] [--continue] [--history] [-p "prompt"]`
 	model, cacheMode, oneShot := "", "", ""
 	attach, keyFile := "", ""
+	runBackend := "" // --backend: "" = configured value or inferred; explicit only if set
 	ctxN, noAutofit, localForce, contFlag, histFlag, newFlag := 0, false, false, false, false, false
 	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
 	// defaultSystemMsg is overridable via --system, removed via --no-system.
@@ -158,7 +212,6 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var temperature, topP *float64 // nil → auto-tune from generation_config.json
 	tempSrc, topSrc := "", ""      // where each value came from (profile line)
 	var thinking *bool             // nil → the model template's own default
-	// the loop reassigns i when consuming flag values (explicit classic loop)
 	need := func(i *int, flag string) (string, bool) {
 		if *i+1 >= len(args) {
 			fmt.Fprintf(stderr, "stone-llama run: %s needs a value\n", flag)
@@ -254,6 +307,22 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		case a == "--thinking", a == "--no-thinking":
 			thinking = new(bool)
 			*thinking = a == "--thinking"
+		case a == "--backend" || a == "-backend":
+			if val, ok = need(&i, "--backend"); !ok {
+				return 2
+			}
+			if val != serve.BackendTabby && val != serve.BackendLlama {
+				fmt.Fprintf(stderr, "stone-llama run: invalid --backend %q (want tabby|llama)\n", val)
+				return 2
+			}
+			runBackend = val
+		case strings.HasPrefix(a, "--backend="):
+			val = strings.TrimPrefix(a, "--backend=")
+			if val != serve.BackendTabby && val != serve.BackendLlama {
+				fmt.Fprintf(stderr, "stone-llama run: invalid --backend %q (want tabby|llama)\n", val)
+				return 2
+			}
+			runBackend = val
 		case a == "--attach" || strings.HasPrefix(a, "--attach="):
 			// --attach still accepted (documented); if omitted it is
 			// auto-discovered from the configured/default upstream.
@@ -265,17 +334,6 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				val = strings.TrimPrefix(a, "--attach=")
 			}
 			attach = val
-		case a == "--key-file" || strings.HasPrefix(a, "--key-file="):
-			if a == "--key-file" {
-				if val, ok = need(&i, "--key-file"); !ok {
-					return 2
-				}
-			} else {
-				val = strings.TrimPrefix(a, "--key-file=")
-			}
-			keyFile = val
-		case a == "--local":
-			localForce = true
 		case a == "-p" || a == "--prompt" || strings.HasPrefix(a, "--prompt="):
 			if strings.HasPrefix(a, "--prompt=") {
 				val = strings.TrimPrefix(a, "--prompt=")
@@ -402,14 +460,27 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	dataDir := config.DataDir()
-	dec, err := ResolveBackend(context.Background(), stdout, stderr, dataDir, cfg, attach, keyFile, localForce)
+	// Backend selection: explicit flag/env/config always wins; otherwise
+	// infer from the named model (EXL3 → tabby, GGUF → llama).
+	explicit := runBackend != "" || cfg.Backend != ""
+	if !explicit {
+		if b := inferBackendForModel(cfg.ModelsDir, model); b != "" {
+			cfg.Backend = b
+		}
+	}
+	if cfg.Backend == serve.BackendLlama && modelIsEXL3Dir(cfg.ModelsDir, model) {
+		fmt.Fprintf(stderr, "stone-llama run: model %q is EXL3 (safetensors + quantization_config.json) — backend %q serves GGUF only; stop any running daemon ('stone-llama stop') and re-run with 'stone-llama run %q --backend tabby'\n", model, serve.BackendLlama, model)
+		return 1
+	}
+	if runBackend != "" {
+		cfg.Backend = runBackend
+	}
+	dec, err := ResolveBackend(context.Background(), stdout, stderr, dataDir, cfg, model, attach, keyFile, localForce)
 	if err != nil {
 		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 		return 1
 	}
 	if dec.Kind == "direct" {
-		// direct-to-upstream: the upstream owns its model. A name mismatch is
-		// a local alias; reuse the upstream's loaded model, never call /-/load.
 		if dec.Model == "" {
 			// The model query was unreadable — proceed with the name the user
 			// asked for and let the upstream answer it (honest over guessing).
