@@ -1,0 +1,189 @@
+{
+  "timestamp_utc": "20261028T150811Z",
+  "harness": "bench.sh (bash + curl + python3 stdlib)",
+  "config": {
+    "prompt": "Explain quantum entanglement in simple terms.",
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "repeats": 5,
+    "stone_url": "http://127.0.0.1:5199",
+    "ollama_url": "http://127.0.0.1:11434",
+    "vram_sample_ms": 100
+  },
+  "models": {
+    "stone": {
+      "id": "SmolLM3-3B-exl3_4.0bpw",
+      "backend": "tabby / exllamav3",
+      "quant": "EXL3 (see quantization_config.json)"
+    },
+    "ollama": {
+      "id": "smollm3:3b",
+      "quant": "Q4_K_M (ollama show)"
+    }
+  },
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "total_mib": 4096,
+    "used_mib_at_start": 2283,
+    "free_mib_at_start": 1489,
+    "driver": "580.178.04"
+  },
+  "measurements": {
+    "stone": {
+      "runs_ok": 5,
+      "runs_failed": 0,
+      "failures": [],
+      "ttft_s": {
+        "mean": 0.16818346977233886,
+        "min": 0.1268765926361084,
+        "max": 0.23304009437561035
+      },
+      "wall_s": {
+        "mean": 2.967874813079834,
+        "min": 2.887991428375244,
+        "max": 3.047565460205078,
+        "median": 2.9823052883148193
+      },
+      "decode_tok_s": {
+        "mean": 45.37662770248723,
+        "min": 44.13408901193545,
+        "max": 46.19416136354294,
+        "basis": "stream_chunks(approx)"
+      },
+      "peak_vram_used_mib": 2283,
+      "vram_samples_in_window": 83,
+      "per_process_peak_mib": {}
+    },
+    "ollama": {
+      "runs_ok": 5,
+      "runs_failed": 0,
+      "failures": [],
+      "ttft_s": {
+        "mean": 3.7857622623443605,
+        "min": 0.10588383674621582,
+        "max": 18.248042345046997
+      },
+      "wall_s": {
+        "mean": 21.625170612335204,
+        "min": 16.688475370407104,
+        "max": 38.037434577941895,
+        "median": 17.85824728012085
+      },
+      "decode_tok_s": {
+        "mean": 7.152473932526785,
+        "min": 6.417579605547177,
+        "max": 7.681448193797649,
+        "basis": "stream_chunks(approx)"
+      },
+      "peak_vram_used_mib": 2724,
+      "vram_samples_in_window": 370,
+      "per_process_peak_mib": {}
+    }
+  },
+  "raw": {
+    "stone": [
+      {
+        "ok": true,
+        "ttft_s": 0.23304009437561035,
+        "wall_s": 2.9823052883148193,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200092.081168,
+        "t1": 1793200095.0634732
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.1268765926361084,
+        "wall_s": 2.887991428375244,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200096.1839285,
+        "t1": 1793200099.07192
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.20722579956054688,
+        "wall_s": 3.047565460205078,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200100.443947,
+        "t1": 1793200103.4915125
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.13193392753601074,
+        "wall_s": 2.9020767211914062,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200104.6248515,
+        "t1": 1793200107.5269282
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.14184093475341797,
+        "wall_s": 3.019435167312622,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200108.7440515,
+        "t1": 1793200111.7634866
+      }
+    ],
+    "ollama": [
+      {
+        "ok": true,
+        "ttft_s": 18.248042345046997,
+        "wall_s": 38.037434577941895,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200112.9790053,
+        "t1": 1793200151.01644
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.34044504165649414,
+        "wall_s": 16.873785734176636,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200152.343749,
+        "t1": 1793200169.2175348
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.11568379402160645,
+        "wall_s": 18.66791009902954,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200170.329634,
+        "t1": 1793200188.997544
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.11875629425048828,
+        "wall_s": 17.85824728012085,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200190.1425416,
+        "t1": 1793200208.000789
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.10588383674621582,
+        "wall_s": 16.688475370407104,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793200209.1212068,
+        "t1": 1793200225.8096821
+      }
+    ]
+  }
+}
