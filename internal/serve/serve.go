@@ -1191,20 +1191,15 @@ func LoadedModel(dataDir string) (string, bool) {
 // listener holds the port (A3) — and never deletes state (H3): one
 // failed probe is not proof of death; state is only removed by the
 // daemon's own shutdown or `stone-llama stop`.
-// EnsureDaemonArgs is the same as EnsureDaemon but passes argv to the
-// re-exec'd `serve` (e.g. `--backend ...` and an optional model). Tests
-// and the CLI use it for zero-config backend/model steering without
-// changing global environment.
-// EnsureDaemon returns a live daemon state. With start, a missing or
-// dead daemon is auto-started detached.
 func EnsureDaemon(dataDir string, start bool, timeout time.Duration) (State, error) {
 	return ensureDaemon(dataDir, start, timeout, nil)
 }
 
-// EnsureDaemonArgs is the same as EnsureDaemon but passes argv to the
-// re-exec'd `serve` (e.g. `--backend ...` and an optional model). Tests
-// and the CLI use it for zero-config backend/model steering without
-// changing global environment.
+// EnsureDaemonArgs is EnsureDaemon with argv appended to the re-exec'd
+// `serve` (e.g. `--backend ...` and an optional model), so the CLI can
+// steer the auto-started daemon's engine and model. Tests and the CLI
+// use it for zero-config backend/model steering without changing global
+// environment.
 func EnsureDaemonArgs(dataDir string, start bool, timeout time.Duration, args []string) (State, error) {
 	return ensureDaemon(dataDir, start, timeout, args)
 }

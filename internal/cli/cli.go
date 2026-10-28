@@ -480,6 +480,20 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 		return 1
 	}
+	// A live supervised daemon owns its engine: a llama daemon (GGUF only)
+	// cannot serve an EXL3 model at all, so asking it to load would just
+	// replay the old, now-wrong refusal. Fail fast with the honest remedy.
+	if dec.Kind == "daemon" && dec.Status.Mode != "attach" && modelIsEXL3Dir(cfg.ModelsDir, model) {
+		b := dec.Status.Backend
+		if b == "" {
+			fmt.Fprintf(stderr, "stone-llama run: a daemon is already running but its /-/status carries no backend field (legacy daemon, reported model %q) — run 'stone-llama stop' first, then re-run\n", dec.Status.Model)
+			return 1
+		}
+		if b == serve.BackendLlama {
+			fmt.Fprintf(stderr, "stone-llama run: a daemon with backend %q is already running and serves GGUF only — run 'stone-llama stop' first, then re-run\n", serve.BackendLlama)
+			return 1
+		}
+	}
 	if dec.Kind == "direct" {
 		if dec.Model == "" {
 			// The model query was unreadable — proceed with the name the user

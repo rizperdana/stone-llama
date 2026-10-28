@@ -38,7 +38,7 @@ func llamaKeyFile(runtimeDir string) string {
 // supports — never a silent fallback to TabbyAPI.
 func resolveGGUF(model, modelsDir string) (string, error) {
 	supported := "supported: a path to a .gguf file, or a model directory containing exactly one *.gguf — " +
-		`backend "llama" serves GGUF only; non-GGUF models (e.g. EXL3) load under the default engine ('stone-llama serve --backend tabby')`
+		`backend "llama" serves GGUF only; non-GGUF models (e.g. EXL3) load under the tabby engine ('stone-llama serve --backend tabby')`
 	candidates := []string{model}
 	if !filepath.IsAbs(model) && modelsDir != "" && filepath.Join(modelsDir, model) != model {
 		candidates = append(candidates, filepath.Join(modelsDir, model))
@@ -122,7 +122,7 @@ func (b llamaBackend) Prepare(o *Options, port int) (Conn, string, error) {
 	}
 	if o.spawn == nil {
 		if _, err := exec.LookPath("llama-server"); err != nil {
-			return Conn{}, "", fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the default engine with 'stone-llama serve --backend tabby'): %w",
+			return Conn{}, "", fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the tabby engine with `stone-llama serve --backend tabby`): %w",
 				BackendLlama, err)
 		}
 	}
@@ -147,7 +147,7 @@ func (b llamaBackend) Prepare(o *Options, port int) (Conn, string, error) {
 func (b llamaBackend) Spawn(runtimeDir, cfgPath, logPath string, port int, extraEnv map[string]string) (*child, error) {
 	bin, err := exec.LookPath("llama-server")
 	if err != nil {
-		return nil, fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the default engine with 'stone-llama serve --backend tabby'): %w",
+		return nil, fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the tabby engine with `stone-llama serve --backend tabby`): %w",
 			BackendLlama, err)
 	}
 	argv := []string{bin, "--host", "127.0.0.1", "--port", strconv.Itoa(port),

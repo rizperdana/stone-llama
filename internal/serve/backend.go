@@ -77,11 +77,11 @@ func startProcess(argv []string, dir, logPath string, port int, extraEnv map[str
 	return c, nil
 }
 
-// tabbyBackend is TabbyAPI — the default engine, one implementation of
-// Backend. ORCHESTRATION ONLY: every helper it calls keeps TabbyAPI's
-// knowledge (YAML schema, venv/argv/cwd, token names, product strings)
-// in tabby_backend.go / tabbyconf.go; nothing TabbyAPI-specific is
-// spelled out here. Both methods are the pre-seam Serve call sites
+// tabbyBackend is TabbyAPI — the EXL3 engine (opt-in via --backend tabby),
+// one implementation of Backend. ORCHESTRATION ONLY: every helper it calls
+// keeps TabbyAPI's knowledge (YAML schema, venv/argv/cwd, token names,
+// product strings) in tabby_backend.go / tabbyconf.go; nothing TabbyAPI-specific
+// is spelled out here. Both methods are the pre-seam Serve call sites
 // moved verbatim — behaviour unchanged.
 type tabbyBackend struct{}
 

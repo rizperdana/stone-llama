@@ -19,15 +19,18 @@ import (
 
 // Status is the /-/status payload — ps and run both read it.
 type Status struct {
-	Mode       string `json:"mode"` // "supervised" | "attach"
-	Upstream   string `json:"upstream"`
-	Attach     string `json:"attach,omitempty"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	PID        int    `json:"pid"`
-	ChildPID   int    `json:"child_pid,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Ctx        int    `json:"ctx,omitempty"`
+	Mode     string `json:"mode"` // "supervised" | "attach"
+	Upstream string `json:"upstream"`
+	Attach   string `json:"attach,omitempty"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	PID      int    `json:"pid"`
+	ChildPID int    `json:"child_pid,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Ctx      int    `json:"ctx,omitempty"`
+	// Backend is the engine the supervised daemon runs ("llama" or
+	// "tabby"); "" in attach mode, where the upstream owns the engine.
+	Backend    string `json:"backend,omitempty"`
 	CacheMode  string `json:"cache_mode,omitempty"`
 	VRAMPeak   int    `json:"vram_peak_mib,omitempty"`
 	UptimeS    int64  `json:"uptime_s"`
@@ -105,6 +108,11 @@ func (d *daemon) currentStatus() Status {
 	}
 	if st.Attach != "" {
 		resp.Mode = "attach"
+	} else {
+		resp.Backend = d.opts.Backend
+		if resp.Backend == "" {
+			resp.Backend = BackendLlama
+		}
 	}
 	return resp
 }

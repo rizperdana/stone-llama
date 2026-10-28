@@ -129,7 +129,7 @@ func checkQuant(in Input) Check {
 	if repo == "" {
 		repo = "this repo"
 	}
-	hint := "the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only; look for an exl3 quantization_config in " + repo
+	hint := "the ExLlamaV3 backend (tabby) loads EXL3 only; look for an exl3 quantization_config in " + repo
 	method := strings.ToLower(strings.TrimSpace(in.QuantMethod))
 	if method == "" {
 		// No (or unreadable) quantization_config.json: exllamav3 conversion
@@ -158,7 +158,7 @@ func checkQuant(in Input) Check {
 			Detail: fmt.Sprintf("quant_method %q not exl3 — detected format is unsupported; %s", method, hint)}
 	case gguf && !safetensors:
 		return Check{Name: "quant", Status: StatusRefuse,
-			Detail: "no EXL3 weights — this repo ships GGUF; the default backend (TabbyAPI + ExLlamaV3) loads EXL3 only, so it refuses here. " +
+			Detail: "no EXL3 weights — this repo ships GGUF; the ExLlamaV3 backend (tabby) loads EXL3 only, so it refuses here. " +
 				"A llama.cpp `llama` backend (`--backend llama`) serves GGUF, but `pull` refuses GGUF repos regardless of backend — import a local .gguf instead; " +
 				"look for an exl3 quantization_config in " + repo}
 	}
