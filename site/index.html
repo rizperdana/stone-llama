@@ -3,50 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>stone-llama — Ollama-style CLI + local model server for ExLlamaV3</title>
-<meta name="description" content="Ollama-style CLI and local OpenAI-compatible model server for ExLlamaV3, built for 4 GB NVIDIA cards. VRAM-aware autofit that prints the arithmetic, and a pre-download fit gate that refuses with the numbers. NVIDIA CUDA, Linux/amd64, one static Go binary.">
-<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0c1013" media="(prefers-color-scheme: dark)">
+<title>stone-llama: an Ollama-style CLI for ExLlamaV3</title>
+<meta name="description" content="Ollama-style CLI and local OpenAI-compatible server for ExLlamaV3 on 4 GB NVIDIA cards. VRAM-aware autofit that prints the arithmetic, and a fit gate that refuses before a weight byte moves.">
+<meta name="theme-color" content="#0b0f0d">
 <meta property="og:title" content="stone-llama">
 <meta property="og:description" content="Local model server for 4 GB NVIDIA cards: VRAM-aware autofit and a pre-download fit gate.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://rizperdana.github.io/stone-llama/">
 <meta property="og:image" content="https://rizperdana.github.io/stone-llama/assets/icon.png">
-<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="preload" href="assets/fonts/martian-mono-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/base.css">
 <link rel="stylesheet" href="assets/styles.css">
-<script>document.documentElement.classList.add('js');</script>
-<script>
-  try {
-    var t = localStorage.getItem('theme');
-    if (t) document.documentElement.dataset.theme = t;
-  } catch (e) {}
-</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="site-head">
-  <div class="wrap head-row">
-    <a class="brand" href="#top">
-      <img src="assets/icon.png" alt="" width="28" height="28">
-      <span>stone-llama</span>
+  <div class="container head-row">
+    <a class="brand" href="#top" aria-label="stone-llama, back to top">
+      <img src="assets/icon.png" alt="" width="24" height="24">
+      <span class="brand-name">stone-llama</span>
     </a>
     <nav aria-label="Page sections">
       <ul>
-        <li><a href="#features">Features</a></li>
-        <li><a href="#output">Terminal</a></li>
+        <li><a href="#features">Fit gate</a></li>
         <li><a href="#limits">Platforms</a></li>
         <li><a href="#compare">Compare</a></li>
         <li><a href="#models">Models</a></li>
       </ul>
     </nav>
-    <div class="head-actions">
-      <button id="theme-toggle" type="button" aria-label="Switch color theme">
-        <svg class="ic-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-        <svg class="ic-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-      </button>
-      <a class="btn btn-ghost" href="https://github.com/rizperdana/stone-llama">GitHub</a>
-    </div>
+    <a class="btn btn-ghost head-cta" href="https://github.com/rizperdana/stone-llama">GitHub</a>
   </div>
 </header>
 
@@ -54,50 +41,41 @@
 
   <!-- ============ HERO ============ -->
   <section class="hero" id="top" aria-labelledby="hero-title">
-    <div class="wrap hero-copy">
-    <img class="hero-mark" src="assets/icon.png" alt="" width="96" height="96">
-      <p class="eyebrow">CLI &middot; local model server &middot; EXL3</p>
-      <h1 id="hero-title">stone-llama</h1>
-      <p class="lede">An Ollama-style CLI and local OpenAI-compatible server for ExLlamaV3,
-        built for 4&nbsp;GB NVIDIA cards. One static Go binary, zero dependencies.</p>
-
-      <ul class="diffs">
-        <li><strong>Fits context to your VRAM</strong> &mdash; picks the largest safe context and
-          prints the arithmetic.</li>
-        <li><strong>Gates every download</strong> &mdash; architecture, quant format and fit checked
-          from metadata, before any weight byte moves.</li>
-      </ul>
-
-      <div class="install" role="group" aria-label="Install command">
-        <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh</code>
-        <button class="copy" type="button" data-copy="install-cmd">copy</button>
+    <div class="container hero-row">
+      <div class="hero-text">
+        <h1 id="hero-title">stone-llama</h1>
+        <p class="lead">An Ollama-style CLI and local model server for ExLlamaV3.</p>
+        <ul class="hero-links">
+          <li><a class="btn btn-primary" href="https://github.com/rizperdana/stone-llama">View on GitHub</a></li>
+          <li><a class="btn btn-ghost" href="https://github.com/rizperdana/stone-llama/blob/main/docs/QUICKSTART.md">Quickstart docs</a></li>
+        </ul>
       </div>
 
-      <div class="hero-links">
-        <a class="btn btn-primary" href="https://github.com/rizperdana/stone-llama">View on GitHub</a>
-        <a class="btn btn-ghost" href="https://github.com/rizperdana/stone-llama/blob/main/docs/QUICKSTART.md">Quickstart docs</a>
+      <div class="hero-panel">
+        <p class="panel-cap">install</p>
+        <div class="install" role="group" aria-label="Install command">
+          <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/rizperdana/stone-llama/main/scripts/install.sh | sh</code>
+          <button class="copy" type="button" data-copy="install-cmd" aria-label="Copy install command">copy</button>
+        </div>
+        <dl class="facts">
+          <div><dt>Target</dt><dd>NVIDIA CUDA, Linux/amd64 only</dd></div>
+          <div><dt>Binary</dt><dd>static Go, no <code>require</code> in <code>go.mod</code></dd></div>
+          <div><dt>Release</dt><dd><code>v0.1.0-rc1</code></dd></div>
+        </dl>
       </div>
-
-      <p class="fine">16 commands: <code>doctor</code>, <code>setup</code>, <code>fit</code>,
-        <code>pull</code>, <code>rank</code>, <code>list</code>, <code>serve</code>, <code>ps</code>,
-        <code>stop</code>, <code>run</code>, <code>version</code>, <code>rm</code>,
-        <code>import</code>, <code>login</code>, <code>update</code>, <code>uninstall</code>.</p>
-      <p class="fine">MIT &middot; Go &ge; 1.24 &middot; static binary &asymp; 8.5&nbsp;MiB &middot;
-        NVIDIA CUDA &middot; <strong>Linux/amd64 only</strong> &middot;
-        <code>v0.1.0-rc1</code> &middot;
-        <a href="https://github.com/rizperdana/stone-llama/blob/main/docs/INSTALLATION.md">install docs</a>.</p>
     </div>
   </section>
 
-  <!-- ============ 01 WHAT'S DIFFERENT ============ -->
+  <!-- ============ 01 FIT GATE ============ -->
   <section class="sect" id="features" aria-labelledby="features-title">
-    <div class="wrap">
-      <p class="eyebrow">01 &mdash; what&rsquo;s different</p>
+    <div class="container sect-head">
       <h2 id="features-title">Two checks before you commit</h2>
-      <p class="sect-lede">Both run before you spend bandwidth or VRAM.</p>
+      <p class="lead">Both run before you spend bandwidth or VRAM.</p>
+    </div>
 
-      <div class="features">
-        <article class="feature">
+    <div class="container">
+      <div class="gate-grid">
+        <article class="gate-note">
           <h3>VRAM-aware autofit</h3>
           <p>Reads the model&rsquo;s <code>config.json</code> and your VRAM, chooses the largest
             context that fits, prints the arithmetic, and warns when the margin is thin.
@@ -105,35 +83,30 @@
 
           <aside class="caveat" aria-label="Prefill out-of-memory caveat">
             <h3>Prefill can still OOM</h3>
-            <p>A maxed-out context can OOM on a used card <strong>before the first token</strong>
-              &mdash; measured at ~2.5k tokens with ~20&nbsp;MiB free. Lower <code>--ctx</code>
+            <p>A maxed-out context can OOM on a used card <strong>before the first token</strong>,
+              measured at ~2.5k tokens with ~20&nbsp;MiB free. Lower <code>--ctx</code>
               one tier.</p>
           </aside>
         </article>
 
-        <article class="feature">
+        <article class="gate-note">
           <h3>Pre-download fit gate</h3>
-          <p><code>fit</code> and <code>pull</code> check architecture &rarr; quant format
-            &rarr; fit from metadata alone, then refuse with the numbers.</p>
-          <p class="stat"><span class="stat-n">&le;&nbsp;~16&nbsp;MiB</span>
-            of metadata read per repo, worst case &mdash; it refused a GGUF repo on
-            <code>config.json</code> alone, before a single weight byte moved.</p>
+          <p><code>fit</code> and <code>pull</code> check architecture, then quant format,
+            then fit, from metadata alone, and refuse with the numbers.</p>
+          <p class="figure">&le;&nbsp;~16&nbsp;MiB<span class="fig-cap">metadata read per repo, worst case. It refused a GGUF repo on
+            <code>config.json</code> alone, before a single weight byte moved.</span></p>
         </article>
       </div>
     </div>
-  </section>
 
-  <!-- ============ 02 TERMINAL OUTPUT ============ -->
-  <section class="sect" id="output" aria-labelledby="output-title">
-    <div class="wrap">
-      <p class="eyebrow">02 &mdash; terminal</p>
-      <h2 id="output-title">Four captures from a live run</h2>
-      <p class="sect-lede">2026-09-26 (fit/gate re-captured 2026-09-29), RTX 3050 Laptop 4096&nbsp;MiB, Linux/amd64.
+    <div class="container">
+      <h3 class="term-group-head" id="captures-title">Four captures from a live run</h3>
+      <p class="fine">2026-09-26, fit and gate re-captured 2026-09-29. RTX 3050 Laptop 4096&nbsp;MiB, Linux/amd64.
         Raw files in <a href="https://github.com/rizperdana/stone-llama/tree/main/docs/screenshots">docs/screenshots/</a>.</p>
 
       <div class="term-grid">
         <figure class="term">
-          <figcaption class="term-bar">doctor-list.txt &mdash; doctor + list</figcaption>
+          <figcaption class="term-bar">doctor-list.txt<span>doctor, list</span></figcaption>
           <pre tabindex="0"><code><span class="cmd">$ stone-llama doctor</span>
 GPU        NVIDIA GeForce RTX 3050 Laptop GPU
 VRAM       4096 MiB
@@ -146,11 +119,11 @@ SmolLM3-3B-exl3_4.0bpw  -      1.84 GiB  -        imported</code></pre>
         </figure>
 
         <figure class="term">
-          <figcaption class="term-bar">fit.txt &mdash; fit: gate, arithmetic, refusal</figcaption>
+          <figcaption class="term-bar">fit.txt<span>gate, arithmetic, refusal</span></figcaption>
           <pre tabindex="0"><code><span class="cmd">$ stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
 gate: quant <span class="ok">✓</span> exl3
-gate: fit   <span class="warn">⚠</span> weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)
+gate: fit   <span class="warn">⚠ weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)</span>
 <span class="c">[…]</span>
 <span class="cmd">$ stone-llama fit async0x42/Qwen3-8B-exl3_4.0bpw</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
@@ -162,21 +135,21 @@ fit: refused — no context fits this model in VRAM (see the gate report above)
         </figure>
 
         <figure class="term">
-          <figcaption class="term-bar">gate.txt &mdash; pull: GGUF refused before download</figcaption>
+          <figcaption class="term-bar">gate.txt<span>pull, GGUF refused before download</span></figcaption>
           <pre tabindex="0"><code><span class="cmd">$ stone-llama pull ggml-org/SmolLM3-3B-GGUF</span>
 stone-llama pull: repo ggml-org/SmolLM3-3B-GGUF has no config.json — not an EXL3 model layout
 
 <span class="cmd">$ printf 'n\n' | stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # declined: non-interactive, --yes required, 'n' never read</span>
 gate: arch  <span class="ok">✓</span> Qwen3ForCausalLM
 gate: quant <span class="ok">✓</span> exl3
-gate: fit   <span class="warn">⚠</span> weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)
+gate: fit   <span class="warn">⚠ weights 1491 + KV 980 + overhead 128 = 2599 MiB (headroom 1344, budget 2752)</span>
 <span class="c">[…]</span>
 pulling async0x42/Qwen3-1.7B-exl3_4.0bpw → Qwen3-1.7B-exl3_4.0bpw: 11 files, 1.47 GiB (sha256-verified), 76.05 GiB free
 stone-llama pull: non-interactive pull requires --yes to confirm the download</code></pre>
         </figure>
 
         <figure class="term">
-          <figcaption class="term-bar">serve.txt &mdash; serve + ps + stop (attach mode)</figcaption>
+          <figcaption class="term-bar">serve.txt<span>serve, ps, stop (attach mode)</span></figcaption>
           <pre tabindex="0"><code><span class="cmd">$ stone-llama serve --attach 127.0.0.1:5002 --key-file &lt;key-file&gt;</span>
 stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
   upstream: http://127.0.0.1:5002 (attach)
@@ -198,14 +171,14 @@ stone-llama: stopped
     </div>
   </section>
 
-  <!-- ============ 03 PLATFORMS ============ -->
+  <!-- ============ 02 PLATFORMS ============ -->
   <section class="sect" id="limits" aria-labelledby="limits-title">
-    <div class="wrap">
-      <p class="eyebrow">03 &mdash; platforms</p>
-      <h2 id="limits-title">NVIDIA-CUDA only. Read this first.</h2>
-      <p class="sect-lede">exllamav3 &mdash; the engine stone-llama wraps &mdash; has no CPU,
-        AMD or Apple path. Not configurable.</p>
+    <div class="container sect-head">
+      <h2 id="limits-title">NVIDIA CUDA only. Read this first.</h2>
+      <p class="lead">exllamav3, the engine stone-llama wraps, has no CPU, AMD or Apple path. Not configurable.</p>
+    </div>
 
+    <div class="container plat-grid">
       <div class="table-wrap" role="region" aria-label="Platform support" tabindex="0">
         <table class="table-plat">
           <thead>
@@ -215,8 +188,7 @@ stone-llama: stopped
             <tr><th scope="row">NVIDIA GPU, Linux x86_64, driver &ge; 570</th><td><span class="ok">✓</span> <code>cu12</code></td></tr>
             <tr><th scope="row">NVIDIA GPU, Linux x86_64, driver &ge; 580</th><td><span class="ok">✓</span> <code>cu13</code></td></tr>
             <tr><th scope="row">NVIDIA GPU, driver &lt; 570</th><td><span class="bad">✗</span> upgrade</td></tr>
-            <tr><th scope="row">Windows</th><td><span class="warn">⚠</span> untested</td></tr>
-            <tr><th scope="row">macOS</th><td><span class="bad">✗</span> never serves</td></tr>
+            <tr><th scope="row">Windows</th><td><span class="warn">⚠ untested</span></td></tr>
             <tr><th scope="row">AMD / Intel GPU</th><td><span class="bad">✗</span></td></tr>
             <tr><th scope="row">CPU only</th><td><span class="bad">✗</span></td></tr>
             <tr><th scope="row">Linux arm64</th><td><span class="bad">✗</span> not v1</td></tr>
@@ -224,23 +196,24 @@ stone-llama: stopped
         </table>
       </div>
 
-      <p class="fine">Linux/amd64 is the only supported platform in v1 &mdash; on CPU, AMD or
-        Apple <a href="https://ollama.com">use Ollama with GGUF</a>.
-        <code>stone-llama doctor</code> prints this verdict before anything is installed.
-        On macOS <code>doctor</code>/<code>list</code>/<code>fit</code> still run.</p>
+      <div class="plat-note">
+        <p>Linux/amd64 is the only supported platform in v1. On CPU, AMD or Apple,
+          <a href="https://ollama.com">use Ollama with GGUF</a>.</p>
+        <p><code>stone-llama doctor</code> prints this verdict before anything is installed.
+          On macOS, <code>doctor</code>, <code>list</code> and <code>fit</code> still run.</p>
+        <p class="fine">Windows ships a binary; it is untested at runtime.</p>
+      </div>
     </div>
   </section>
 
-  <!-- ============ 04 COMPARISON ============ -->
+  <!-- ============ 03 COMPARISON ============ -->
   <section class="sect" id="compare" aria-labelledby="compare-title">
-    <div class="wrap">
-      <p class="eyebrow">04 &mdash; comparison</p>
+    <div class="container sect-head">
       <h2 id="compare-title">How it compares</h2>
-      <p class="sect-lede">Same-category local serving runtimes, on the axes that matter for a
-        4&nbsp;GB machine. Compiled 2026-09-26 from each project&rsquo;s own documentation &mdash;
-        nothing was installed or run. This table includes the rows where stone-llama
-        <em>loses</em>.</p>
+      <p class="lead">Same-category local serving runtimes, on the axes that matter for a 4&nbsp;GB machine.</p>
+    </div>
 
+    <div class="container">
       <div class="table-wrap" role="region" aria-label="Feature comparison of local model serving runtimes" tabindex="0">
         <table class="table-cmp">
           <thead>
@@ -346,23 +319,27 @@ stone-llama: stopped
         </table>
       </div>
 
-      <p class="fine"><span class="ok">✓</span> yes &middot; <span class="bad">✗</span> no &middot;
-        <span class="warn">~</span> partial &middot; <span class="est">?</span> not covered by our
-        sources.</p>
-      <p class="fine">Sources: docs.ollama.com &middot; llama.cpp server README &middot;
-        lmstudio.ai/docs &middot; TabbyAPI wiki &middot; this repo&rsquo;s README.
-        LM Studio&rsquo;s pre-download states are third-party sourced.</p>
+      <dl class="legend">
+        <div><dt><span class="ok">✓</span> yes</dt></div>
+        <div><dt><span class="bad">✗</span> no</dt></div>
+        <div><dt><span class="warn">~</span> partial</dt></div>
+        <div><dt><span class="est">?</span> not covered by our sources</dt></div>
+      </dl>
+      <p class="fine">Compiled 2026-09-26 from each project&rsquo;s own documentation. Nothing was installed
+        or run. This table includes the rows where stone-llama loses.</p>
+      <p class="fine">Sources: docs.ollama.com, llama.cpp server README, lmstudio.ai/docs,
+        TabbyAPI wiki, this repo&rsquo;s README. LM Studio&rsquo;s pre-download states are third-party sourced.</p>
     </div>
   </section>
 
-  <!-- ============ 05 MODELS ============ -->
+  <!-- ============ 04 MODELS ============ -->
   <section class="sect" id="models" aria-labelledby="models-title">
-    <div class="wrap">
-      <p class="eyebrow">05 &mdash; models</p>
+    <div class="container sect-head">
       <h2 id="models-title">What fits a 4&nbsp;GB card</h2>
-      <p class="sect-lede">Metadata-only ranking, 2026-09-29 &mdash; <strong>zero weight bytes
-        downloaded</strong>. RTX 3050 Laptop, 4096&nbsp;MiB.</p>
+      <p class="lead">Metadata-only ranking, 2026-09-29, with zero weight bytes downloaded. RTX 3050 Laptop, 4096&nbsp;MiB.</p>
+    </div>
 
+    <div class="container">
       <div class="table-wrap" role="region" aria-label="EXL3 models ranked for a 4 GB card" tabindex="0">
         <table class="table-models">
           <thead>
@@ -401,7 +378,7 @@ stone-llama: stopped
             </tr>
             <tr class="row-anchor">
               <th scope="row"><span class="m-name">SmolLM3-3B</span>
-                <span class="m-repo">turboderp/SmolLM3-3B-exl3 @ 3.5bpw — baseline</span></th>
+                <span class="m-repo">turboderp/SmolLM3-3B-exl3 @ 3.5bpw, baseline</span></th>
               <td class="num">1.82 GiB</td>
               <td class="num">65,536</td>
               <td><span class="ok">✓</span></td>
@@ -426,17 +403,18 @@ stone-llama: stopped
           </tbody>
         </table>
       </div>
+
       <p class="fine"><span class="est">[est]</span> = computed from metadata + your VRAM, not
-        measured. Tool calls = the runtime&rsquo;s server-side parser.
-        <strong>Max ctx here uses the budget rule</strong> &mdash;
+        measured. Tool calls = the runtime&rsquo;s server-side parser.</p>
+      <p class="fine"><strong>Max ctx here uses the budget rule</strong>,
         <code>weights + KV ≤ 3508 MiB</code> (4096 − 88 overhead − 500 headroom allowance, the
-        research note&rsquo;s config rule) &mdash; which prices cache only.
+        research note&rsquo;s config rule), which prices cache only.
         <code>stone-llama fit</code> applies the stricter <strong>headroom rule</strong>
         (<code>weights + KV + overhead ≤ 4096 − headroom(ctx)</code>; headroom grows with ctx), so
         its picks on this card are smaller: Qwen3-4B Q4&nbsp;16384, LFM2.5 Q4&nbsp;15872, Ministral
         Q4&nbsp;8192, SmolLM3 Q4&nbsp;32768, Qwen3.5-2B Q8&nbsp;32768; Qwen2.5-7B&nbsp;@2.0bpw is
-        <em>refused</em> there (3182&nbsp;MiB &gt; 3040&nbsp;MiB budget at ctx&nbsp;4096). Both figures
-        are true of their own rule &mdash; the table above is the budget rule, <code>fit</code> is the
+        <strong>refused</strong> there (3182&nbsp;MiB &gt; 3040&nbsp;MiB budget at ctx&nbsp;4096). Both figures
+        are true of their own rule; the table above is the budget rule, <code>fit</code> is the
         headroom rule. <code>fit</code> speed estimates anchor to one measured decode point:
         42.7&nbsp;tok/s (SmolLM3-3B, this card); prefill estimates are unfitted.</p>
     </div>
@@ -445,14 +423,11 @@ stone-llama: stopped
 </main>
 
 <footer class="site-foot">
-  <div class="wrap foot-grid">
-    <div class="foot-brand">
-      <img src="assets/icon.png" alt="" width="36" height="36">
-      <p><strong>stone-llama</strong><br>
-        <span class="dim">Ollama-style CLI and local model server for ExLlamaV3 + TabbyAPI</span></p>
-    </div>
+  <div class="container">
+    <p class="foot-line">stone-llama: Ollama-style CLI and local model server for ExLlamaV3 + TabbyAPI,
+      MIT licensed, see <a href="https://github.com/rizperdana/stone-llama/blob/main/LICENSE">the licence file</a>.</p>
     <nav aria-label="Footer links">
-      <ul>
+      <ul class="foot-links">
         <li><a href="https://github.com/rizperdana/stone-llama">Repository</a></li>
         <li><a href="https://github.com/rizperdana/stone-llama/blob/main/docs/QUICKSTART.md">Quickstart</a></li>
         <li><a href="https://github.com/rizperdana/stone-llama/blob/main/docs/INSTALLATION.md">Installation</a></li>
@@ -460,13 +435,10 @@ stone-llama: stopped
         <li><a href="https://github.com/rizperdana/stone-llama/blob/main/THIRD-PARTY.md">Third-party components</a></li>
       </ul>
     </nav>
-    <div class="foot-legal">
-      <p>MIT licensed &mdash; see <a href="https://github.com/rizperdana/stone-llama/blob/main/LICENSE">LICENSE</a>.</p>
-      <p><strong>AGPL note:</strong> TabbyAPI is AGPL-3.0 and is redistributed by no one here:
-        <code>setup</code> fetches upstream sources on request, and stone-llama talks to it as a
-        separate process over HTTP. Evidence in
-        <a href="https://github.com/rizperdana/stone-llama/blob/main/THIRD-PARTY.md">THIRD-PARTY.md</a>.</p>
-    </div>
+    <p class="fine"><strong>AGPL note:</strong> TabbyAPI is AGPL-3.0 and is redistributed by no one here:
+      <code>setup</code> fetches upstream sources on request, and stone-llama talks to it as a
+      separate process over HTTP. Evidence in
+      <a href="https://github.com/rizperdana/stone-llama/blob/main/THIRD-PARTY.md">THIRD-PARTY.md</a>.</p>
   </div>
 </footer>
 
