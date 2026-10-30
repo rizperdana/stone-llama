@@ -27,7 +27,9 @@ import (
 	"github.com/rizperdana/stone-llama/internal/config"
 	"github.com/rizperdana/stone-llama/internal/doctor"
 	"github.com/rizperdana/stone-llama/internal/hf"
+	"github.com/rizperdana/stone-llama/internal/lineedit"
 	"github.com/rizperdana/stone-llama/internal/pull"
+	"github.com/rizperdana/stone-llama/internal/render"
 	"github.com/rizperdana/stone-llama/internal/selfmgmt"
 	"github.com/rizperdana/stone-llama/internal/serve"
 	"github.com/rizperdana/stone-llama/internal/setup"
@@ -102,17 +104,12 @@ type runProfile struct {
 	Thinking    *bool
 }
 
-// chatBody builds the bounded, template-driven chat request: messages
-// [{system?},{user}], bounded max_tokens, and the auto-tuned sampling knobs.
+// chatBody builds the bounded, template-driven chat request from the message
+// list the caller supplies (system, any persisted history, current prompt).
 // /v1/chat/completions applies the model's chat template; raw /v1/completions
 // would send the prompt verbatim and never reach EOS — 189 KB of garbage for
 // `1+1` (live-verified 2026-09-26; quality report).
-func chatBody(model, prompt string, p runProfile) []byte {
-	msgs := make([]map[string]string, 0, 2)
-	if p.System != "" {
-		msgs = append(msgs, map[string]string{"role": "system", "content": p.System})
-	}
-	msgs = append(msgs, map[string]string{"role": "user", "content": prompt})
+func chatBody(model string, msgs []map[string]string, p runProfile) []byte {
 	body := map[string]any{"model": model, "messages": msgs, "stream": true, "max_tokens": p.MaxTokens}
 	if p.Temperature != nil {
 		body["temperature"] = *p.Temperature
@@ -127,6 +124,20 @@ func chatBody(model, prompt string, p runProfile) []byte {
 	return b
 }
 
+// draftModeValue validates a --draft-mode flag value and maps it to an
+// autofit draft mode: ngram → ngram, off → disabled (explicit drafting-
+// off — a value config.Autofit and TabbyAPI's draft_mode Literal accept;
+// "" would be indistinguishable from "never set" in the boot config).
+func draftModeValue(v string) (string, bool) {
+	switch v {
+	case "ngram":
+		return "ngram", true
+	case "off":
+		return "disabled", true
+	}
+	return "", false
+}
+
 // runRun runs the interactive/one-shot REPL (M6): resolve a backend with
 // zero-config resolution order (our daemon -> live upstream ->
 // provisioned/adopted runtime -> one remedy message), then stream chat
@@ -136,18 +147,71 @@ func chatBody(model, prompt string, p runProfile) []byte {
 // /-/load: the upstream owns its model. A name mismatch is reported with one
 // short note and the upstream's loaded model is used; "/bye" exits without
 // unloading (the upstream's lifecycle is not ours).
+// modelIsEXL3Dir reports whether a model directory looks like an EXL3
+// layout (safetensors + quantization_config.json). Used to infer a
+// non-default backend when the user did not choose one explicitly.
+func modelIsEXL3Dir(modelsDir, model string) bool {
+	p := model
+	if !filepath.IsAbs(p) && modelsDir != "" {
+		cand := filepath.Join(modelsDir, model)
+		if st, err := os.Stat(cand); err == nil && st.IsDir() {
+			p = cand
+		}
+	}
+	st, err := os.Stat(p)
+	if err != nil || !st.IsDir() {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(p, "quantization_config.json")); err != nil {
+		return false
+	}
+	m, _ := filepath.Glob(filepath.Join(p, "*.safetensors"))
+	return len(m) > 0
+}
+
+// modelIsGGUF reports whether model names/resolves to GGUF that the
+// llama backend can serve.
+func modelIsGGUF(modelsDir, model string) bool {
+	candidates := []string{model}
+	if !filepath.IsAbs(model) && modelsDir != "" && filepath.Join(modelsDir, model) != model {
+		candidates = append(candidates, filepath.Join(modelsDir, model))
+	}
+	for _, c := range candidates {
+		st, err := os.Stat(c)
+		if err != nil {
+			continue
+		}
+		if !st.IsDir() {
+			return strings.EqualFold(filepath.Ext(c), ".gguf")
+		}
+		g, _ := filepath.Glob(filepath.Join(c, "*.gguf"))
+		return len(g) == 1
+	}
+	return false
+}
+
+func inferBackendForModel(modelsDir, model string) string {
+	if modelIsEXL3Dir(modelsDir, model) {
+		return serve.BackendTabby
+	}
+	if modelIsGGUF(modelsDir, model) {
+		return serve.BackendLlama
+	}
+	return ""
+}
+
 func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--attach host:port] [--key-file path] [--local] [-p "prompt"]`
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--backend tabby|llama] [--attach host:port] [--key-file path] [--local] [--new] [--continue] [--history] [-p "prompt"]`
 	model, cacheMode, oneShot := "", "", ""
 	attach, keyFile := "", ""
-	ctxN, noAutofit, localForce := 0, false, false
+	runBackend := "" // --backend: "" = configured value or inferred; explicit only if set
+	ctxN, noAutofit, localForce, contFlag, histFlag, newFlag := 0, false, false, false, false, false
 	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
 	// defaultSystemMsg is overridable via --system, removed via --no-system.
 	systemMsg, noSystem := defaultSystemMsg, false
 	var temperature, topP *float64 // nil → auto-tune from generation_config.json
 	tempSrc, topSrc := "", ""      // where each value came from (profile line)
 	var thinking *bool             // nil → the model template's own default
-	// the loop reassigns i when consuming flag values (explicit classic loop)
 	need := func(i *int, flag string) (string, bool) {
 		if *i+1 >= len(args) {
 			fmt.Fprintf(stderr, "stone-llama run: %s needs a value\n", flag)
@@ -180,6 +244,19 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return 2
 			}
 			cacheMode = val
+		case a == "--draft-mode" || strings.HasPrefix(a, "--draft-mode="):
+			if strings.HasPrefix(a, "--draft-mode=") {
+				val = strings.TrimPrefix(a, "--draft-mode=")
+			} else if val, ok = need(&i, "--draft-mode"); !ok {
+				return 2
+			}
+			if _, ok2 := draftModeValue(val); !ok2 {
+				fmt.Fprintf(stderr, "stone-llama run: bad --draft-mode %q (want ngram|off)\n", val)
+				return 2
+			}
+			// validated, then discarded — drafting is boot-config +
+			// serve only, so say it; never swallow the flag silently.
+			fmt.Fprintf(stderr, "stone-llama run: --draft-mode applies to 'serve', not 'run' — no effect\n")
 		case a == "--no-autofit":
 			noAutofit = true
 		case a == "--max-tokens" || strings.HasPrefix(a, "--max-tokens="):
@@ -230,6 +307,22 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		case a == "--thinking", a == "--no-thinking":
 			thinking = new(bool)
 			*thinking = a == "--thinking"
+		case a == "--backend" || a == "-backend":
+			if val, ok = need(&i, "--backend"); !ok {
+				return 2
+			}
+			if val != serve.BackendTabby && val != serve.BackendLlama {
+				fmt.Fprintf(stderr, "stone-llama run: invalid --backend %q (want tabby|llama)\n", val)
+				return 2
+			}
+			runBackend = val
+		case strings.HasPrefix(a, "--backend="):
+			val = strings.TrimPrefix(a, "--backend=")
+			if val != serve.BackendTabby && val != serve.BackendLlama {
+				fmt.Fprintf(stderr, "stone-llama run: invalid --backend %q (want tabby|llama)\n", val)
+				return 2
+			}
+			runBackend = val
 		case a == "--attach" || strings.HasPrefix(a, "--attach="):
 			// --attach still accepted (documented); if omitted it is
 			// auto-discovered from the configured/default upstream.
@@ -241,17 +334,6 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				val = strings.TrimPrefix(a, "--attach=")
 			}
 			attach = val
-		case a == "--key-file" || strings.HasPrefix(a, "--key-file="):
-			if a == "--key-file" {
-				if val, ok = need(&i, "--key-file"); !ok {
-					return 2
-				}
-			} else {
-				val = strings.TrimPrefix(a, "--key-file=")
-			}
-			keyFile = val
-		case a == "--local":
-			localForce = true
 		case a == "-p" || a == "--prompt" || strings.HasPrefix(a, "--prompt="):
 			if strings.HasPrefix(a, "--prompt=") {
 				val = strings.TrimPrefix(a, "--prompt=")
@@ -259,6 +341,12 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return 2
 			}
 			oneShot = val
+		case a == "--continue":
+			contFlag = true
+		case a == "--new":
+			newFlag = true
+		case a == "--history":
+			histFlag = true
 		case a == "-h" || a == "--help":
 			fmt.Fprintln(stdout, usageLine)
 			return 0
@@ -276,6 +364,29 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if model == "" {
 		fmt.Fprintln(stderr, usageLine)
 		return 2
+	}
+	if newFlag && contFlag {
+		fmt.Fprintf(stderr, "stone-llama run: --new and --continue contradict each other\n")
+		return 2
+	}
+
+	// --history prints the newest session's turns and exits before backend
+	// resolution: no HTTP request, no daemon spawn. A real history error
+	// (unreadable dir) is reported as such and exits 1 — only a genuinely
+	// empty history gets the no-session notice (exit 0).
+	if histFlag {
+		s, herr := lastSession(model, stderr)
+		if herr != nil {
+			if !errors.Is(herr, errNoSession) {
+				fmt.Fprintf(stderr, "stone-llama: history: %v\n", herr)
+				return 1
+			}
+			fmt.Fprintf(stderr, "stone-llama: no prior session for %s\n", model)
+			return 0
+		}
+		b, _ := json.MarshalIndent(s.Turns, "", "  ")
+		fmt.Fprintln(stdout, string(b))
+		return 0
 	}
 
 	cfg, err := config.Load()
@@ -329,15 +440,61 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "profile: max_tokens %s, %s, thinking %s, %s\n", capN, samp, th, sysDesc)
 	}
 
+	// Chat history: a plain run resumes the model's newest persisted
+	// session (ollama parity; --continue is the explicit form of the same
+	// default) — --new forces a fresh one. Every completed turn is saved
+	// under chats/<model>/. Only a genuinely empty history gets the
+	// no-session notice; a real error (unreadable dir) is reported as
+	// itself before starting fresh.
+	session := newSession(model, prof.System)
+	if !newFlag {
+		switch s, err := lastSession(model, stderr); {
+		case err == nil:
+			session = s
+			fmt.Fprintf(stderr, "stone-llama: resumed session with %d turns\n", len(s.Turns))
+		case errors.Is(err, errNoSession):
+			fmt.Fprintf(stderr, "stone-llama: no prior session for %s, starting a new one\n", model)
+		default:
+			fmt.Fprintf(stderr, "stone-llama: history: %v, starting a new one\n", err)
+		}
+	}
+
 	dataDir := config.DataDir()
-	dec, err := ResolveBackend(context.Background(), stdout, stderr, dataDir, cfg, attach, keyFile, localForce)
+	// Backend selection: explicit flag/env/config always wins; otherwise
+	// infer from the named model (EXL3 → tabby, GGUF → llama).
+	explicit := runBackend != "" || cfg.Backend != ""
+	if !explicit {
+		if b := inferBackendForModel(cfg.ModelsDir, model); b != "" {
+			cfg.Backend = b
+		}
+	}
+	if cfg.Backend == serve.BackendLlama && modelIsEXL3Dir(cfg.ModelsDir, model) {
+		fmt.Fprintf(stderr, "stone-llama run: model %q is EXL3 (safetensors + quantization_config.json) — backend %q serves GGUF only; stop any running daemon ('stone-llama stop') and re-run with 'stone-llama run %q --backend tabby'\n", model, serve.BackendLlama, model)
+		return 1
+	}
+	if runBackend != "" {
+		cfg.Backend = runBackend
+	}
+	dec, err := ResolveBackend(context.Background(), stdout, stderr, dataDir, cfg, model, attach, keyFile, localForce)
 	if err != nil {
 		fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
 		return 1
 	}
+	// A live supervised daemon owns its engine: a llama daemon (GGUF only)
+	// cannot serve an EXL3 model at all, so asking it to load would just
+	// replay the old, now-wrong refusal. Fail fast with the honest remedy.
+	if dec.Kind == "daemon" && dec.Status.Mode != "attach" && modelIsEXL3Dir(cfg.ModelsDir, model) {
+		b := dec.Status.Backend
+		if b == "" {
+			fmt.Fprintf(stderr, "stone-llama run: a daemon is already running but its /-/status carries no backend field (legacy daemon, reported model %q) — run 'stone-llama stop' first, then re-run\n", dec.Status.Model)
+			return 1
+		}
+		if b == serve.BackendLlama {
+			fmt.Fprintf(stderr, "stone-llama run: a daemon with backend %q is already running and serves GGUF only — run 'stone-llama stop' first, then re-run\n", serve.BackendLlama)
+			return 1
+		}
+	}
 	if dec.Kind == "direct" {
-		// direct-to-upstream: the upstream owns its model. A name mismatch is
-		// a local alias; reuse the upstream's loaded model, never call /-/load.
 		if dec.Model == "" {
 			// The model query was unreadable — proceed with the name the user
 			// asked for and let the upstream answer it (honest over guessing).
@@ -346,7 +503,7 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		} else if dec.Model != model {
 			fmt.Fprintf(stdout, "note: using %q (loaded upstream) — %q is a local alias\n", dec.Model, model)
 		}
-		return streamDirect(dec, prof, oneShot, stdin, stdout, stderr)
+		return streamDirect(dec, prof, oneShot, session, stdin, stdout, stderr)
 	}
 
 	// daemon path (ours or supervised)
@@ -390,15 +547,23 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		(errors.Is(serr, serve.ErrCorruptState) && state.Token != "") {
 		token = state.Token
 	}
-	return streamDaemon(st, token, prof, oneShot, stdin, stdout, stderr)
+	return streamDaemon(st, token, prof, oneShot, session, stdin, stdout, stderr)
 }
 
 // streamDirect posts a one-shot or REPL straight to a live upstream (the
 // zero-config auto-attach path, no daemon spawned). Chat completions with
 // the bounded profile; the discovered bearer is forwarded; /bye exits.
-func streamDirect(dec Decision, prof runProfile, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+// Every completed turn is appended to session and persisted under chats/.
+func streamDirect(dec Decision, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer) int {
+	nCtx := upstreamCtx(dec.Base, dec.Token) // context window, once per run
+	out, flush := chatOut(stdout)            // ollama-style markdown on a TTY only
+	rc := &replCtx{session: session, base: dec.Base, token: dec.Token, model: dec.Model, prof: &prof, stdout: stdout, stderr: stderr}
 	ask := func(ctx context.Context, prompt string) error {
-		body := chatBody(dec.Model, prompt, prof)
+		defer flush() // no buffered tail leaks into the next prompt
+		p := *rc.prof
+		session.guard(nCtx, dec.Base, dec.Token, p, prompt, stderr)
+		msgs := buildMessages(session, p, prompt)
+		body := chatBody(dec.Model, msgs, p)
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, dec.Base+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
@@ -407,18 +572,47 @@ func streamDirect(dec Decision, prof runProfile, oneShot string, stdin io.Reader
 		if dec.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+dec.Token)
 		}
-		return streamSSE(req, prof.MaxTokens, stdout, stderr)
+		reply, err := streamSSE(req, prof.MaxTokens, out, stderr)
+		if err != nil {
+			return err
+		}
+		appendTurn(session, prompt, reply)
+		if err := saveSession(session); err != nil {
+			fmt.Fprintf(stderr, "stone-llama: %v\n", err)
+		}
+		return nil
 	}
-	return repl(ask, oneShot, stdin, stdout, stderr)
+	return repl(ask, oneShot, sessionPrompts(session), rc, stdin, stdout, stderr)
+}
+
+// chatOut returns the stream writer for chat deltas: a markdown renderer
+// when stdout is a real terminal (ollama-parity simple formatting),
+// stdout itself otherwise — piped output stays byte-identical. The
+// returned flush drains the renderer's line buffer (no-op when raw).
+func chatOut(stdout io.Writer) (io.Writer, func()) {
+	if f, ok := stdout.(*os.File); ok && isTTY(f) {
+		rr := render.New(stdout)
+		return rr, rr.Flush
+	}
+	return stdout, func() {}
 }
 
 // streamDaemon posts a one-shot or REPL through our daemon's proxy
 // (supervised path). Unloads after /bye; attach mode leaves the upstream
-// model alone.
-func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+// model alone. Every completed turn is appended to session and persisted
+// under chats/.
+func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer) int {
+	base := "http://" + st.Addr()
+	nCtx := upstreamCtx(base, token) // context window, once per run
+	out, flush := chatOut(stdout)    // ollama-style markdown on a TTY only
+	rc := &replCtx{session: session, base: base, token: token, model: st.Model, prof: &prof, stdout: stdout, stderr: stderr}
 	ask := func(ctx context.Context, prompt string) error {
-		body := chatBody(st.Model, prompt, prof)
-		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+st.Addr()+"/v1/chat/completions", bytes.NewReader(body))
+		defer flush() // no buffered tail leaks into the next prompt
+		p := *rc.prof
+		session.guard(nCtx, base, token, p, prompt, stderr)
+		msgs := buildMessages(session, p, prompt)
+		body := chatBody(st.Model, msgs, p)
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", bytes.NewReader(body))
 		if rerr != nil {
 			return rerr
 		}
@@ -426,10 +620,18 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-		return streamSSE(req, prof.MaxTokens, stdout, stderr)
+		reply, err := streamSSE(req, prof.MaxTokens, out, stderr)
+		if err != nil {
+			return err
+		}
+		appendTurn(session, prompt, reply)
+		if err := saveSession(session); err != nil {
+			fmt.Fprintf(stderr, "stone-llama: %v\n", err)
+		}
+		return nil
 	}
 	loadUnload := st.Mode != "attach"
-	code := repl(ask, oneShot, stdin, stdout, stderr)
+	code := repl(ask, oneShot, sessionPrompts(session), rc, stdin, stdout, stderr)
 	if loadUnload {
 		if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
 			fmt.Fprintln(stdout, "unloaded.")
@@ -439,16 +641,18 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 }
 
 // streamSSE consumes the zero-buffer SSE stream, writing chat deltas as they
-// arrive; a length finish prints the truncation notice once.
-func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) error {
+// arrive while accumulating the full reply for history persistence; a length
+// finish prints the truncation notice once. Returns "" on any error.
+func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (string, error) {
+	var sb strings.Builder
 	resp, derr := http.DefaultClient.Do(req)
 	if derr != nil {
-		return derr
+		return "", derr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return errors.New(serveEnvelope(b, resp.StatusCode))
+		return "", errors.New(serveEnvelope(b, resp.StatusCode))
 	}
 	br := bufio.NewReader(resp.Body)
 	finish := ""
@@ -462,7 +666,7 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) error
 				if finish == "length" {
 					fmt.Fprintf(stderr, "stone-llama: output truncated at --max-tokens %d (use --max-tokens 0 for unbounded)\n", maxTokens)
 				}
-				return nil
+				return sb.String(), nil
 			}
 			var chunk struct {
 				Choices []struct {
@@ -477,21 +681,22 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) error
 			}
 			if json.Unmarshal([]byte(payload), &chunk) == nil {
 				if chunk.Error != nil && chunk.Error.Message != "" {
-					return errors.New(chunk.Error.Message)
+					return "", errors.New(chunk.Error.Message)
 				}
 				if len(chunk.Choices) > 0 {
 					if fr := chunk.Choices[0].FinishReason; fr != "" {
 						finish = fr
 					}
 					io.WriteString(stdout, chunk.Choices[0].Delta.Content)
+					sb.WriteString(chunk.Choices[0].Delta.Content)
 				}
 			}
 		}
 		if rerr != nil {
 			if rerr == io.EOF {
-				return nil
+				return sb.String(), nil
 			}
-			return rerr
+			return "", rerr
 		}
 	}
 }
@@ -500,14 +705,244 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) error
 // returns instead of an error line.
 var errInterrupted = errors.New("interrupted")
 
+// replCtx carries mutable run state the REPL slash commands need.
+type replCtx struct {
+	session *Session
+	base    string
+	token   string
+	model   string
+	prof    *runProfile
+	stdout  io.Writer
+	stderr  io.Writer
+}
+
 // repl runs one-shot or interactive, flushing tokens live. /bye ends it.
 //
 // Interactive mode catches SIGINT only while a request is in flight: the
 // ask's context is cancelled, the prompt returns, and the default
 // disposition is restored — so a Ctrl-C at the idle prompt still exits.
+// On a real terminal the idle prompt itself is raw-mode edited (lineedit):
+// Ctrl-C there abandons the line and stays in the REPL, Ctrl-D on an
+// empty line exits. Raw mode is on only while a line is being edited —
+// the streaming answer runs cooked, so output never fights the editor.
 // The one-shot path installs no handler: -p keeps default signal
 // behaviour (C).
-func repl(ask func(context.Context, string) error, oneShot string, stdin io.Reader, stdout, stderr io.Writer) int {
+func patchSession(base, token, id string, body map[string]any) {
+	if base == "" || id == "" {
+		return
+	}
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPatch, strings.TrimRight(base, "/")+"/v1/sessions/"+id, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := probeClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func handleReplCmd(text string, rc *replCtx, stdin io.Reader, stdout, stderr io.Writer) {
+	fields := strings.Fields(text)
+	switch {
+	case text == "/help":
+		fmt.Fprintln(stdout, "Available Commands:")
+		fmt.Fprintln(stdout, "  /help        Show help for commands")
+		fmt.Fprintln(stdout, "  /bye         Exit")
+		fmt.Fprintln(stdout, "  /clear       Clear conversation history")
+		fmt.Fprintln(stdout, "  /list        List available models")
+		fmt.Fprintln(stdout, "  /ps          List running sessions")
+		fmt.Fprintln(stdout, "  /sessions    Alias for /ps")
+		fmt.Fprintln(stdout, "  /show        Show model information")
+		fmt.Fprintln(stdout, "  /set         Set parameters")
+		fmt.Fprintln(stdout, "  /rename      Rename the current session")
+	case text == "/clear":
+		if rc.session != nil {
+			rc.session.Turns = nil
+			rc.session.Recap = ""
+			_ = saveSession(rc.session)
+			patchSession(rc.base, rc.token, rc.session.ID, map[string]any{"turns": []any{}, "recap": ""})
+		}
+		fmt.Fprintln(stdout, "Cleared.")
+	case text == "/list":
+		runList(nil, stdout, stderr)
+	case text == "/ps", text == "/sessions":
+		listReplSessions(rc, stdout, stderr)
+	case strings.HasPrefix(text, "/show"):
+		model := rc.model
+		if len(fields) >= 3 {
+			model = fields[len(fields)-1]
+		}
+		if rc.base == "" {
+			fmt.Fprintf(stderr, "stone-llama: no daemon\n")
+			return
+		}
+		b, _ := json.Marshal(map[string]string{"name": model})
+		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(rc.base, "/")+"/api/show", bytes.NewReader(b))
+		if err != nil {
+			fmt.Fprintf(stderr, "stone-llama: %v\n", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if rc.token != "" {
+			req.Header.Set("Authorization", "Bearer "+rc.token)
+		}
+		resp, err := probeClient.Do(req)
+		if err != nil {
+			fmt.Fprintf(stderr, "stone-llama: %v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		fmt.Fprintln(stdout, string(rb))
+	case strings.HasPrefix(text, "/set"):
+		if len(fields) < 2 {
+			fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+			return
+		}
+		switch fields[1] {
+		case "parameter":
+			if len(fields) < 4 {
+				fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+				return
+			}
+			name := fields[2]
+			value := strings.Join(fields[3:], " ")
+			if rc.session != nil {
+				if rc.session.Params == nil {
+					rc.session.Params = map[string]string{}
+				}
+				rc.session.Params[name] = value
+				_ = saveSession(rc.session)
+			}
+			if rc.prof != nil {
+				f, err := strconv.ParseFloat(value, 64)
+				if err == nil {
+					if name == "temperature" {
+						rc.prof.Temperature = &f
+					}
+					if name == "top_p" || name == "top-p" {
+						rc.prof.TopP = &f
+					}
+				}
+			}
+			fmt.Fprintf(stdout, "Set parameter %q to %q\n", name, value)
+			patchSession(rc.base, rc.token, sessionID(rc.session), map[string]any{"params": map[string]string{name: value}})
+		case "system":
+			sys := strings.TrimSpace(strings.TrimPrefix(text, "/set system"))
+			if rc.session != nil {
+				rc.session.System = sys
+				_ = saveSession(rc.session)
+			}
+			patchSession(rc.base, rc.token, sessionID(rc.session), map[string]any{"system": sys})
+			fmt.Fprintln(stdout, "Set system message.")
+		case "wordwrap":
+			if rc.session != nil {
+				if rc.session.Params == nil {
+					rc.session.Params = map[string]string{}
+				}
+				rc.session.Params["wordwrap"] = "true"
+				_ = saveSession(rc.session)
+			}
+			fmt.Fprintln(stdout, "Set 'wordwrap'")
+		case "nowordwrap":
+			if rc.session != nil {
+				if rc.session.Params == nil {
+					rc.session.Params = map[string]string{}
+				}
+				rc.session.Params["wordwrap"] = "false"
+				_ = saveSession(rc.session)
+			}
+			fmt.Fprintln(stdout, "Set 'nowordwrap'")
+		default:
+			fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+		}
+	case strings.HasPrefix(text, "/rename"):
+		name := strings.TrimSpace(strings.TrimPrefix(text, "/rename"))
+		if rc.session != nil {
+			rc.session.Name = name
+			_ = saveSession(rc.session)
+		}
+		patchSession(rc.base, rc.token, sessionID(rc.session), map[string]any{"name": name})
+		fmt.Fprintf(stdout, "Renamed session to %q\n", name)
+	case strings.HasPrefix(text, "/"):
+		fmt.Fprintln(stdout, "Unknown command (type /help for help)")
+	}
+}
+
+func sessionID(s *Session) string {
+	if s == nil {
+		return ""
+	}
+	return s.ID
+}
+
+func listReplSessions(rc *replCtx, stdout, stderr io.Writer) {
+	if rc.base != "" {
+		req, err := http.NewRequest(http.MethodGet, strings.TrimRight(rc.base, "/")+"/v1/sessions", nil)
+		if err == nil {
+			if rc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+rc.token)
+			}
+			resp, err := probeClient.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+					var arr []map[string]any
+					if json.Unmarshal(rb, &arr) == nil {
+						for _, s := range arr {
+							id, _ := s["id"].(string)
+							model, _ := s["model"].(string)
+							name, _ := s["name"].(string)
+							if name == "" {
+								name = "(unnamed)"
+							}
+							fmt.Fprintf(stdout, "%s  %s  %s\n", id, model, name)
+						}
+						if len(arr) == 0 {
+							fmt.Fprintln(stdout, "no sessions")
+						}
+						return
+					}
+					fmt.Fprintln(stdout, string(rb))
+					return
+				}
+			}
+		}
+	}
+	// fallback local
+	found := false
+	entries, _ := os.ReadDir(sessionRoot())
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		model := e.Name()
+		ids, _ := listSessionIDs(model)
+		for _, id := range ids {
+			s, err := loadSession(model, id, io.Discard)
+			if err != nil {
+				continue
+			}
+			name := s.Name
+			if name == "" {
+				name = "(unnamed)"
+			}
+			fmt.Fprintf(stdout, "%s  %s  %s  %d turns\n", id, model, name, len(s.Turns))
+			found = true
+		}
+	}
+	if !found {
+		fmt.Fprintln(stdout, "no sessions")
+	}
+}
+
+func repl(ask func(context.Context, string) error, oneShot string, histFn func() []string, rc *replCtx, stdin io.Reader, stdout, stderr io.Writer) int {
 	if oneShot != "" {
 		if err := ask(context.Background(), oneShot); err != nil {
 			fmt.Fprintf(stderr, "stone-llama run: %v\n", err)
@@ -534,13 +969,24 @@ func repl(ask func(context.Context, string) error, oneShot string, stdin io.Read
 		}
 	}
 	in := bufio.NewReader(stdin)
+	f, isFile := stdin.(*os.File)
+	tty := isFile && isTTY(f) && lineedit.RawSupported()
 	for {
-		fmt.Fprint(stdout, ">>> ")
-		line, rerr := in.ReadString('\n')
+		var line string
+		var rerr error
+		if tty {
+			line, rerr = readLineRaw(f, in, stdout, histFn) // shared reader: type-ahead survives across lines
+			if errors.Is(rerr, lineedit.ErrInterrupted) {
+				continue // ^C drawn; stay in the REPL
+			}
+		} else {
+			fmt.Fprint(stdout, ">>> ")
+			line, rerr = in.ReadString('\n')
+		}
 		text := strings.TrimSpace(line)
 		if text == "" {
 			if rerr != nil {
-				break
+				break // EOF (pipe closed, or Ctrl-D on an empty prompt)
 			}
 			continue
 		}
@@ -548,7 +994,7 @@ func repl(ask func(context.Context, string) error, oneShot string, stdin io.Read
 			break
 		}
 		if strings.HasPrefix(text, "/") {
-			fmt.Fprintln(stdout, "unknown command (try /bye to quit)")
+			handleReplCmd(text, rc, stdin, stdout, stderr)
 			continue
 		}
 		if err := askGuarded(text); err != nil && !errors.Is(err, errInterrupted) {
@@ -559,6 +1005,55 @@ func repl(ask func(context.Context, string) error, oneShot string, stdin io.Read
 		}
 	}
 	return 0
+}
+
+// sessionPrompts snapshots the session's user turns most-recent-first —
+// the REPL's Up/Down recall history. Freshly completed turns land in
+// session before the next prompt reads it.
+func sessionPrompts(s *Session) func() []string {
+	return func() []string {
+		h := make([]string, 0, len(s.Turns))
+		for i := len(s.Turns) - 1; i >= 0; i-- {
+			h = append(h, s.Turns[i].User)
+		}
+		return h
+	}
+}
+
+// readLineRaw reads one edited prompt line on a real terminal: raw mode is
+// on only for the edit, and the saved termios is restored on return, on
+// panic (defer), and on SIGTERM/SIGHUP landing mid-edit. SIGINT cannot
+// land mid-edit — ISIG is off in raw mode, so ^C arrives as a byte and
+// lineedit abandons the line instead. The reader is shared across prompt
+// lines: a fresh bufio.Reader per line would slurp and drop type-ahead
+// (a paste or scripted pty delivers several lines in one read).
+func readLineRaw(f *os.File, in *bufio.Reader, stdout io.Writer, histFn func() []string) (string, error) {
+	restore, rerr := lineedit.Raw(f)
+	if rerr != nil {
+		return "", rerr
+	}
+	defer restore()
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigc)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case s := <-sigc:
+			restore() // the deferred restore does not run on signal death
+			signal.Reset(s)
+			if p, perr := os.FindProcess(os.Getpid()); perr == nil {
+				p.Signal(s) // default disposition: die as the signal intends
+			}
+		case <-done:
+		}
+	}()
+	ed := lineedit.New(stdout, ">>> ")
+	if histFn != nil {
+		ed.SetHistory(histFn())
+	}
+	return ed.ReadLine(in)
 }
 
 // profileSampling reads a model's generation_config.json from the local
@@ -618,7 +1113,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if line := setup.ReuseStatus(filepath.Join(config.DataDir(), "runtime")); line != "" {
 		fmt.Fprint(stdout, line)
 	}
-	if !rep.Ready() {
+	if !rep.HasNVIDIA() {
 		return 1
 	}
 	return 0
@@ -660,7 +1155,7 @@ func runList(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case err != nil:
 			fmt.Fprintf(stderr, "stone-llama list: estimates unavailable: %v\n", err)
-		case !rep.Ready():
+		case !rep.HasNVIDIA():
 			fmt.Fprintln(stderr, "stone-llama list: estimates unavailable: no ready GPU — run 'stone-llama doctor'")
 		default:
 			estGPU, estVRAM = rep.GPUs[0].Name, rep.GPUs[0].VRAMMiB
@@ -799,7 +1294,7 @@ func gpuPreamble(cmd string, stdout, stderr io.Writer) (*config.Config, doctor.R
 		fmt.Fprintf(stderr, "stone-llama %s: %v\n", cmd, err)
 		return nil, doctor.Report{}, false
 	}
-	if !rep.Ready() {
+	if !rep.HasNVIDIA() {
 		fmt.Fprint(stdout, rep.Format())
 		fmt.Fprintf(stderr, "stone-llama %s: needs a working NVIDIA GPU — run 'stone-llama doctor'\n", cmd)
 		return nil, doctor.Report{}, false
@@ -1041,7 +1536,9 @@ func backendStartHelp(msg string) string {
 func runServe(args []string, stdout, stderr io.Writer) int {
 	attach, keyFile, model := "", "", ""
 	port := 0
-	usageLine := "usage: stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>]"
+	draftMode := "" // --draft-mode: "" = configured value; ngram | disabled ("off")
+	backend := ""   // --backend: "" = configured value; tabby | llama
+	usageLine := "usage: stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>] [--draft-mode ngram|off] [--backend tabby|llama]"
 	// the loop reassigns i when consuming flag values (explicit classic loop)
 	need := func(i *int, flag string) (string, bool) {
 		if *i+1 >= len(args) {
@@ -1060,6 +1557,26 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		port = p
 		return true
 	}
+
+	setDraft := func(v string) bool {
+		m, ok2 := draftModeValue(v)
+		if !ok2 {
+			fmt.Fprintf(stderr, "stone-llama serve: invalid --draft-mode %q (want ngram|off)\n", v)
+			return false
+		}
+		draftMode = m
+		return true
+	}
+
+	setBackend := func(v string) bool {
+		if v != serve.BackendTabby && v != serve.BackendLlama {
+			fmt.Fprintf(stderr, "stone-llama serve: invalid --backend %q (want tabby|llama)\n", v)
+			return false
+		}
+		backend = v
+		return true
+	}
+
 	for i := 0; i < len(args); i++ {
 		var ok bool
 		switch a := args[i]; {
@@ -1082,6 +1599,24 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 			}
 		case strings.HasPrefix(a, "--port="):
 			if !setPort(strings.TrimPrefix(a, "--port=")) {
+				return 2
+			}
+		case a == "--draft-mode" || a == "-draft-mode":
+			v, ok2 := need(&i, "--draft-mode")
+			if !ok2 || !setDraft(v) {
+				return 2
+			}
+		case strings.HasPrefix(a, "--draft-mode="):
+			if !setDraft(strings.TrimPrefix(a, "--draft-mode=")) {
+				return 2
+			}
+		case a == "--backend" || a == "-backend":
+			v, ok2 := need(&i, "--backend")
+			if !ok2 || !setBackend(v) {
+				return 2
+			}
+		case strings.HasPrefix(a, "--backend="):
+			if !setBackend(strings.TrimPrefix(a, "--backend=")) {
 				return 2
 			}
 		default:
@@ -1108,6 +1643,12 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	if keyFile == "" {
 		keyFile = cfg.UpstreamKeyFile
 	}
+	if draftMode != "" {
+		cfg.Autofit.DraftMode = draftMode
+	}
+	if backend != "" { // flag > env > config file > default ("" = llama)
+		cfg.Backend = backend
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = serve.Serve(ctx, serve.Options{
@@ -1121,6 +1662,9 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		UpstreamKeyFile: keyFile,
 		PinnedCommit:    setup.TabbyPin(),
 		Fit:             cfg.Autofit,
+		EngineEnv:       cfg.EngineEnv,
+		Backend:         cfg.Backend,
+		DeviceBudgetMiB: cfg.DeviceBudgetMiB,
 		Stdout:          stdout,
 		Stderr:          stderr,
 	})
@@ -1181,6 +1725,9 @@ func runPs(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  vram peak: %d MiB\n", st.VRAMPeak)
 	}
 	fmt.Fprintf(stdout, "  uptime:   %s\n", time.Duration(st.UptimeS)*time.Second)
+	if st.Until != "" {
+		fmt.Fprintf(stdout, "  until:    %s\n", st.Until)
+	}
 	return 0
 }
 

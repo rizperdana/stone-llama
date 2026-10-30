@@ -491,7 +491,7 @@ func TestRunOneShotStreams(t *testing.T) {
 	// message; --thinking sets the template toggle.
 	out.Reset()
 	errb.Reset()
-	if code := runRun([]string{"fake-model", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+	if code := runRun([]string{"fake-model", "--new", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
 		t.Fatalf("run -p flags: code=%d err=%q", code, errb.String())
 	}
 	c = parse()
@@ -603,7 +603,7 @@ func TestRunHonoursNoAutostart(t *testing.T) {
 func TestServeStartFailurePrintsRemediesOnce(t *testing.T) {
 	isolateConfig(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	code, _, errb := run("serve", "--port", freeLocalPort(t))
+	code, _, errb := run("serve", "--backend", "tabby", "--port", freeLocalPort(t))
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1; err = %q", code, errb)
 	}
@@ -1084,6 +1084,7 @@ func TestRunUnreadableModelListKeepsTypedName(t *testing.T) {
 func TestServePositionalModelAttachNoteAndUsage(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t)) // never probe a live daemon's port
 	// (a) attach + model: note first, then attach attempt ends at the dead port
 	code, out, errb := run("serve", "mymodel", "--attach", "127.0.0.1:9")
 	if code != 1 {
@@ -1112,7 +1113,8 @@ func TestServePositionalModelAttachNoteAndUsage(t *testing.T) {
 func TestServeModelNoRuntimeOneRemedyBlock(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
-	code, out, errb := run("serve", "mymodel")
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t)) // never probe a live daemon's port
+	code, out, errb := run("serve", "--backend", "tabby", "mymodel")
 	if code != 1 {
 		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
 	}
@@ -1484,5 +1486,511 @@ func TestLoginSigintRestoresEchoOnPTY(t *testing.T) {
 	}
 	if !readEcho() {
 		t.Error("ECHO bit still off after SIGINT — termios not restored")
+	}
+}
+
+// Phase 2: the request carries the whole conversation — with a system
+// message that is system + 3 persisted turns*2 + prompt = 8 entries (the
+// plan's "6" assumed the no-system case; this tests the with-system case).
+func TestChatBodyIncludesHistory(t *testing.T) {
+	prof := runProfile{MaxTokens: 2048, System: "be terse"}
+	s := &Session{Model: "m", Turns: []Turn{
+		{User: "q1", Assistant: "known-answer-2"},
+		{User: "q2", Assistant: "a2"},
+		{User: "q3", Assistant: "a3"},
+	}}
+	b := chatBody("m", buildMessages(s, prof, "q4"), prof)
+	var body struct {
+		Messages []map[string]string `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &body); err != nil {
+		t.Fatalf("chatBody produced invalid JSON: %v", err)
+	}
+	if len(body.Messages) != 8 {
+		t.Errorf("len(messages) = %d, want 8 (system + 3 turns*2 + prompt)", len(body.Messages))
+	}
+	if body.Messages[0]["role"] != "system" || body.Messages[0]["content"] != "be terse" {
+		t.Errorf("system message missing or not first: %+v", body.Messages[0])
+	}
+	if body.Messages[2]["content"] != "known-answer-2" {
+		t.Errorf("persisted assistant turn missing: %+v", body.Messages[2])
+	}
+	if body.Messages[7]["role"] != "user" || body.Messages[7]["content"] != "q4" {
+		t.Errorf("current prompt must be last: %+v", body.Messages[7])
+	}
+}
+
+// --continue resumes the NEWEST session by file mtime (id order alone is
+// not trusted: the newer-mtime file here carries the lexicographically
+// smaller id). --history prints that session's turns and exits 0 with no
+// HTTP/backend resolution — this isolated config has no daemon and no
+// upstream, so any request would fail instead of exiting clean.
+func TestContinueResumesNewestSession(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	older := &Session{Model: "m", ID: "200", Turns: []Turn{{User: "older-q", Assistant: "older-a"}}}
+	newer := &Session{Model: "m", ID: "100", Turns: []Turn{{User: "newer-q", Assistant: "newer-a"}}}
+	for _, s := range []*Session{older, newer} {
+		if err := saveSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(sessionFile("m", "200"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	got, err := lastSession("m", io.Discard)
+	if err != nil {
+		t.Fatalf("lastSession: %v", err)
+	}
+	if got.ID != "100" || got.Turns[0].User != "newer-q" {
+		t.Errorf("lastSession = id %s turn %q, want newest-mtime id 100 (mtime wins over id order)", got.ID, got.Turns[0].User)
+	}
+	code, out, errOut := run("run", "m", "--history")
+	if code != 0 {
+		t.Fatalf("--history: code=%d stderr=%q (must not touch the backend)", code, errOut)
+	}
+	if !strings.Contains(out, "newer-q") {
+		t.Errorf("--history missing newest turns: %q", out)
+	}
+	if strings.Contains(out, "older-q") {
+		t.Errorf("--history must print only the newest session, not older ones: %q", out)
+	}
+}
+
+// The overflow guard drops the OLDEST pair only: token counts come from the
+// stubbed exact upstream endpoint (POST /v1/token/encode), re-measured after
+// every drop; the system message survives and the stderr notice is labelled
+// "exact".
+func TestHistoryDropsOldestWhenOverBudget(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/token/encode" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Messages []map[string]string `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("encode body: %v", err)
+		}
+		n := 0
+		for _, m := range req.Messages {
+			n += len(m["content"])
+		}
+		fmt.Fprintf(w, `{"length":%d}`, n/4)
+	}))
+	defer srv.Close()
+	prof := runProfile{MaxTokens: 100, System: "sys"}
+	s := &Session{Model: "m", System: "sys", Turns: []Turn{
+		{User: strings.Repeat("u1", 60), Assistant: strings.Repeat("a1", 60)},
+		{User: strings.Repeat("u2", 60), Assistant: strings.Repeat("a2", 60)},
+		{User: strings.Repeat("u3", 60), Assistant: strings.Repeat("a3", 60)},
+	}}
+	countOf := func(sess *Session) int {
+		n := 0
+		for _, m := range buildMessages(sess, prof, "q") {
+			n += len(m["content"])
+		}
+		return n / 4
+	}
+	// Land the budget (0.95*ctx - 100) inside [count-after-1-drop, count-full)
+	// so exactly the oldest pair must go.
+	c0 := countOf(s)
+	c1 := countOf(&Session{Model: s.Model, System: s.System, Turns: s.Turns[1:]})
+	if c0 <= c1 {
+		t.Fatalf("fixture degenerate: c0=%d c1=%d", c0, c1)
+	}
+	nCtx := 1
+	for {
+		if b := int(0.95*float64(nCtx)) - 100; b >= c1 && b < c0 {
+			break
+		}
+		nCtx++
+		if nCtx > 100000 {
+			t.Fatal("no ctx lands the budget in [c1, c0)")
+		}
+	}
+	var errb bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, "q", &errb)
+	if len(s.Turns) != 2 || !strings.HasPrefix(s.Turns[0].User, "u2") {
+		t.Errorf("turns after guard = %d (first %q), want 2 with the oldest pair gone", len(s.Turns), s.Turns[0].User)
+	}
+	msgs := buildMessages(s, prof, "q")
+	if msgs[0]["role"] != "system" || msgs[0]["content"] != "sys" {
+		t.Errorf("system message must survive trimming: %+v", msgs[0])
+	}
+	for _, m := range msgs {
+		if strings.HasPrefix(m["content"], "u1") || strings.HasPrefix(m["content"], "a1") {
+			t.Errorf("oldest pair still sent: %q", m["content"])
+		}
+	}
+	if !strings.Contains(errb.String(), "history trimmed 1 turns") || !strings.Contains(errb.String(), "exact") {
+		t.Errorf("trim notice missing or not labelled exact: %q", errb.String())
+	}
+}
+
+// M6: with /v1/token/encode dead, the fallback must count the payload
+// actually sent (system + turns + current prompt) — a huge pasted
+// prompt, which the session file cannot see, still forces the trim.
+func TestHistoryFallbackCountsPromptAndSystem(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // endpoint absent → fallback path
+	}))
+	defer srv.Close()
+	prof := runProfile{MaxTokens: 100, System: "sys"}
+	prompt := strings.Repeat("P", 3000)
+	s := &Session{Model: "m", System: "sys", Turns: []Turn{
+		{User: strings.Repeat("u1", 20), Assistant: strings.Repeat("a1", 20)},
+		{User: strings.Repeat("u2", 20), Assistant: strings.Repeat("a2", 20)},
+	}}
+	fc := func(sess *Session) int {
+		b, _ := json.Marshal(buildMessages(sess, prof, prompt))
+		return len(b) / 4
+	}
+	full := fc(s)
+	oneLess := fc(&Session{Model: s.Model, System: s.System, Turns: s.Turns[1:]})
+	sb, _ := json.Marshal(s)
+	oldDefect := len(sb) / 4 // what the defect counted: no prompt, no system
+	if !(oldDefect < oneLess && oneLess < full) {
+		t.Fatalf("fixture: old=%d oneLess=%d full=%d", oldDefect, oneLess, full)
+	}
+	// Land the budget in [oneLess, full): the session file fits, the
+	// sent payload does not — only the correct count trims.
+	nCtx := 1
+	for {
+		if b := int(0.95*float64(nCtx)) - 100; b >= oneLess && b < full {
+			break
+		}
+		nCtx++
+		if nCtx > 100000 {
+			t.Fatal("no ctx lands the budget in [oneLess, full)")
+		}
+	}
+	var errb bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, prompt, &errb)
+	if len(s.Turns) != 1 {
+		t.Errorf("turns = %d, want 1 — the fallback must see the %d-byte prompt", len(s.Turns), len(prompt))
+	}
+	if !strings.Contains(errb.String(), "history trimmed 1 turns") || !strings.Contains(errb.String(), "estimated") {
+		t.Errorf("trim notice missing or not labelled estimated: %q", errb.String())
+	}
+}
+
+// M7: a dead /v1/token/encode is probed exactly ONCE per process run —
+// never once per dropped turn (2s × N on a wedged endpoint), never
+// again on the next guard call.
+func TestHistoryDeadEncodeProbedOncePerRun(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound) // endpoint absent
+	}))
+	defer srv.Close()
+	getHits := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits
+	}
+	prof := runProfile{MaxTokens: 100, System: "sys"}
+	s := &Session{Model: "m", System: "sys", Turns: []Turn{
+		{User: strings.Repeat("u1", 60), Assistant: strings.Repeat("a1", 60)},
+		{User: strings.Repeat("u2", 60), Assistant: strings.Repeat("a2", 60)},
+		{User: strings.Repeat("u3", 60), Assistant: strings.Repeat("a3", 60)},
+	}}
+	prompt := "q"
+	fc := func(sess *Session) int {
+		b, _ := json.Marshal(buildMessages(sess, prof, prompt))
+		return len(b) / 4
+	}
+	c0 := fc(s)
+	c1 := fc(&Session{Model: s.Model, System: s.System, Turns: s.Turns[1:]})
+	c2 := fc(&Session{Model: s.Model, System: s.System, Turns: s.Turns[2:]})
+	if !(c2 < c1 && c1 < c0) {
+		t.Fatalf("fixture: c2=%d c1=%d c0=%d", c2, c1, c0)
+	}
+	// Budget in [c2, c1): two drops are needed — a multi-drop trim.
+	nCtx := 1
+	for {
+		if b := int(0.95*float64(nCtx)) - 100; b >= c2 && b < c1 {
+			break
+		}
+		nCtx++
+		if nCtx > 100000 {
+			t.Fatal("no ctx lands the budget in [c2, c1)")
+		}
+	}
+	var errb bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, prompt, &errb)
+	if len(s.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1 (two drops)", len(s.Turns))
+	}
+	if !strings.Contains(errb.String(), "history trimmed 2 turns") {
+		t.Errorf("want a multi-drop trim: %q", errb.String())
+	}
+	if got := getHits(); got != 1 {
+		t.Errorf("dead /v1/token/encode probed %d times across the trim, want 1", got)
+	}
+	// next turn, same process run: still no probe
+	var errb2 bytes.Buffer
+	s.guard(nCtx, srv.URL, "", prof, prompt, &errb2)
+	if got := getHits(); got != 1 {
+		t.Errorf("probed again on a later guard call: %d hits, want 1", got)
+	}
+}
+
+// M8: a corrupt session file is reported loudly on stderr (loud beats
+// silent) and the run still proceeds as no-session — never a silent
+// errNoSession that lets the transcript rot.
+func TestHistoryCorruptFileReportsLoudly(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if err := os.MkdirAll(sessionDir("m"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionFile("m", "999"), []byte("{definitely not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errb := run("run", "m", "--history")
+	if code != 0 {
+		t.Errorf("--history: code = %d, want 0 (proceeds)", code)
+	}
+	if !strings.Contains(errb, "history at") || !strings.Contains(errb, "corrupt") {
+		t.Errorf("silent corrupt file — no warning: %q", errb)
+	}
+	if !strings.Contains(errb, "no prior session") {
+		t.Errorf("must still proceed as no-session: %q", errb)
+	}
+}
+
+// L5: an unreadable chats dir is a REAL error — --history and --continue
+// must surface it, never fold it into the "no prior session" notice
+// (errNoSession is reserved for a genuinely empty history).
+func TestHistoryUnreadableDirSurfacesError(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("STONE_LLAMA_NO_AUTOSTART", "1")
+	t.Setenv("STONE_LLAMA_UPSTREAM", "http://127.0.0.1:1")
+	isolateConfig(t)
+	dir := sessionDir("m")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0); err != nil { // EACCES on ReadDir (non-root)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if _, err := lastSession("m", io.Discard); err == nil || err == errNoSession {
+		t.Fatalf("lastSession = %v, want the real listSessionIDs error, not errNoSession", err)
+	}
+
+	// --history: exits 1 with the actual error, not the empty notice
+	code, _, errOut := run("run", "m", "--history")
+	if code != 1 {
+		t.Errorf("--history code = %d, want 1 (real error, not the empty-history notice)", code)
+	}
+	if strings.Contains(errOut, "no prior session") {
+		t.Errorf("--history hid the error behind the empty notice: %q", errOut)
+	}
+	if !strings.Contains(errOut, "stone-llama: history:") {
+		t.Errorf("--history missing the real error: %q", errOut)
+	}
+
+	// --continue: reports the actual error, then starts fresh (never claims
+	// "no prior session" for a dir it could not read)
+	_, _, errOut = run("run", "m", "--continue", "-p", "hi")
+	if strings.Contains(errOut, "no prior session") {
+		t.Errorf("--continue hid the error behind the empty notice: %q", errOut)
+	}
+	if !strings.Contains(errOut, "stone-llama: history:") {
+		t.Errorf("--continue missing the real error: %q", errOut)
+	}
+}
+
+// fakeUpstream stands up a minimal chat-completions upstream capturing
+// every request body, so session persistence can be asserted from both
+// ends (file turns + what the second run actually sent).
+func fakeUpstream(t *testing.T) *sync.Map {
+	t.Helper()
+	bodies := &sync.Map{} // request # -> raw body
+	n := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"m"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu := n
+		n++
+		bodies.Store(mu, string(b))
+		fl := w.(http.Flusher)
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+	return bodies
+}
+
+// Session resume is the DEFAULT (ollama parity): a plain `run` continues
+// the model's newest session — the second run's request carries the first
+// turn, and the session file gains a turn instead of a second file.
+func TestRunResumesSessionByDefault(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, out, errb := run("run", "m", "-p", "hello"); code != 0 {
+		t.Fatalf("first run: code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if code, out, errb := run("run", "m", "-p", "what did I just say"); code != 0 {
+		t.Fatalf("second run: code = %d, out = %q, err = %q", code, out, errb)
+	}
+
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("session files = %v (err %v), want exactly ONE (resume, not a fresh session)", ids, err)
+	}
+	s, err := loadSession("m", ids[0], io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Turns) != 2 {
+		t.Errorf("turns = %d, want 2 (both runs appended)", len(s.Turns))
+	}
+
+	raw, ok := bodies.Load(1)
+	if !ok {
+		t.Fatal("second chat request never arrived")
+	}
+	var sent struct {
+		Messages []struct{ Role, Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range sent.Messages {
+		if m.Role == "user" && m.Content == "hello" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("second run did not replay the first turn (no resume): %v", sent.Messages)
+	}
+}
+
+// --new forces a fresh session even when history exists.
+func TestRunNewFlagStartsFresh(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, _, errb := run("run", "m", "-p", "hello"); code != 0 {
+		t.Fatalf("seed run: code = %d, err = %q", code, errb)
+	}
+	if code, _, errb := run("run", "m", "--new", "-p", "fresh start"); code != 0 {
+		t.Fatalf("--new run: code = %d, err = %q", code, errb)
+	}
+
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("session files = %v (err %v), want TWO (--new must not resume)", ids, err)
+	}
+	raw, _ := bodies.Load(1)
+	var sent struct {
+		Messages []struct{ Role, Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range sent.Messages {
+		if m.Content == "hello" {
+			t.Errorf("--new run replayed prior history: %v", sent.Messages)
+		}
+	}
+}
+
+// --continue keeps working as the explicit form of the default.
+func TestRunContinueStillResumes(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, _, errb := run("run", "m", "-p", "hello"); code != 0 {
+		t.Fatalf("seed run: code = %d, err = %q", code, errb)
+	}
+	if code, _, errb := run("run", "m", "--continue", "-p", "again"); code != 0 {
+		t.Fatalf("--continue run: code = %d, err = %q", code, errb)
+	}
+
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("session files = %v (err %v), want exactly ONE (--continue must resume)", ids, err)
+	}
+	s, err := loadSession("m", ids[0], io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Turns) != 2 {
+		t.Errorf("turns = %d, want 2", len(s.Turns))
+	}
+	raw, ok := bodies.Load(1)
+	if !ok {
+		t.Fatal("second chat request never arrived")
+	}
+	if !strings.Contains(raw.(string), "hello") {
+		t.Errorf("--continue run did not replay the first turn: %v", raw)
+	}
+}
+
+// Markdown rendering applies ONLY when stdout is a real terminal: a
+// piped run (bytes.Buffer stand-in) must be byte-identical passthrough,
+// no ANSI escapes even when the model emits markdown.
+func TestRunPipedOutputHasNoANSI(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"m"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		fl := w.(http.Flusher)
+		for _, d := range []string{"**bold** and `code`", " and # heading"} {
+			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":"+strconv.Quote(d)+"}}]}\n\n")
+			fl.Flush()
+		}
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+
+	code, out, errb := run("run", "m", "--new", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("piped stdout carries ANSI escapes: %q", out)
+	}
+	for _, want := range []string{"**bold**", "`code`", "# heading"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("piped stdout must be byte-identical, missing %q: %q", want, out)
+		}
 	}
 }

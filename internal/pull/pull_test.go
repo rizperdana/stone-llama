@@ -523,7 +523,7 @@ func TestPullGGUFRefusedBeforeWeightBytes(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "gate") {
 		t.Fatalf("err = %v, want gate refusal", err)
 	}
-	if !strings.Contains(out(opts), "ollama with GGUF") {
+	if !strings.Contains(out(opts), "import a local .gguf instead") {
 		t.Errorf("no GGUF hint:\n%s", out(opts))
 	}
 	if f.resolveHits["org/gguf-only/model.gguf"] != 0 {

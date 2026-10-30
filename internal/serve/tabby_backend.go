@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"syscall"
 	"time"
@@ -34,34 +35,36 @@ type child struct {
 //	<runtime>/venv/bin/python start.py --config <cfgPath>
 //
 // with CWD in the pinned checkout; stdout+stderr append to logPath (0600).
-// The config path is the only stone-llama-specific argv content — tokens
-// and keys never appear in argv (A7).
-func spawnChild(runtimeDir, cfgPath, logPath string, port int) (*child, error) {
+// Env is the parent's plus config's engine_env (see childEnv): PATH and
+// venv discovery stay unaffected. The config path is the only
+// stone-llama-specific argv content — tokens and keys never appear in
+// argv (A7).
+func spawnChild(runtimeDir, cfgPath, logPath string, port int, extraEnv map[string]string) (*child, error) {
 	python := filepath.Join(runtimeDir, "venv", "bin", "python")
 	tabbyDir := filepath.Join(runtimeDir, "tabbyAPI")
 	if _, err := os.Stat(python); err != nil {
 		return nil, fmt.Errorf("runtime incomplete — run 'stone-llama setup' first (%s missing)", python)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return nil, err
+	argv := []string{python, "start.py", "--config", cfgPath}
+	return startProcess(argv, tabbyDir, logPath, port, extraEnv)
+}
+
+// childEnv builds the child's environment: os.Environ() as the base so
+// PATH/venv discovery is unaffected, then config's engine_env as sorted
+// KEY=value pairs — sorted so ordering is deterministic for tests. The
+// extras append last, so exec's dedup keeps them over a same-named
+// parent variable.
+func childEnv(extra map[string]string) []string {
+	env := os.Environ()
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
 	}
-	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, err
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, k+"="+extra[k])
 	}
-	cmd := exec.Command(python, "start.py", "--config", cfgPath)
-	cmd.Dir = tabbyDir
-	cmd.Stdout, cmd.Stderr = lf, lf
-	if err := cmd.Start(); err != nil {
-		lf.Close()
-		return nil, fmt.Errorf("spawn backend: %w", err)
-	}
-	c := &child{cmd: cmd, wait: make(chan error, 1), port: port, logf: lf}
-	go func() {
-		c.wait <- cmd.Wait()
-		lf.Close()
-	}()
-	return c, nil
+	return env
 }
 
 func (c *child) signalTerm() error {

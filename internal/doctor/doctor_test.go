@@ -28,8 +28,8 @@ func TestProbeCu13Ready(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Ready() || r.Extra != "cu13" {
-		t.Fatalf("Ready/Extra = %v/%q, want true/cu13", r.Ready(), r.Extra)
+	if !r.HasNVIDIA() || r.Extra != "cu13" {
+		t.Fatalf("HasNVIDIA/Extra = %v/%q, want true/cu13", r.HasNVIDIA(), r.Extra)
 	}
 	if len(r.GPUs) != 1 {
 		t.Fatalf("GPUs = %d, want 1", len(r.GPUs))
@@ -50,8 +50,8 @@ func TestProbeCu12Fallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Ready() || r.Extra != "cu12" {
-		t.Fatalf("Ready/Extra = %v/%q, want true/cu12", r.Ready(), r.Extra)
+	if !r.HasNVIDIA() || r.Extra != "cu12" {
+		t.Fatalf("HasNVIDIA/Extra = %v/%q, want true/cu12", r.HasNVIDIA(), r.Extra)
 	}
 	if !strings.Contains(r.Format(), "cu12") {
 		t.Errorf("Format should mention cu12:\n%s", r.Format())
@@ -64,7 +64,7 @@ func TestProbeDriverTooOld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Ready() {
+	if r.HasNVIDIA() {
 		t.Fatal("driver 550 must not be ready")
 	}
 	if !strings.Contains(r.Format(), "too old") {
@@ -78,7 +78,7 @@ func TestProbeNoNvidiaSmiGivesOllamaGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Ready() {
+	if r.HasNVIDIA() {
 		t.Fatal("no nvidia-smi must not be ready")
 	}
 	out := r.Format()
@@ -118,8 +118,8 @@ func TestProbeSkipsGarbageLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.GPUs) != 1 || !r.Ready() {
-		t.Fatalf("GPUs/Ready = %d/%v, want 1/true", len(r.GPUs), r.Ready())
+	if len(r.GPUs) != 1 || !r.HasNVIDIA() {
+		t.Fatalf("GPUs/HasNVIDIA = %d/%v, want 1/true", len(r.GPUs), r.HasNVIDIA())
 	}
 }
 
@@ -180,5 +180,50 @@ func TestContentionError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "PID 4") {
 		t.Errorf("beyond 3 must not be listed: %v", err)
+	}
+}
+
+// Detect tests reuse the hermetic fake-smi/PATH stubs above: no host GPU,
+// no real nvidia-smi.
+func TestDetectGPUFromStubProbe(t *testing.T) {
+	fakeSMI(t, `echo "NVIDIA GeForce RTX 3050 Laptop GPU, 4096, 580.178.04"`)
+	rep, err := Probe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != "gpu" || d.Name != "NVIDIA GeForce RTX 3050 Laptop GPU" || d.MemoryMiB != 4096 {
+		t.Errorf("Detect = %+v, want gpu/NVIDIA GeForce RTX 3050 Laptop GPU/4096", d)
+	}
+	if d.Note != rep.Note {
+		t.Errorf("Note = %q, want the report note %q", d.Note, rep.Note)
+	}
+}
+
+// CPU-only case: Extra == "" → Kind "cpu", note carries the probe refusal
+// plus the CPU guidance.
+func TestDetectCPUOnlyWhenExtraEmpty(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no nvidia-smi on the stubbed PATH
+	rep, err := Probe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Extra != "" {
+		t.Fatalf("Extra = %q, want empty (CPU-only case)", rep.Extra)
+	}
+	d, err := Detect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != "cpu" {
+		t.Fatalf("Kind = %q, want cpu", d.Kind)
+	}
+	for _, want := range []string{rep.Note, "stone-llama requires an NVIDIA GPU", "use ollama for CPU/AMD/Apple"} {
+		if !strings.Contains(d.Note, want) {
+			t.Errorf("Note %q missing %q", d.Note, want)
+		}
 	}
 }

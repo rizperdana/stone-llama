@@ -47,20 +47,28 @@ Notes on the shared block
 * The state dir shown is the default one; point `XDG_DATA_HOME` at an
   empty directory to test against a separate state dir instead.
 
-Attach mode owns no model load — by design (raw/run-load-path.txt,
-raw/load-attach-body.txt):
+Attach mode owns no model load — by design:
 
-$ curl -N -H 'Content-Type: application/json' -d '{"model":"SmolLM3-3B-exl3"}' http://127.0.0.1:5111/-/load
-HTTP/1.1 409 Conflict
-Content-Type: application/json
-Date: Sat, 26 Sep 2026 05:37:33 GMT
-Content-Length: 159
+    POST /-/load   (Authorization: Bearer <daemon state token>)
+    → HTTP/1.1 409 Conflict   type: attach_mode
+      "attach mode: model loading is owned by the upstream server — …"
+      (internal/serve/load.go, handleLoad)
 
-{"error":{"message":"attach mode: model loading is owned by the upstream server — restart serve without --attach to load models here","type":"attach_mode"}}
+The raw curl capture this note replaces (26 Sep 2026) printed a request
+with NO Authorization header and showed `HTTP/1.1 409 Conflict`. That is
+no longer reproducible as printed: since the Host/Origin/bearer gates
+landed, `/-/load` is a control route and answers **401 `unauthorized`**
+to any request without the state token (`daemon.json`, 0600). The
+capture's message text has also since been rewritten in `load.go`, and
+the `raw/` files it cited are not in this tree. No new transcript is
+claimed here — there is no live supervised daemon to re-capture one (it
+needs the provisioned runtime, never authorized on this machine), and
+fabricating terminal output would break the repo's verbatim-output rule.
+The 409 `attach_mode` contract itself is unchanged.
 
-$ stone-llama run SomeOtherModel -p hi
-stone-llama run: attach mode: model loading is owned by the upstream server — restart serve without --attach to load models here
-exit=1
+`$ stone-llama run SomeOtherModel -p hi` → `exit=1` above is historical
+too: `internal/cli` now reports a name mismatch as a local alias and
+reuses the upstream's loaded model instead of failing.
 
 With the model name that the upstream actually has loaded, `run` never
 calls `/-/load` at all — there is nothing to load in attach mode.

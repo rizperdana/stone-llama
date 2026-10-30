@@ -5,9 +5,10 @@
 //
 // The daemon owns the only write side of daemon.json and the child
 // lifecycle; clients (ps/run) read state and talk to the /-/ control
-// endpoints. Downstream auth is ours (token in daemon.json 0600,
-// optional on loopback, required otherwise); upstream auth is injected
-// from a file and never appears in argv, logs, or stdout.
+// endpoints. Downstream auth is ours: the /-/ control routes always
+// demand the bearer token from daemon.json 0600, while the /v1 proxy
+// and /api shim need it only on a non-loopback bind; upstream auth is
+// injected from a file and never appears in argv, logs, or stdout.
 package serve
 
 import (
@@ -81,10 +82,13 @@ type Options struct {
 	Model           string // optional positional: loaded via /-/load once the supervised backend is ready ("" = none; ignored in attach mode)
 	RuntimeDir      string // setup runtime root (venv + tabbyAPI checkout)
 	ModelsDir       string
-	DataDir         string         // daemon.json + flock + logs
-	UpstreamKeyFile string         // file whose CONTENTS become the upstream Bearer (file-only secret)
-	PinnedCommit    string         // for the startup banner ("" = omit)
-	Fit             config.Autofit // autofit knobs for /-/load
+	DataDir         string            // daemon.json + flock + logs
+	UpstreamKeyFile string            // file whose CONTENTS become the upstream Bearer (file-only secret)
+	PinnedCommit    string            // for the startup banner ("" = omit)
+	Fit             config.Autofit    // autofit knobs for /-/load
+	EngineEnv       map[string]string // config engine_env: extra environment for the supervised child
+	Backend         string            // supervised engine: "" or "llama" (default, llama-server over GGUF) | "tabby" (TabbyAPI + ExLlamaV3); unknown names are refused
+	DeviceBudgetMiB int               // llama weights budget in MiB (0 = no check); tabby ignores it
 
 	Stdout, Stderr io.Writer
 
@@ -93,11 +97,14 @@ type Options struct {
 	Now          func() time.Time
 
 	// test seams
-	spawn      func(runtimeDir, cfgPath, logPath string, port int) (*child, error)
+	spawn      func(runtimeDir, cfgPath, logPath string, port int, extraEnv map[string]string) (*child, error)
 	probe      func(ctx context.Context, port int) error
 	procCmd    func(pid int) string
 	contenders func() ([]doctor.Contender, error)
 	probeGPU   func() (doctor.Report, error)
+
+	SessionTTL time.Duration // idle TTL for sessions, default 1h
+	KeepAlive  time.Duration // warm-model keepalive, default 5m
 }
 
 func (o *Options) withDefaults() {
@@ -122,9 +129,9 @@ func (o *Options) withDefaults() {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	if o.spawn == nil {
-		o.spawn = spawnChild
-	}
+	// o.spawn stays nil unless a test sets it: production spawns through
+	// the selected Backend (daemon.spawn falls back to d.be.Spawn), and
+	// the backend is not known until Serve resolves it.
 	if o.probe == nil {
 		o.probe = probeHTTP
 	}
@@ -228,16 +235,21 @@ type daemon struct {
 	conn      Conn // THE backend contract (see mux)
 	token     string
 	needToken bool
-	upKey     string // upstream Bearer read from conn.UpKeyFile (file-only)
-	port      int    // internal child port; 0 in attach mode
-	cfgPath   string // generated child config (supervised only)
-	logPath   string // logs/tabby.log (child stdout+stderr)
-	child     *child // current incarnation (supervised only)
+	upKey     string  // upstream Bearer read from conn.UpKeyFile (file-only)
+	port      int     // internal child port; 0 in attach mode
+	cfgPath   string  // generated child config, or the resolved GGUF (supervised only)
+	be        Backend // selected engine, set in Serve before the child starts
+	logPath   string  // logs/tabby.log (child stdout+stderr; carries llama-server output too)
+	child     *child  // current incarnation (supervised only)
 
-	mu     sync.Mutex
-	loadMu sync.Mutex // serializes /-/load and /-/unload
-	st     State
-	fit    *autofit.Result // last accepted fit for OOM advice (nil = unknown)
+	mu              sync.Mutex
+	loadMu          sync.Mutex // serializes /-/load and /-/unload
+	st              State
+	sessions        sync.Map // sessionID -> *Session
+	keepAliveValue  time.Duration
+	sessionTTLValue time.Duration
+
+	fit *autofit.Result // last accepted fit for OOM advice (nil = unknown)
 }
 
 func (d *daemon) setChild(c *child) {
@@ -478,7 +490,7 @@ func Serve(ctx context.Context, opts Options) error {
 		token:     token,
 		needToken: !loopbackHost(opts.Host),
 		upKey:     loadUpstreamKey(opts.UpstreamKeyFile),
-		logPath:   filepath.Join(opts.DataDir, "logs", "tabby.log"),
+		logPath:   filepath.Join(opts.DataDir, "logs", "tabby.log"), // child stdout+stderr; carries llama-server output too
 		st: State{
 			PID:       os.Getpid(),
 			Host:      opts.Host,
@@ -502,40 +514,36 @@ func Serve(ctx context.Context, opts Options) error {
 			return perr
 		}
 		d.port = port
-		d.cfgPath = tabbyCfgPath(opts.RuntimeDir)
-		// TabbyAPI's first-run marker in OUR clone must exist before
-		// the child starts: without it start.py runs its self-installer
-		// (pip into whatever interpreter it finds) and dies — see
-		// EnsureFirstRunMarker for the start.py contract.
-		if merr := EnsureFirstRunMarker(opts.RuntimeDir); merr != nil {
+		// The engine is selected once, here: ""/tabby keeps today's
+		// TabbyAPI path verbatim, an unknown name is refused before any
+		// file is written (so there is nothing to clean up), and Prepare
+		// owns every pre-spawn artifact — TabbyAPI's first-run marker,
+		// the 0600 child keys, the rendered config — plus the Conn the
+		// proxy probes and injects the upstream Bearer from.
+		be, berr := BackendFor(opts.Backend, opts.DeviceBudgetMiB)
+		if berr != nil {
+			return berr
+		}
+		d.be = be
+		// A fresh state dir has no models/ yet, but the child serves
+		// model_dir from its very first request (TabbyAPI's listdir 500'd
+		// GET /v1/models on every new install). Provision the dir before
+		// Prepare renders the config that points at it; BackendFor above
+		// already refused a bad backend name without writing anything.
+		// 0700: every state dir (logs/, runtime/, history, and pull's own
+		// models-dir creation) is 0700 — first creator wins, so one mode
+		// only. The child runs as the same user; 0700 is safe for it.
+		if err := os.MkdirAll(opts.ModelsDir, 0o700); err != nil {
+			return fmt.Errorf("create models dir: %w", err)
+		}
+		conn, cfgPath, perr2 := be.Prepare(&opts, port)
+		if perr2 != nil {
 			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
-			return fmt.Errorf("%w", merr)
+			return perr2
 		}
-		// Backend keys pre-created in the child's CWD (it reads ours
-		// instead of generating/logging its own) plus the raw upstream
-		// key file the proxy injects from — both 0600, never argv/log.
-		keyFile, _, terr := writeChildTokens(opts.RuntimeDir)
-		if terr != nil {
-			dropState(opts.DataDir, opts.RuntimeDir) // partial writes only
-			return fmt.Errorf("write child keys: %w", terr)
-		}
-		d.upKey = loadUpstreamKey(keyFile)
-		d.conn = Conn{
-			BaseURL:   "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-			Name:      tabbyConnName(opts.PinnedCommit),
-			UpKeyFile: keyFile,
-		}
-		yaml := RenderTabbyYAML(TabbyConfig{
-			Host:     "127.0.0.1",
-			Port:     port,
-			ModelDir: opts.ModelsDir,
-			// model-less at boot: /-/load drives the backend's native
-			// load endpoint (no child restart on model switch).
-		})
-		if werr := writeSecret(d.cfgPath, yaml); werr != nil {
-			dropState(opts.DataDir, opts.RuntimeDir)
-			return fmt.Errorf("write child config: %w", werr)
-		}
+		d.cfgPath = cfgPath
+		d.upKey = loadUpstreamKey(conn.UpKeyFile)
+		d.conn = conn
 		c, err = d.startReady(supCtx)
 		if err != nil {
 			// failed start = no daemon: drop the generated keys and
@@ -582,6 +590,7 @@ func Serve(ctx context.Context, opts Options) error {
 		supCh = nil
 	}
 	go d.sampleVRAM(supCtx)
+	go d.sessionMaintenance(supCtx)
 	// `stone-llama serve <model>`: load the positional model through our own
 	// /-/load — the same supervised path `run` uses — once the listener is up.
 	// Attach mode never reaches this (the upstream owns loading there; the CLI
@@ -685,8 +694,27 @@ func (d *daemon) startReady(ctx context.Context) (*child, error) {
 	}
 }
 
+// bootTabbyConfig maps the serve options onto the generated child
+// config. The boot render stays model-less (/-/load drives the backend's
+// native load endpoint — no child restart on model switch), but draft
+// settings are daemon-level: they ride config.yml's draft_model block at
+// child start. Default off — no block unless the user opts in.
+func bootTabbyConfig(opts Options, port int) TabbyConfig {
+	return TabbyConfig{
+		Host:           "127.0.0.1",
+		Port:           port,
+		ModelDir:       opts.ModelsDir,
+		DraftMode:      opts.Fit.DraftMode,
+		NgramMatchMin:  opts.Fit.NgramMatchMin,
+		DraftNumTokens: opts.Fit.DraftNumTokens,
+	}
+}
+
 func (d *daemon) spawn() (*child, error) {
-	return d.opts.spawn(d.opts.RuntimeDir, d.cfgPath, d.logPath, d.port)
+	if d.opts.spawn != nil { // test seam wins; production spawns via the backend
+		return d.opts.spawn(d.opts.RuntimeDir, d.cfgPath, d.logPath, d.port, d.opts.EngineEnv)
+	}
+	return d.be.Spawn(d.opts.RuntimeDir, d.cfgPath, d.logPath, d.port, d.opts.EngineEnv)
 }
 
 // supervise owns the wait channel of every incarnation after the first
@@ -808,12 +836,15 @@ func (d *daemon) sampleVRAM(ctx context.Context) {
 //  3. BaseURL streams SSE tokens with the proxy's FlushInterval -1
 //     (zero-buffer).
 //
-// Attach mode supplies exactly these three and no Backend; the
-// supervised backend (tabby_backend.go + tabbyconf.go) additionally
-// owns spawn/readiness/shutdown, the YAML config schema, start.py
-// argv, the api_tokens.yml name and auth scheme, and the probe detail —
-// none of which may leak past those files. Every user-facing backend
-// mention routes through Conn.Name.
+// Attach mode supplies exactly these three and no Backend; a supervised
+// backend additionally owns Prepare+Spawn — validation, the config schema
+// and the child's start argv live in its own file — while readiness probing,
+// the child lifecycle, supervision, shutdown and the readiness/state-down
+// failure text stay shared and engine-agnostic (backend.go:12-18; awaitReady
+// in tabby_backend.go:157, stateDownErr at serve.go:1290). Backend display
+// names route through Conn.Name (llama_backend.go:116-120); a few
+// refusal/error strings mention backends literally instead —
+// load.go:207-209 (hot-swap refusal) and llama_backend.go:105,129.
 type Conn struct {
 	BaseURL   string // proxy target, e.g. http://127.0.0.1:41337
 	Name      string // display name (banner); "" → errors stay generic
@@ -839,6 +870,18 @@ func (d *daemon) mux() http.Handler {
 	mux.HandleFunc(statusPath, d.handleStatus)
 	mux.HandleFunc(loadPath, d.handleLoad)
 	mux.HandleFunc(unloadPath, d.handleUnload)
+
+	// Ollama compatibility shim (phase 4): literal patterns, longest
+	// match wins over the "/" catch-all — registration order irrelevant.
+	mux.HandleFunc("/api/chat", d.handleOllamaChat)
+	mux.HandleFunc("/api/tags", d.handleOllamaTags)
+	mux.HandleFunc("/api/show", d.handleOllamaShow)
+	mux.HandleFunc("/api/generate", d.handleOllamaGenerate)
+
+	// Server-side session memory + chat completions session handling.
+	mux.HandleFunc("/v1/sessions", d.handleSessions)
+	mux.HandleFunc("/v1/sessions/", d.handleSessions)
+	mux.HandleFunc("/v1/chat/completions", d.handleChatCompletions)
 
 	target, _ := url.Parse(d.conn.BaseURL)
 	rp := &httputil.ReverseProxy{
@@ -867,16 +910,23 @@ func (d *daemon) mux() http.Handler {
 	return mux
 }
 
-// authed enforces downstream bearer: healthz open (our own probe), token
-// required when host is not loopback, anything accepted on loopback
-// (optional per §7) — and whatever arrives is stripped by the Director.
+// authed enforces downstream access, gates first: Host and Origin must
+// name loopback (421/403 otherwise — pure header checks; Go's ServeMux
+// never routes on Host), healthz stays open (our own probe), the
+// control routes /-/status, /-/load, /-/unload always demand the state
+// token, and any other route needs the token only when the bind is not
+// loopback (§7) — whatever arrives is stripped by the Director.
 func (d *daemon) authed(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !d.hostOK(w, r) || !d.originOK(w, r) {
+			return // the failing gate wrote its refusal envelope
+		}
 		if r.URL.Path == healthzPath {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if d.needToken {
+		control := r.URL.Path == statusPath || r.URL.Path == loadPath || r.URL.Path == unloadPath
+		if d.needToken || control {
 			got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
 			got = strings.TrimSpace(got)
 			if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(d.token)) != 1 {
@@ -887,6 +937,50 @@ func (d *daemon) authed(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostOK gates the request's Host header before any handler runs
+// (DNS-rebinding defence): only loopback names and this daemon's own
+// configured bind host pass; a foreign Host is refused 421.
+func (d *daemon) hostOK(w http.ResponseWriter, r *http.Request) bool {
+	if !d.hostAllowed(r.Host) {
+		writeJSON(w, http.StatusMisdirectedRequest, "loopback only", "invalid_request")
+		return false
+	}
+	return true
+}
+
+// originOK gates the Origin header (CSRF defence): absent (curl/CLI
+// clients) passes; present must resolve to the same accept-set as
+// hostOK, else 403.
+func (d *daemon) originOK(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || !d.hostAllowed(u.Host) {
+		writeJSON(w, http.StatusForbidden, "cross-origin request refused", "browser_origin_forbidden")
+		return false
+	}
+	return true
+}
+
+// hostAllowed is the shared accept-set for Host and Origin: normalize
+// to a bare host (strip the port, unwrap [::1] IPv6 form), then accept
+// only loopback names and the host this daemon is configured to bind.
+// An empty host never passes (an unset opts.Host must not widen it).
+func (d *daemon) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	return host == "127.0.0.1" || host == "::1" || host == "localhost" ||
+		host == d.opts.Host
 }
 
 // joinPath prefixes the upstream base path (attach URLs may carry one)
@@ -1101,6 +1195,15 @@ func EnsureDaemon(dataDir string, start bool, timeout time.Duration) (State, err
 	return ensureDaemon(dataDir, start, timeout, nil)
 }
 
+// EnsureDaemonArgs is EnsureDaemon with argv appended to the re-exec'd
+// `serve` (e.g. `--backend ...` and an optional model), so the CLI can
+// steer the auto-started daemon's engine and model. Tests and the CLI
+// use it for zero-config backend/model steering without changing global
+// environment.
+func EnsureDaemonArgs(dataDir string, start bool, timeout time.Duration, args []string) (State, error) {
+	return ensureDaemon(dataDir, start, timeout, args)
+}
+
 // EnsureAttached auto-starts a detached daemon already wired to an existing
 // upstream (re-exec of `serve --attach <base> --key-file <file>`). It is the
 // zero-config attach path: rule 2 of the resolution order — a live upstream
@@ -1208,7 +1311,8 @@ func startingNote(dataDir string, st State) string {
 }
 
 // stateDownErr states exactly what answered a recorded port — nothing,
-// a foreign process, or a listener that would not confirm itself (A3),
+// a foreign process, a 401 from our own control route (state without a
+// usable token), or a listener that would not confirm itself (A3) —
 // and never deletes the state (H3).
 func stateDownErr(dataDir string, st State, class probeClass, stateErr error) error {
 	note := ""
@@ -1220,6 +1324,8 @@ func stateDownErr(dataDir string, st State, class probeClass, stateErr error) er
 		return fmt.Errorf("could not confirm a stone-llama daemon on %s: a listener answers neither the healthz marker nor /-/status with the state token (booting or wedged?)%s — state kept at %s", st.Addr(), note, StatePath(dataDir))
 	case probeForeign:
 		return fmt.Errorf("a foreign process holds %s (not a stone-llama daemon) and the recorded state no longer matches it%s — state kept at %s; 'stone-llama stop' clears it", st.Addr(), note, StatePath(dataDir))
+	case probeRefused:
+		return fmt.Errorf("the listener on %s answers /-/status with 401 — how our own control route refuses an unauthenticated probe, so this is our daemon reached through state that no longer carries a usable token (damaged daemon.json?), not a foreign process%s — state kept at %s; 'stone-llama stop' clears it", st.Addr(), note, StatePath(dataDir))
 	default: // probeDown
 		// cold-start window (F): the spawn-lock holder is still booting —
 		// say STARTING like stop does, never "stale … stop clears it"
@@ -1245,6 +1351,8 @@ func missingStateErr(dataDir string, rerr error) error {
 			return fmt.Errorf("a stone-llama daemon is already serving on %s, but its state is not in %s (state file missing or another data dir) — not starting a second one", cfgSt.Addr(), dataDir)
 		case probeForeign:
 			return fmt.Errorf("another process holds %s (not a stone-llama daemon) and %s has no state file — nothing to query from here", cfgSt.Addr(), dataDir)
+		case probeRefused:
+			return fmt.Errorf("the listener on %s answers /-/status with 401 — our control route refusing an unauthenticated probe — but %s has no state file (damaged or wrong data dir): nothing to query from here", cfgSt.Addr(), dataDir)
 		case probeUnconfirmed:
 			return fmt.Errorf("a listener on %s would not identify itself (booting or wedged?) and %s has no state file — nothing to query from here", cfgSt.Addr(), dataDir)
 		}
@@ -1295,6 +1403,8 @@ func ProbeNoState(dataDir string, wait time.Duration) (bool, error) {
 			return false, fmt.Errorf("a stone-llama daemon is serving on %s, but its state is not in %s (state file missing or another data dir) — refusing to signal a pid that was never recorded", cfgSt.Addr(), StatePath(dataDir))
 		case probeForeign:
 			return false, fmt.Errorf("another process holds %s (not a stone-llama daemon) — nothing to stop from here", cfgSt.Addr())
+		case probeRefused:
+			return false, fmt.Errorf("the listener on %s answers /-/status with 401 — our control route refusing an unauthenticated probe — and %s has no state file: refusing to signal a pid that was never recorded", cfgSt.Addr(), dataDir)
 		case probeUnconfirmed:
 			return false, fmt.Errorf("a listener on %s would not identify itself (booting or wedged?) and %s has no state file — nothing to signal", cfgSt.Addr(), StatePath(dataDir))
 		}
@@ -1334,6 +1444,8 @@ func startFailed(dataDir string, logStart int64) error {
 			return fmt.Errorf("a stone-llama daemon is already serving on %s, but its state is not in %s (state file missing or another data dir) — not starting a second one", cfgSt.Addr(), dataDir)
 		case probeForeign:
 			return fmt.Errorf("another process holds %s (not a stone-llama daemon) — stop it, or pick a free port with --port", cfgSt.Addr())
+		case probeRefused:
+			return fmt.Errorf("the listener on %s answers /-/status with 401 — our control route refusing an unauthenticated probe — and %s has no usable state; fix daemon.json or stop that listener", cfgSt.Addr(), dataDir)
 		case probeUnconfirmed:
 			return fmt.Errorf("a listener on %s answered neither the healthz marker nor /-/status (a daemon may be booting or wedged) — retry shortly; state kept at %s", cfgSt.Addr(), StatePath(dataDir))
 		}
@@ -1357,12 +1469,14 @@ const (
 	probeDown                          // nothing listening
 	probeUnconfirmed                   // listener up, neither probe answered within bound
 	probeForeign                       // listener answered without our identity
+	probeRefused                       // listener answered /-/status 401: our own control route refusing the probe
 )
 
 // classifyListener identifies st's port: the healthz marker is the
 // primary proof; /-/status carrying the unguessable state token is the
 // cross-check when healthz was inconclusive (H3: identification must
-// separate confirmed-live, confirmed-foreign, and could-not-confirm).
+// separate confirmed-live, confirmed-foreign, refused-by-our-own-gate,
+// and could-not-confirm).
 func classifyListener(ctx context.Context, st State) probeClass {
 	conn, derr := net.DialTimeout("tcp", st.Addr(), 500*time.Millisecond)
 	if derr != nil {
@@ -1384,9 +1498,12 @@ func classifyListener(ctx context.Context, st State) probeClass {
 			return probeLive
 		}
 	}
-	answered, ok := statusAnswers(ctx, st)
+	answered, ok, refused := statusAnswers(ctx, st)
 	if ok {
 		return probeLive
+	}
+	if refused {
+		return probeRefused
 	}
 	if answered {
 		return probeForeign
@@ -1395,26 +1512,40 @@ func classifyListener(ctx context.Context, st State) probeClass {
 }
 
 // statusAnswers cross-checks /-/status with the recorded token:
-// (answered, ok). ok proves our daemon (token unguessable); answered
-// with !ok proves a foreign HTTP server; no answer at all is a
+// (answered, ok, refused). ok proves our daemon (token unguessable);
+// refused — a 401 that carries our own refusal envelope (the
+// WWW-Authenticate: Bearer header AND the writeJSON error body) — is
+// our own control route rejecting the probe because the state carries
+// no usable token: our daemon behind damaged state, not a foreign
+// process. A 401 WITHOUT both markers is a foreign server that happens
+// to answer 401: answered with !ok, so probeForeign. answered with !ok
+// (and not refused) is a foreign HTTP server; no answer at all is a
 // booting/stalled listener — not yet dead.
-func statusAnswers(ctx context.Context, st State) (answered, ok bool) {
+func statusAnswers(ctx context.Context, st State) (answered, ok, refused bool) {
 	rctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, "http://"+st.Addr()+statusPath, nil)
 	if err != nil {
-		return false, false
+		return false, false, false
 	}
 	if st.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+st.Token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false, false
+		return false, false, false
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	return true, resp.StatusCode == http.StatusOK
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusUnauthorized {
+		return true, resp.StatusCode == http.StatusOK, false
+	}
+	// M5: only OUR refusal envelope (header + writeJSON type marker)
+	// proves "our daemon, damaged state"; a bare foreign 401 stays
+	// probeForeign.
+	ours := strings.TrimSpace(resp.Header.Get("WWW-Authenticate")) == "Bearer" &&
+		strings.Contains(string(body), `"type":"unauthorized"`)
+	return true, false, ours
 }
 
 // writeSecret writes a 0600 file atomically (child config/tokens —

@@ -1,0 +1,195 @@
+{
+  "timestamp_utc": "20261028T154053Z",
+  "harness": "bench.sh (bash + curl + python3 stdlib)",
+  "config": {
+    "prompt": "Explain quantum entanglement in simple terms.",
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "repeats": 5,
+    "stone_url": "http://127.0.0.1:5199",
+    "ollama_url": "http://127.0.0.1:11434",
+    "vram_sample_ms": 100
+  },
+  "models": {
+    "stone": {
+      "id": "SmolLM3-3B-exl3_4.0bpw",
+      "backend": "tabby / exllamav3",
+      "quant": "EXL3 (see quantization_config.json)"
+    },
+    "ollama": {
+      "id": "smollm3:3b",
+      "quant": "Q4_K_M (ollama show)"
+    }
+  },
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "total_mib": 4096,
+    "used_mib_at_start": 2724,
+    "free_mib_at_start": 1048,
+    "driver": "580.178.04"
+  },
+  "measurements": {
+    "stone": {
+      "runs_ok": 5,
+      "runs_failed": 0,
+      "failures": [],
+      "ttft_s": {
+        "mean": 0.1300363063812256,
+        "min": 0.11962366104125977,
+        "max": 0.1650710105895996
+      },
+      "wall_s": {
+        "mean": 2.8783713817596435,
+        "min": 2.867558479309082,
+        "max": 2.90392804145813,
+        "median": 2.874894857406616
+      },
+      "decode_tok_s": {
+        "mean": 46.21001362156061,
+        "min": 46.098731774861804,
+        "max": 46.369707716991165,
+        "basis": "stream_chunks(approx)"
+      },
+      "peak_vram_used_mib": 2724,
+      "vram_samples_in_window": 100,
+      "per_process_peak_mib": {
+        "/usr/local/lib/ollama/llama-server": 436,
+        "/home/anon/.local/share/stone-llama/runtime/venv/bin/python": 2274
+      }
+    },
+    "ollama": {
+      "runs_ok": 5,
+      "runs_failed": 0,
+      "failures": [],
+      "ttft_s": {
+        "mean": 0.8852136135101318,
+        "min": 0.03689146041870117,
+        "max": 4.267848253250122
+      },
+      "wall_s": {
+        "mean": 3.16210994720459,
+        "min": 2.312993049621582,
+        "max": 6.5405895709991455,
+        "median": 2.320770025253296
+      },
+      "decode_tok_s": {
+        "mean": 55.777959858083115,
+        "min": 55.59331832272175,
+        "max": 55.92373041415509,
+        "basis": "stream_chunks(approx)"
+      },
+      "peak_vram_used_mib": 2577,
+      "vram_samples_in_window": 104,
+      "per_process_peak_mib": {
+        "/usr/local/bin/ollama": 18,
+        "/usr/local/lib/ollama/llama-server": 2568
+      }
+    }
+  },
+  "raw": {
+    "stone": [
+      {
+        "ok": true,
+        "ttft_s": 0.1650710105895996,
+        "wall_s": 2.90392804145813,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202066.2133057,
+        "t1": 1793202069.1172338
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.12284612655639648,
+        "wall_s": 2.867558479309082,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202070.213107,
+        "t1": 1793202073.0806656
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.11962366104125977,
+        "wall_s": 2.8688690662384033,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202074.1620502,
+        "t1": 1793202077.0309193
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.12164998054504395,
+        "wall_s": 2.8766064643859863,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202078.1325731,
+        "t1": 1793202081.0091796
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.12099075317382812,
+        "wall_s": 2.874894857406616,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202082.1188455,
+        "t1": 1793202084.9937403
+      }
+    ],
+    "ollama": [
+      {
+        "ok": true,
+        "ttft_s": 4.267848253250122,
+        "wall_s": 6.5405895709991455,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202093.6918335,
+        "t1": 1793202100.232423
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.04390835762023926,
+        "wall_s": 2.3148584365844727,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202101.3968391,
+        "t1": 1793202103.7116976
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.03767275810241699,
+        "wall_s": 2.312993049621582,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202104.7925496,
+        "t1": 1793202107.1055427
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.03689146041870117,
+        "wall_s": 2.321338653564453,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202108.1927388,
+        "t1": 1793202110.5140774
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.03974723815917969,
+        "wall_s": 2.320770025253296,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793202111.6442845,
+        "t1": 1793202113.9650545
+      }
+    ]
+  }
+}
