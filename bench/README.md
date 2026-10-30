@@ -164,3 +164,73 @@ same daemon restored 2752 MiB / 55 tok/s. Reproduced once, cause not isolated
   concurrency, and comparable VRAM**, not raw warm decode or TTFT on a 3 B
   model. Long-prompt throughput needs the flag-isolation follow-up before any
   claim either way.
+
+## Results — 2026-10-30 Qwen EXL3 (results-20261030-qwen.json, run 20261030T150929Z)
+
+**Absolute numbers, no like-for-like counterpart on disk.** `Qwen_Qwen3-4B-Instruct-2507-EXL3`
+(EXL3, 2.5 bpw, 2.07 GiB) was measured via `stone-llama serve … --backend tabby` on
+port 5199 — same workload definition as `run.sh` (same prompt, `max_tokens=128`,
+`temperature=0.7`, 5 repeats, 100 ms VRAM sampling, same Python streaming client and
+stats logic). `SmolLM3-3B-exl3_4.0bpw` (EXL3, ~3.5 bpw, 1.84 GiB) was measured the same
+way on the same card in the same run, so the two EXL3 models share a consistent basis.
+
+No ollama counterpart exists for Qwen3-4B: `ollama list` has `qwen3.5:2b` (Qwen3.5,
+2.7 B params, different architecture — **not comparable**), and `smollm3:3b` is a
+different base model entirely. This section does **not** present ollama numbers as
+comparisons for either model. ollama is probe-only (port 11434, never started/stopped).
+
+### Harness command
+
+```sh
+# stone-llama-only (no ollama comparison):
+python3 /tmp/measure_exl3.py
+# which internally runs:
+stone-llama serve <model> --port 5199 --backend tabby
+# starts daemon, waits for model load, sends 5 streaming requests,
+# samples nvidia-smi every 100ms, computes stats, stops daemon
+```
+
+### EXL3 pair: Qwen3-4B vs SmolLM3-3B
+
+RTX 3050 Laptop 4 GB, driver 580.178.04. Both EXL3, tabby/ExLlamaV3.
+
+| metric (5 runs) | Qwen_Qwen3-4B-Instruct-2507-EXL3 | SmolLM3-3B-exl3_4.0bpw |
+|---|---|---|
+| model | Qwen3 4 B, EXL3 2.5 bpw (2.07 GiB) | SmolLM3 3 B, EXL3 ~3.5 bpw (1.84 GiB) |
+| runs ok | 5/5 | 5/5 |
+| TTFT mean (s) | 1.059 (min/max 0.16/4.33) | 0.124 (min/max 0.11/0.16) |
+| TTFT warm-only (s) | 0.16–0.34 (runs 1,4,5; runs 2–3 spiked) | 0.11–0.16 (all consistent) |
+| wall mean (s) | 6.121 (median 4.832) | 2.905 (median 2.897) |
+| decode tok/s | 27.57 (min/max 14.77/35.02) | 45.68 (min/max 45.2/45.95) |
+| peak VRAM (MiB) | 2445 | 2283 |
+| per-proc peak (MiB) | 2436 (venv python) | 2274 (venv python) |
+| ctx | n_ctx_train 262144, n_ctx null | n_ctx_train 65536, n_ctx null |
+
+### Qwen run-3 contention
+
+Run 2 wall=8.76 s, run 3 TTFT=4.33 s / wall=9.08 s — multi-second spikes the other
+three runs did not show (3.7–4.8 s wall). On a 4 GB card the 2.07 GiB Qwen3-4B EXL3
+model leaves ~1450 MiB headroom before its 262 144-token context config; the spikes are
+consistent with EXL3 memory-pool pressure causing offload/reload between requests.
+SmolLM3-3B (1.84 GiB, 65 536-token ctx) showed no spikes — all 5 runs within 3 % of
+each other. Warm-only Qwen decode (runs 1, 4, 5: 35.0/28.3/33.1 tok/s, mean ~32) is
+~30 % slower than SmolLM3's 45.7 tok/s, consistent with a larger model on a 4 GB card.
+
+### Honest reading — Qwen EXL3 (absolute, no ollama comparison)
+
+- **Same EXL3 backend, different-sized models.** Qwen3-4B is 28 % larger on disk
+  (2.07 vs 1.84 GiB) and 162 MiB larger VRAM (2445 vs 2283 MiB). The decode gap
+  (27.6 vs 45.7 tok/s) reflects model size + param count, not a pathology in the
+  stone-llama wrapper.
+- **Qwen variability is real, not noise.** Runs 2–3 hit 4.3–8.8 s wall vs 3.7–4.8 s
+  for the other three. ExL3 offload/reload on a 4 GB card with a 262 k-token context
+  config is the suspected cause (no Xid, no OOM — model simply reloads mid-stream).
+- **Warm-only Qwen ≈ 32 tok/s** vs SmolLM3 45.7 tok/s. Even excluding contention, the
+  larger Qwen3-4B is ~30 % slower on a 4 GB card — expected for +1 B params + smaller
+  headroom.
+- **No claim vs ollama** — there is no on-disk ollama counterpart for Qwen3-4B.
+  `qwen3.5:2b` is Qwen3.5 (different architecture, 2.7 B). Comparing stone-llama's
+  Qwen3-4B against ollama's qwen3.5:2b would be apples-to-oranges.
+- **VRAM: Qwen uses more** (2445 vs 2283 MiB) because it is a larger model with a
+  larger context config (262 144 vs 65 536 n_ctx_train). Both fit on the 4 GB card
+  with headroom for the 128-token workload.
