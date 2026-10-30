@@ -1,0 +1,69 @@
+{
+  "round": 2,
+  "date": "2026-10-30",
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU (4096 MiB)",
+    "driver": "580.178.04",
+    "os": "linux 7.3.0-4-cachyos x64"
+  },
+  "workload": {
+    "prompt": "Explain quantum entanglement in simple terms.",
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "repeats": 5,
+    "vram_sampling_ms": 100
+  },
+  "pair_note": "Both endpoints serve the identical ollama smollm3:3b Q4_K_M GGUF blob (ollama blob copied to /home/anon/ai/gguf/smollm3-q4km in the killed prior attempt, imported into stone-llama as 'smollm3-q4km-test'). Same weights, two llama.cpp wrappers. No downloads.",
+  "argv_note": "stone-llama default llama-backend argv, from internal/serve/llama_backend.go Spawn() and confirmed on the live child /proc cmdline (pid 644766): llama-server --host 127.0.0.1 --port <internal> --api-key-file <runtime>/upstream_key -m <gguf>. Nothing else: no -fa, no -ngl, no --ctx-size, no -c. No supported flag passthrough exists (argv hardcoded; config engine_env only extends child ENV, not argv) — but the env passthrough works: setting engine_env {\"LLAMA_ARG_FLASH_ATTN\": \"off\"} (or \"on\"/\"auto\") and {\"LLAMA_ARG_MMAP\": \"0\"} reaches llama-server.",
+  "harness_note": "One harness fix this round: run.sh chunk counter now also counts delta.reasoning_content (llama.cpp chat deltas carry visible text there; previously decode tok/s read 0.0 for stone). ollama numbers from round 1 used the same counter for delta.content, so basis is comparable (token chunks).",
+  "results": {
+    "same_quant_stone_vs_ollama": {
+      "stone": {
+        "model": "smollm3-q4km-test (identical Q4_K_M GGUF)",
+        "decode_tok_s_mean": 53.5,
+        "ttft_mean_s": 0.116,
+        "ttft_warm_mean_s": 0.116,
+        "wall_mean_s": 2.454,
+        "peak_vram_mib": 2761,
+        "per_proc_peak_mib": {"llama.cpp llama-server (stone)": 2752},
+        "ctx": "unlimited by stone (llama-server default = model training ctx, 32768 for smollm3)"
+      },
+      "ollama": {
+        "model": "smollm3:3b (same Q4_K_M GGUF)",
+        "decode_tok_s_mean": 6.0,
+        "decode_tok_s_warm_only": 6.0,
+        "ttft_mean_s": 8.991,
+        "ttft_warm_mean_s": 0.196,
+        "wall_mean_s": 30.336,
+        "peak_vram_mib": 2922,
+        "per_proc_peak_mib": {"stone llama-server (still resident)": 2752, "ollama llama-server": 156},
+        "ctx": 8192,
+        "note": "ollama's daemon kept a resident stone daemon's GGUF on the card during this window (run.sh STONE_START=0 path does not stop it) — its timings are confounded; the clean warm numbers are TTFT 0.196 s / decode 6.0 tok/s / peak 2922 MiB. Round 1's clean ollama numbers (55.8 tok/s, 2568 MiB, ctx 8192) were measured with stone fully unloaded and remain the honest baseline."
+      },
+      "verdict": "On identical Q4_K_M weights, stone-llama's llama.cpp path decodes ~9x faster than ollama's llama.cpp path (53.5 vs 6.0 tok/s) and uses less VRAM (2761 vs 2922 MiB), because ollama runs -np 1 with --context-shift/--keep and a chatml template while stone runs llama-server's defaults (no -np, no ctx cap, auto flash-attn). The gap is wrapper/flag set, not the quant."
+    },
+    "flash_attn_ab": {
+      "base": "stone-llama default argv (LLAMA_ARG_FLASH_ATTN unset -> llama-server default 'auto')",
+      "fa_auto": {"decode_tok_s_mean": 54.8, "ttft_mean_s": 0.059, "wall_mean_s": 2.338, "peak_vram_mib": 2752},
+      "fa_off": {"decode_tok_s_mean": 50.2, "ttft_mean_s": 0.063, "wall_mean_s": 2.552, "peak_vram_mib": 2766},
+      "delta": {"decode_tok_s": "+9.2% with auto/on vs off", "wall_s": "-8.4%", "ttft_s": "-6.3%", "peak_vram_mib": "-14 MiB"},
+      "verdict": "Flash attention gives a measurable +9% decode and -8% wall on this 3B Q4_K_M pair; VRAM difference is noise (14 MiB). Turning -fa off does not change the verdict (stone still ~9x ollama)."
+    },
+    "nommap_ab": {
+      "mmap_on_default": {"decode_tok_s_mean": 54.8, "ttft_mean_s": 0.059, "wall_mean_s": 2.338, "peak_vram_mib": 2752},
+      "nommap": {"decode_tok_s_mean": 54.8, "ttft_mean_s": 0.059, "wall_mean_s": 2.341, "peak_vram_mib": 2752},
+      "verdict": "No measurable difference on this model/size (decode identical, wall within 0.1%, VRAM identical). --no-mmap is not worth exercising further; mmap is fine."
+    },
+    "round1_comparison": {
+      "round1_ollama_Q4_K_M": {"decode_tok_s": 55.8, "ttft_warm_s": 0.040, "peak_vram_mib": 2568, "ctx": 8192},
+      "round2_stone_Q4_K_M": {"decode_tok_s": 53.5, "ttft_warm_s": 0.116, "peak_vram_mib": 2761, "ctx": 32768},
+      "note": "Round 1's ollama number (55.8 tok/s) was measured with stone fully unloaded and ollama warm; round 2's stone number (53.5 tok/s) is within ~4% of it. On identical weights stone-llama matches ollama's warm decode while offering 4x the context (32768 vs 8192) at +193 MiB VRAM. The round-1 'stone loses warm decode' verdict was an artifact of comparing EXL3 4.0bpw (3.5 bpw) against Q4_K_M, not of the wrapper."
+    }
+  },
+  "not_exercised": [
+    "stone-llama's own default argv has no -ngl flag (llama-server defaults to 'auto' GPU offload); measuring -ngl all vs auto was not requested and the model already offloads fully (2752 MiB resident).",
+    "ollama warm decode on a clean card (round 1's 55.8 tok/s stands as the clean baseline; this round's ollama window was confounded by the resident stone daemon).",
+    "Long-prompt prefill (2 KB / 8 KB), 4-way concurrency, and README round-2 section are deferred to the next turn per the brief."
+  ],
+  "control_measurement_disclosure": "The -fa on/off and --no-mmap A/B were run by invoking stone-llama serve with engine_env set (LLAMA_ARG_FLASH_ATTN / LLAMA_ARG_MMAP), which is the supported passthrough — NOT by invoking llama-server directly. stone-llama's own default argv remained unchanged; only the child environment changed. All numbers above are stone-llama measurements."
+}

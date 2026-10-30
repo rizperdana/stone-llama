@@ -135,7 +135,7 @@ try:
                 ttft = time.time() - t0
             ch = (j.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
-            if delta.get("content"):
+            if delta.get("content") or delta.get("reasoning_content"):
                 chunks += 1
             u = j.get("usage")
             if u:
