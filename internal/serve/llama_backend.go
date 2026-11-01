@@ -177,7 +177,8 @@ func llamaArgv(bin, runtimeDir, cfgPath string, port, ctx int) []string {
 	// cache cannot silently degrade or evict (unpinned, llama-server follows
 	// the model's n_ctx_train — 16384+ collapses decode to 15-23 tok/s);
 	// -fa on because this llama.cpp build's `auto` leaves flash attention
-	// OFF (~40 vs ~53 tok/s); -np 2 so each slot stays at 4096 ctx and can
+	// OFF — a measurable decode cost on this card (see RESULTS.md,
+	// 2026-11-01); -np 2 so each slot stays at 4096 ctx and can
 	// serve multi-KB prompts at full speed while keeping 2-way concurrency:
 	// the shipped 2 x 4096 shape decodes ~40-42 tok/s by llama-server's eval
 	// clock at ~2570 MiB resident (RESULTS.md, 2026-11-01). Basis is the
