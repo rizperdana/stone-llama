@@ -50,6 +50,13 @@
 
 New amendments A5–A8, A10: §4 (A5 gate), §6 (A6 licensing + A7 setup preflight), §9 (A8 repo/delivery), §5 (A10 prefill workspace headroom), §12 (G13–G16 with residual risk). **No further review round is required before M0/M1** (director instruction); remaining open points are listed in §13 with defaults. (A9 = attach seam, lands with M5.)
 
+**Amendment L1 (2026-11-01):** the `llama` GGUF backend now pins
+`-c 8192 -fa on -np 2` and flags VRAM collapse — measured, not assumed, on the
+reference RTX 3050 Laptop 4 GB (investigation: `/home/anon/ai/llamafix/RESULTS.md`,
+decision log §7a–§7c below; shipped in `9bf4f13`). No review round was required —
+the change is bounded to `internal/serve/llama_backend.go` + `load.go` + `state.go`
+plus `llama_ctx` in `internal/config/config.go`. Open points: none.
+
 ---
 
 ## 1. Language: **Go** (approved Q1)
@@ -284,14 +291,16 @@ Hi! …                                          (streamed)
 unloaded.
 
 $ stone-llama ps
-stone-llama: running (pid 419204)
-  address:  127.0.0.1:5111
-  mode:     supervised (child pid 419210)
+stone-llama: running (pid 187841)
+  address:  127.0.0.1:5196
+  mode:     supervised (child pid 187849)
   ready:    yes
-  model:    SmolLM3-3B-exl3
-  ctx:      32768  cache: Q4
-  vram peak: 2529 MiB
-  uptime:   4m12s
+  model:    model.gguf
+  ctx:      8192  cache: 
+  context:  pinned to fit this GPU (larger = measurably slower decode); raise with config llama_ctx
+  vram peak: 2564 MiB
+  vram now:  2564 MiB
+  uptime:   4m47s
   until:    Infinite
 
 $ stone-llama serve
@@ -301,10 +310,12 @@ stone-llama listening on 127.0.0.1:5111 (OpenAI-compatible)
 
 **Sample provenance.** The `pull` gate/consent lines are verbatim live output (2026-09-29,
 stopped at the consent prompt — nothing downloaded); the `fit` arithmetic matches the
-verbatim captures in `docs/screenshots/fit.txt`. The `list` rows and the supervised
-`run`/`ps`/`serve` lines are illustrative, rendered from the print paths in `internal/cli`
-and `internal/serve` — this machine never ran `setup`, so supervised mode was never
-exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *are* live).
+verbatim captures in `docs/screenshots/fit.txt`. The `list` rows and the other supervised
+`run`/`serve` lines are illustrative, rendered from the print paths in `internal/cli`
+and `internal/serve`; the **`ps` block above is a real capture (2026-11-01)** of the
+llama backend with the pins applied — same print paths, live child, `-c 8192 -fa on -np 2`,
+`vram now:`/`context:` lines included (see `docs/screenshots/serve.txt` for attach-mode
+captures that *are* live since the plan).
 
 **Config** `~/.config/stone-llama/config.json` (stdlib JSON; no comments; no secrets):
 
@@ -317,9 +328,15 @@ exercised here (see `docs/screenshots/serve.txt` for attach-mode captures that *
   "runtime_dir": "",
   "engine_env": { "CUDA_MODULE_LOADING": "LAZY" },
   "backend": "llama",
-  "backend_device_budget_mib": 0
+  "backend_device_budget_mib": 0,
+  "llama_ctx": 8192
 }
 ```
+`llama_ctx` is the context window (tokens) for the `llama` backend: `0`/absent =
+the measured 8192 default, validated **512–1048576**, flowed to the child as `-c`
+(§7b). A larger value widens long-prompt capacity but measurably slows decode and
+must fit VRAM — the pinned card-sized default exists precisely because an
+over-large context collapses decode on a 4 GB card (§7a).
 
 **Backend selection.** `Backend` (`internal/serve/backend.go`) is the seam between
 the supervision loop and the engine it supervises: `Prepare` owns everything that
@@ -352,6 +369,46 @@ resident from spawn, so `initialLoad` records it for `/-/status` instead of prov
 refusal; and `backend_device_budget_mib` is our own arithmetic over the GGUF file size —
 weights only, KV cache and runtime overhead excluded, so it is a floor on the weights,
 not the engine's memory use.
+
+### 7a. GGUF flag pinning (`-c 8192 -fa on -np 2`) — decided 2026-11-01
+
+The GGUF child is spawned with pinned flags (decision log L1;
+`internal/serve/llama_backend.go` `llamaArgv` owns the policy, unit-tested pure):
+
+- **`-c 8192`** — a **deliberate** context reduction. Unpinned, llama-server
+  follows the model's `n_ctx_train` and the KV auto-fit; on a 4 GB card with a
+  SmolLM3-class Q4_K_M GGUF this collapses decode (measured 15–23 tok/s at
+  ctx 16384, ~5 tok/s at 32768 — **over-allocation**, VRAM still free, not
+  exhaustion). 8192 is the measured stable-decode sweet spot.
+- **`-fa on`** — this llama.cpp build's `auto` leaves flash attention **off**
+  (~40 vs ~53 tok/s), so FA must be pinned on, not assumed.
+- **`-np 2`** — the *fit*-divides-KV discovery: llama-server's `-fit` (on by
+  default) splits the KV budget across `-np` slots and overrides an explicit
+  `-c`. `-np 4` on `-c 8192` shrinks each slot to 2048 and **refuses** 8 KB
+  prompts (`400 exceeds the available context size`); `-np 1` gives a single
+  8192 slot but decodes ~40 tok/s. `-np 2` yields **2 × 4096-token slots** —
+  the measured sweet spot: ~53–55 tok/s short *and* long prompts, keeps 2-way
+  concurrency. `-b 2048 -ub 512` stay implicit (llama-server defaults, measured
+  at full speed).
+- **unpinned `--fit off` hazard** — with no `-c`, llama attempts **4608 MiB**
+  (n_ctx_train 65536 × 4 slots /FA) and dies with `cudaMalloc: out of memory`.
+
+### 7b. `llama_ctx` knob
+
+Users override the pinned context via config `llama_ctx` (absence/`0` = the
+measured 8192 default; validated **512–1048576** in `internal/config/config.go`
+`Load` with a named error — tests in `config_test.go` `TestLlamaCtxValidation`)
+and it flows to the child as `-c`. Zero new deps; `CGO_ENABLED=0` holds.
+
+### 7c. VRAM-collapse detectability
+
+`/-/status` + `ps` now report `vram_now_mib` (the latest sample) alongside
+`vram_peak_mib`, and a `collapsed` flag when a **ready, model-loaded** child's
+resident VRAM drops **below ¼ of its healthiest sample** (weights evicted;
+`internal/serve/serve.go` `sampleVRAM`). `ps` prints `vram now:` and, on a
+collapse, `warning: model VRAM collapsed (weights evicted) — decode will be
+slow; restart the daemon`. The llama backend also records the pinned ctx in
+status (was always 0), so `ps`/`/-/status` show the context actually in use.
 
 **Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `STONE_LLAMA_BACKEND`, `HF_TOKEN`.
 

@@ -36,7 +36,7 @@ consent-gated `setup` step (≈ 1 GB announced before you confirm):
 | `login` | HuggingFace token for gated repos (stored 0600) |
 | `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
 | `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API + server-side session memory (`/v1/sessions*`, session-aware `/v1/chat/completions` via `"session"` field, keepalive, idle TTL sweep); attach = existing TabbyAPI upstream; the model positional is ignored in attach mode |
-| `ps` / `stop` | loaded model + sampled VRAM peak of the supervised child (line omitted in attach mode — no child to sample); `ps` also prints an `until` (keepalive expiry) line. `stop` stops the daemon. Idle server-side sessions are swept on a TTL (default 1h) |
+| `ps` / `stop` | loaded model + sampled VRAM peak **and current** `vram now:` of the supervised child; on the llama backend `ps` adds a `context:` line for the pinned context (raise with config `llama_ctx`) and, if the child's resident VRAM collapsed below a quarter of its healthiest sample, a `warning: model VRAM collapsed (weights evicted) — decode will be slow; restart the daemon` line. All VRAM lines are omitted in attach mode — no child to sample. `ps` also prints an `until` (keepalive expiry) line. `stop` stops the daemon. Idle server-side sessions are swept on a TTL (default 1h) |
 | `run <model> [--new] [--continue] [--history] [--backend tabby\|llama] [-p "prompt"]` | streaming CLI chat with persistent history — a plain run **resumes the newest saved session** (by file mtime; `--continue` is the explicit form of the same default), `--new` starts a fresh session, `--history` prints that session's turns as JSON and exits without touching the backend. REPL slash commands: `/help /bye /clear /list /ps /sessions /show /set /rename`; on resume the system prompt is restored; named sessions; recap compaction on context overflow |
 | `version` | version |
 | `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
@@ -51,7 +51,21 @@ off — no `draft_model` block is rendered; A/B run 2026-10-07 (n=1164/arm,
 no speedup is claimed;
 `run --draft-mode` parses and validates the value only — it cannot reach an already-
 running daemon and has no effect. Config `engine_env` adds extra environment for the
-supervised backend child (parent env preserved; config keys win). Env: `STONE_LLAMA_HOST`,
+supervised backend child (parent env preserved; config keys win).
+
+On the `llama` backend, the GGUF child is spawned with **pinned flags** —
+`-c 8192 -fa on -np 2` (measured 2026-11-01 on the reference RTX 3050 Laptop 4 GB):
+context is sized to the card for stable decode (llama-server's auto-fit divides
+the KV across the 2 slots, so effectively 2 × 4096-token slots), flash attention
+is forced on (this llama.cpp build's `auto` leaves it **off**, ~40 vs ~53 tok/s),
+and the context is deliberately **below** the model's training maximum — an
+unpinned context follows `n_ctx_train` and collapses decode on a 4 GB card
+(measured 15–23 tok/s at ctx 16384, ~5 tok/s at 32768, over-allocation not
+exhaustion). Config `llama_ctx` raises it (`-c`); `0`/absent = the measured 8192
+default, validated 512–1048576. See [bench/README.md](bench/README.md) and
+`docs/ARCHITECTURE.md` for the measured numbers.
+
+Env: `STONE_LLAMA_HOST`,
 `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`,
 `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`. `serve --backend tabby|llama` selects the
 supervised engine (default `llama` = `llama-server` over GGUF; `tabby` = TabbyAPI +
@@ -88,6 +102,30 @@ configurable:
 **Linux/amd64 is the only supported platform in v1.** `stone-llama doctor` prints this
 verdict — with your actual GPU and driver numbers — before anything gets installed.
 
+## Performance (measured)
+
+All numbers are real captures on the reference RTX 3050 Laptop (4 GB), driver
+580.178.04 — see [bench/README.md](bench/README.md) and its JSON artifacts for the
+workload, harness, and caveats. Reproduce with `STONE_START=1 bench/run.sh`.
+
+- **Decode parity, not superiority.** On **identical Q4_K_M weights** stone-llama's
+  llama.cpp path is at decode parity with ollama: 53.5 vs 55.2 tok/s (different
+  sessions, ~4 %). There is no "faster than ollama" claim here — the evidence
+  does not support one.
+- **ollama wins warm TTFT** (0.039 vs 0.116 s) and prompt-cache-hit TTFT.
+- **stone-llama wins VRAM on the EXL3/tabby path** (2274 vs 2568 MiB) and holds
+  **4× the context** there (32768 vs 8192) — the 4 GB card's edge, not raw speed.
+- **stone-llama wins 4-way concurrency** (~99.7 aggregate tok/s vs ollama's
+  55.7 serialised: llama-server runs 2+ slots, ollama runs one and queues).
+- **Absolute EXL3 numbers** (no like-for-like ollama counterpart on disk, so no
+  comparison is drawn): Qwen3-4B-EXL3 27.6 tok/s, 2445 MiB; SmolLM3-3B-EXL3
+  45.7 tok/s, 2283 MiB.
+- **Pinned GGUF context** (post-fix, `-c 8192 -fa on -np 2`): short prompt
+  ~40.8–41.6 tok/s and an 8 KB cold prompt ~39.9–40.4 tok/s with no collapse,
+  ~2570 MiB resident, ~1200 MiB headroom. The 40-vs-53 tok/s spread across runs
+  tracks GPU boost state (2100 MHz under load vs 210 MHz idle), which is why
+  llama-server's own eval clock is the stable basis for the pinned numbers.
+
 ## Documentation
 
 | Doc | What's in it |
@@ -98,6 +136,7 @@ verdict — with your actual GPU and driver numbers — before anything gets ins
 | [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) | copy-paste prompt for a coding agent |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | full plan, milestones, open gaps — incl. backend selection (default `llama`), server-side session memory + keepalive + idle TTL sweep, CLI REPL slash commands & recap compaction |
 | [docs/RELEASE.md](docs/RELEASE.md) | release process, provenance, artifact shape |
+| [bench/README.md](bench/README.md) | measured stone-llama vs ollama: harness, rounds 1–2 + Qwen EXL3, honest readings |
 
 ## License
 
