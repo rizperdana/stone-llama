@@ -57,7 +57,9 @@ On the `llama` backend, the GGUF child is spawned with **pinned flags** —
 `-c 8192 -fa on -np 2` (measured 2026-11-01 on the reference RTX 3050 Laptop 4 GB):
 context is sized to the card for stable decode (llama-server's auto-fit divides
 the KV across the 2 slots, so effectively 2 × 4096-token slots), flash attention
-is forced on (this llama.cpp build's `auto` leaves it **off**, ~40 vs ~53 tok/s),
+is forced on (this llama.cpp build's `auto` leaves it **off** — a measurable
+decode cost on this card; see [bench/README.md](bench/README.md) — measured
+~55 tok/s by eval clock on a boosted session, ~40 at idle clock, same shape),
 and the context is deliberately **below** the model's training maximum — an
 unpinned context follows `n_ctx_train` and collapses decode on a 4 GB card
 (measured 15–23 tok/s at ctx 16384, ~5 tok/s at 32768, over-allocation not
@@ -108,23 +110,33 @@ All numbers are real captures on the reference RTX 3050 Laptop (4 GB), driver
 580.178.04 — see [bench/README.md](bench/README.md) and its JSON artifacts for the
 workload, harness, and caveats. Reproduce with `STONE_START=1 bench/run.sh`.
 
-- **Decode parity, not superiority.** On **identical Q4_K_M weights** stone-llama's
-  llama.cpp path is at decode parity with ollama: 53.5 vs 55.2 tok/s (different
-  sessions, ~4 %). There is no "faster than ollama" claim here — the evidence
-  does not support one.
-- **ollama wins warm TTFT** (0.039 vs 0.116 s) and prompt-cache-hit TTFT.
+- **Decode parity, not superiority.** On **identical Q4_K_M weights**, the
+  strongest comparison available is Round 3's same-day, same-clock-window
+  measurement: stone-llama 54.7 tok/s client basis (55.4 by eval clock,
+  boosted) vs ollama 49.0 tok/s. An earlier cross-session pair measured
+  53.5 vs 55.2 tok/s at the pre-pin default (~4 %, different sessions).
+  Absolute decode tracks GPU boost state (~40–56 tok/s) for the same shipped
+  shape, so the small residual is within session-to-session variation.
+  Same-session stone measured ahead; cross-session the two swap places — do
+  not overclaim from one session. There is no "faster than ollama" claim
+  here.
+- **ollama wins warm TTFT** — same session 0.026 vs 0.053 s (Round 2 pair
+  0.039 vs 0.116 s) — and prompt-cache-hit TTFT; stone wins cold TTFT
+  decisively (0.064 vs 2.982 s, same session).
 - **stone-llama wins VRAM on the EXL3/tabby path** (2274 vs 2568 MiB) and holds
   **4× the context** there (32768 vs 8192) — the 4 GB card's edge, not raw speed.
-- **stone-llama wins 4-way concurrency** (~99.7 aggregate tok/s vs ollama's
-  55.7 serialised: llama-server runs 2+ slots, ollama runs one and queues).
+- **stone-llama wins 4-way concurrency at the shipped 2-slot shape** — same-day
+  88.9 aggregate tok/s (wall 5.7–5.9 s) vs ollama 48.0 (wall 10.6–10.7 s), with
+  p95 TTFT ~3.0 s (2 slots queue 2-at-a-time). The earlier ~99.7 was the
+  pre-pin 4-slot auto-fit with 2048-token slots (Round 2 annotation) — the
+  claim this supports is stone wins concurrency, not 2× single-stream.
 - **Absolute EXL3 numbers** (no like-for-like ollama counterpart on disk, so no
   comparison is drawn): Qwen3-4B-EXL3 27.6 tok/s, 2445 MiB; SmolLM3-3B-EXL3
   45.7 tok/s, 2283 MiB.
-- **Pinned GGUF context** (post-fix, `-c 8192 -fa on -np 2`): short prompt
-  ~40.8–41.6 tok/s and an 8 KB cold prompt ~39.9–40.4 tok/s with no collapse,
-  ~2570 MiB resident, ~1200 MiB headroom. The 40-vs-53 tok/s spread across runs
-  tracks GPU boost state (2100 MHz under load vs 210 MHz idle), which is why
-  llama-server's own eval clock is the stable basis for the pinned numbers.
+- **Pinned GGUF context** (post-fix, `-c 8192 -fa on -np 2`): ~54–55 tok/s
+  by eval clock on a boosted session (~40 at idle clock, same shape), ~2570 MiB
+  resident, ~1200 MiB headroom. The 8 KB unique prompt now serves at ~53 tok/s
+  with ~1.16 s TTFT and no collapse — that collapse was the defect the pin fixed.
 
 ## Documentation
 
