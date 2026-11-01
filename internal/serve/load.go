@@ -33,6 +33,8 @@ type Status struct {
 	Backend    string `json:"backend,omitempty"`
 	CacheMode  string `json:"cache_mode,omitempty"`
 	VRAMPeak   int    `json:"vram_peak_mib,omitempty"`
+	VRAMNow    int    `json:"vram_now_mib,omitempty"` // latest sample (see state.go)
+	Collapsed  bool   `json:"collapsed,omitempty"`    // VRAM collapsed below the model size while ready
 	UptimeS    int64  `json:"uptime_s"`
 	Until      string `json:"until,omitempty"`
 	Ready      bool   `json:"ready"`
@@ -102,6 +104,8 @@ func (d *daemon) currentStatus() Status {
 		CacheMode:  st.CacheMode,
 		FitSummary: fitSum,
 		VRAMPeak:   st.VRAMPeakMiB,
+		VRAMNow:    st.VRAMNowMiB,
+		Collapsed:  st.Collapsed,
 		UptimeS:    d.opts.Now().Unix() - st.StartedAt,
 		Ready:      d.readyNow(),
 		Until:      d.keepAliveUntil(),
@@ -172,18 +176,22 @@ func (d *daemon) attachModel() string {
 // command they just ran. A genuinely DIFFERENT model is still refused
 // by /-/load below — on llama that means a restart.
 func (d *daemon) initialLoad(ctx context.Context, model string) {
-	if _, isLlama := d.be.(llamaBackend); isLlama {
-		// Model resident at spawn: record it (Ctx 0 / CacheMode ""
-		// are unknown on this path — both are omitempty, never faked).
-		// cfgPath guard: a llama daemon with no resolved GGUF serves
-		// nothing and reports nothing.
+	if lb, isLlama := d.be.(llamaBackend); isLlama {
+		// Model resident at spawn: record it (Ctx is the pinned llama
+		// context — actually in use, not the model's max; CacheMode ""
+		// is unknown on this path). cfgPath guard: a llama daemon with
+		// no resolved GGUF serves nothing and reports nothing.
 		// The recorded identifier is filepath.Base(cfgPath) — the same
 		// string /api/tags reports as Name and /api/show looks up. The
 		// user's typed model may be a directory or relative path; one
 		// served GGUF gets one identifier on every surface (ollama
 		// clients reference models by the tags Name).
 		if model != "" && d.cfgPath != "" {
-			d.markLoaded(filepath.Base(d.cfgPath), 0, "")
+			ctx := lb.ctx
+			if ctx <= 0 {
+				ctx = llamaDefaultCtx
+			}
+			d.markLoaded(filepath.Base(d.cfgPath), ctx, "")
 		}
 		return
 	}

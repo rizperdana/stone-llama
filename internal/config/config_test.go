@@ -47,6 +47,9 @@ func TestDefaults(t *testing.T) {
 		cfg.Autofit.OverheadMiB != 128 || cfg.Autofit.MinCtx != 4096 {
 		t.Errorf("autofit defaults = %+v", cfg.Autofit)
 	}
+	if cfg.LlamaCtx != 8192 {
+		t.Errorf("LlamaCtx = %d, want measured default 8192", cfg.LlamaCtx)
+	}
 	want := filepath.Join(home, ".local", "share", "stone-llama", "models")
 	if cfg.ModelsDir != want {
 		t.Errorf("ModelsDir = %q, want %q", cfg.ModelsDir, want)
@@ -163,5 +166,25 @@ func TestEngineEnvDefaultsNilAndLoadsFromFile(t *testing.T) {
 	// draft defaults still hold alongside the engine block
 	if cfg.Autofit.NgramMatchMin != 2 || cfg.Autofit.DraftMode != "" {
 		t.Errorf("engine_env file disturbed draft defaults: %+v", cfg.Autofit)
+	}
+}
+
+func TestLlamaCtxValidation(t *testing.T) {
+	home := cleanEnv(t)
+	xdg := filepath.Join(home, "cfg")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	for _, body := range []string{`{"llama_ctx": 511}`, `{"llama_ctx": -1}`, `{"llama_ctx": 1048577}`} {
+		writeConfig(t, xdg, body)
+		if _, err := Load(); err == nil {
+			t.Errorf("load(%s) = nil err, want llama_ctx validation error", body)
+		}
+	}
+	writeConfig(t, xdg, `{"llama_ctx": 16384}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LlamaCtx != 16384 {
+		t.Errorf("LlamaCtx = %d, want 16384 from file", cfg.LlamaCtx)
 	}
 }

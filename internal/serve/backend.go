@@ -37,10 +37,12 @@ const (
 // "" or BackendLlama → llamaBackend — the default is now llama.cpp.
 // deviceBudgetMiB is the llama weights budget (0 = no check); tabby
 // ignores it. Unknown names are refused, never coerced.
-func BackendFor(name string, deviceBudgetMiB int) (Backend, error) {
+// llamaCtx is the context window (tokens) passed to the llama backend via
+// -c; 0 = llamaDefaultCtx (measured safe value for the 4 GB reference card).
+func BackendFor(name string, deviceBudgetMiB int, llamaCtx int) (Backend, error) {
 	switch name {
 	case "", BackendLlama:
-		return llamaBackend{deviceBudgetMiB: deviceBudgetMiB}, nil
+		return llamaBackend{deviceBudgetMiB: deviceBudgetMiB, ctx: llamaCtx}, nil
 	case BackendTabby:
 		return tabbyBackend{}, nil
 	default:

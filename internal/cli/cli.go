@@ -1665,6 +1665,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		EngineEnv:       cfg.EngineEnv,
 		Backend:         cfg.Backend,
 		DeviceBudgetMiB: cfg.DeviceBudgetMiB,
+		LlamaCtx:        cfg.LlamaCtx,
 		Stdout:          stdout,
 		Stderr:          stderr,
 	})
@@ -1721,8 +1722,17 @@ func runPs(args []string, stdout, stderr io.Writer) int {
 	if st.Ctx > 0 || st.CacheMode != "" {
 		fmt.Fprintf(stdout, "  ctx:      %d  cache: %s\n", st.Ctx, st.CacheMode)
 	}
+	if st.Backend == "llama" && st.Ctx > 0 {
+		fmt.Fprintln(stdout, "  context:  pinned to fit this GPU (larger = measurably slower decode); raise with config llama_ctx")
+	}
 	if st.VRAMPeak > 0 {
 		fmt.Fprintf(stdout, "  vram peak: %d MiB\n", st.VRAMPeak)
+	}
+	if st.VRAMNow > 0 {
+		fmt.Fprintf(stdout, "  vram now:  %d MiB\n", st.VRAMNow)
+	}
+	if st.Collapsed {
+		fmt.Fprintln(stdout, "  warning: model VRAM collapsed (weights evicted) — decode will be slow; restart the daemon")
 	}
 	fmt.Fprintf(stdout, "  uptime:   %s\n", time.Duration(st.UptimeS)*time.Second)
 	if st.Until != "" {

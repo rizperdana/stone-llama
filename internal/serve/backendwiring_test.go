@@ -27,7 +27,7 @@ func TestBackendSelection(t *testing.T) {
 		{"cuda", "", true},
 		{"Tabby", "", true}, // case-sensitive on purpose
 	} {
-		be, err := BackendFor(tc.name, 0)
+		be, err := BackendFor(tc.name, 0, 0)
 		if tc.wantErr {
 			if err == nil || !strings.Contains(err.Error(), "unknown backend") {
 				t.Errorf("BackendFor(%q) err = %v, want unknown backend", tc.name, err)
@@ -48,7 +48,7 @@ func TestBackendSelection(t *testing.T) {
 // Options (and so a config file with no "backend" key) supervises
 // llama-server exactly as after the flip.
 func TestDefaultBackendIsLlama(t *testing.T) {
-	be, err := BackendFor(Options{}.Backend, Options{}.DeviceBudgetMiB)
+	be, err := BackendFor(Options{}.Backend, Options{}.DeviceBudgetMiB, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

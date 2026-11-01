@@ -23,7 +23,7 @@ func TestBackendFor(t *testing.T) {
 		{BackendTabby, "tabbyBackend"},
 		{BackendLlama, "llamaBackend"},
 	} {
-		be, err := BackendFor(tc.name, 4096)
+		be, err := BackendFor(tc.name, 4096, 0)
 		if err != nil {
 			t.Fatalf("BackendFor(%q): %v", tc.name, err)
 		}
@@ -32,11 +32,11 @@ func TestBackendFor(t *testing.T) {
 			t.Errorf("BackendFor(%q) = %s, want %s", tc.name, got, tc.want)
 		}
 	}
-	if _, err := BackendFor("cuda", 0); err == nil || !strings.Contains(err.Error(), "unknown backend") {
+	if _, err := BackendFor("cuda", 0, 0); err == nil || !strings.Contains(err.Error(), "unknown backend") {
 		t.Errorf("BackendFor(cuda) err = %v, want unknown backend", err)
 	}
 	// budget rides through to the llama implementation only
-	be, err := BackendFor(BackendLlama, 7)
+	be, err := BackendFor(BackendLlama, 7, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +276,50 @@ func TestLlamaBackendE2E(t *testing.T) {
 	}
 }
 
+// TestLlamaArgvPinsFlags is the pinning contract: the GGUF path passes -c
+// (the measured default), -fa on, and -np 2 explicitly, so VRAM and decode
+// speed never depend on llama-server defaults/build (which change decode
+// 14-53 tok/s on this card — see llamaDefaultCtx).
+func TestLlamaArgvPinsFlags(t *testing.T) {
+	rt := t.TempDir()
+	base := []string{"llama-server", "--host", "127.0.0.1", "--port", "5197",
+		"--api-key-file", llamaKeyFile(rt), "-m", "/m.gguf"}
+	for _, tc := range []struct {
+		ctx  int
+		want []string
+	}{
+		{0, append(append([]string{}, base...), "-c", "8192", "-fa", "on", "-np", "2")}, // default
+		{16384, append(append([]string{}, base...), "-c", "16384", "-fa", "on", "-np", "2")},
+	} {
+		got := llamaArgv("llama-server", rt, "/m.gguf", 5197, tc.ctx)
+		if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			t.Errorf("llamaArgv(ctx=%d) = %v, want %v", tc.ctx, got, tc.want)
+		}
+	}
+}
+
+// TestLlamaBackendCtxRidesConfig checks a configured ctx lands in the
+// backend (ctx field) and flows into the argv through Spawn's helper.
+func TestLlamaBackendCtxRidesConfig(t *testing.T) {
+	be, err := BackendFor(BackendLlama, 0, 16384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb := be.(llamaBackend)
+	if lb.ctx != 16384 {
+		t.Errorf("llamaBackend.ctx = %d, want 16384", lb.ctx)
+	}
+	argv := llamaArgv("llama-server", t.TempDir(), "/m.gguf", 5197, lb.ctx)
+	found := false
+	for i := range argv[:len(argv)-1] {
+		if argv[i] == "-c" && argv[i+1] == "16384" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("argv %v lacks -c 16384", argv)
+	}
+}
 func mustRead(t *testing.T, p string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(p)

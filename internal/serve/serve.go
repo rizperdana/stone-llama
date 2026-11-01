@@ -89,8 +89,8 @@ type Options struct {
 	EngineEnv       map[string]string // config engine_env: extra environment for the supervised child
 	Backend         string            // supervised engine: "" or "llama" (default, llama-server over GGUF) | "tabby" (TabbyAPI + ExLlamaV3); unknown names are refused
 	DeviceBudgetMiB int               // llama weights budget in MiB (0 = no check); tabby ignores it
-
-	Stdout, Stderr io.Writer
+	LlamaCtx        int               // llama/GGUF context window (tokens); 0 = the measured default (see llama_backend.go)
+	Stdout, Stderr  io.Writer
 
 	ReadyTimeout time.Duration
 	RetryDelay   time.Duration
@@ -520,7 +520,7 @@ func Serve(ctx context.Context, opts Options) error {
 		// owns every pre-spawn artifact — TabbyAPI's first-run marker,
 		// the 0600 child keys, the rendered config — plus the Conn the
 		// proxy probes and injects the upstream Bearer from.
-		be, berr := BackendFor(opts.Backend, opts.DeviceBudgetMiB)
+		be, berr := BackendFor(opts.Backend, opts.DeviceBudgetMiB, opts.LlamaCtx)
 		if berr != nil {
 			return berr
 		}
@@ -783,9 +783,11 @@ func (d *daemon) supervise(ctx context.Context, c *child) error {
 	}
 }
 
-// sampleVRAM tracks the child's GPU memory for ps's "vram peak" line.
-// No child (attach) or no nvidia-smi → skips silently; ps then omits
-// the line entirely (it prints only when a peak was sampled).
+// sampleVRAM tracks the child's GPU memory for ps's "vram peak"/"vram now"
+// lines and flags a collapse (resident dropped far below the healthiest
+// sample — the weights were evicted, decode will crawl). No child (attach)
+// or no nvidia-smi → skips silently; ps then omits the line entirely (it
+// prints only when a current sample existed).
 func (d *daemon) sampleVRAM(ctx context.Context) {
 	t := time.NewTicker(vramSampleEvery)
 	defer t.Stop()
@@ -803,27 +805,35 @@ func (d *daemon) sampleVRAM(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		peak := 0
+		cur := 0
 		for _, c := range cs {
 			if c.PID == pid {
-				peak = int(c.MiB)
+				cur = int(c.MiB)
 				break
 			}
 		}
-		if peak <= 0 {
+		if cur <= 0 {
 			continue
 		}
 		d.mu.Lock()
-		if peak > d.st.VRAMPeakMiB {
-			d.st.VRAMPeakMiB = peak
-			werr := WriteState(d.opts.DataDir, d.st)
-			d.mu.Unlock()
-			if werr != nil {
-				fmt.Fprintf(d.opts.Stderr, "stone-llama: persist state: %v\n", werr)
-			}
-			continue
+		// Peak: the largest sample wins (existing behaviour).
+		if cur > d.st.VRAMPeakMiB {
+			d.st.VRAMPeakMiB = cur
 		}
+		// Collapse: the child is ready and its residency dropped far
+		// below the healthiest sample — the weights were evicted (the
+		// 188 MiB / 2.75 GiB one-off, bench README). A short-lived dip
+		// during prefill/offload is normal; a sustained fraction of the
+		// peak is not. Honest rule: a sampled resident that stays below
+		// a quarter of the peak flags the degraded state so ps says why
+		// decode crawls instead of hiding it.
+		d.st.VRAMNowMiB = cur
+		d.st.Collapsed = d.st.Model != "" && d.st.VRAMPeakMiB > 0 && cur < d.st.VRAMPeakMiB/4
+		werr := WriteState(d.opts.DataDir, d.st)
 		d.mu.Unlock()
+		if werr != nil {
+			fmt.Fprintf(d.opts.Stderr, "stone-llama: persist state: %v\n", werr)
+		}
 	}
 }
 

@@ -22,7 +22,27 @@ type llamaBackend struct {
 	// memory), so the budget is OUR arithmetic: refuse before spawn,
 	// print the numbers, rather than let the engine OOM-trim silently.
 	deviceBudgetMiB int
+	// ctx is the context window (tokens) passed to llama-server as -c.
+	// 0 = llamaDefaultCtx. Larger ctx on this 4 GB card measurably
+	// degrades decode (see llamaDefaultCtx), so the default is a
+	// deliberate, visible trade: full-speed decode in exchange for a
+	// context that fits the card's headroom rather than the model's
+	// training maximum.
+	ctx int
 }
+
+// llamaDefaultCtx is the measured safe context (tokens) for the reference
+// RTX 3050 Laptop 4 GB card with a SmolLM3-class Q4_K_M GGUF. With -np 2
+// llama-server's fit gives each slot half, so the pinned 8192 yields
+// 2 x 4096-token slots that serve multi-KB prompts at ~53-55 tok/s while
+// larger ctx (16384/32768) drops decode to 15-23 tok/s (measured
+// 2026-11-01, see /home/anon/ai/llamafix). A smaller value (e.g. 3072)
+// decodes slightly faster but caps the longest served prompt; a larger
+// value widens it at a measurable decode cost. Users override via config
+// `llama_ctx`.
+// ponytail: card-specific constant; derive from llama.cpp's reported KV
+// bytes (its startup log) instead if the reference card changes.
+const llamaDefaultCtx = 8192
 
 // llamaKeyFile is the path cleanupGenerated already removes
 // (runtime/upstream_key): llama-server reads it via --api-key-file —
@@ -141,6 +161,36 @@ func (b llamaBackend) Prepare(o *Options, port int) (Conn, string, error) {
 	}, gguf, nil
 }
 
+// llamaArgv builds llama-server's argv. It owns the flag policy: -c (the
+// pinned context), -fa on, -np 2 — every one justified by measurement (see
+// the Spawn comment). ctx <= 0 means llamaDefaultCtx. Pure so the policy is
+// unit-testable without spawning a process.
+func llamaArgv(bin, runtimeDir, cfgPath string, port, ctx int) []string {
+	argv := []string{bin, "--host", "127.0.0.1", "--port", strconv.Itoa(port),
+		"--api-key-file", llamaKeyFile(runtimeDir)}
+	if cfgPath != "" {
+		argv = append(argv, "-m", cfgPath)
+	}
+	// Pin the flags that decide VRAM and decode speed (measured, 2026-11-01,
+	// on the reference RTX 3050 Laptop 4 GB with a SmolLM3-class Q4_K_M GGUF;
+	// see llamaDefaultCtx): -c fixes the context so an over-allocated KV
+	// cache cannot silently degrade or evict (unpinned, llama-server follows
+	// the model's n_ctx_train — 16384+ collapses decode to 15-23 tok/s);
+	// -fa on because this llama.cpp build's `auto` leaves flash attention
+	// OFF (~40 vs ~53 tok/s); -np 2 so each slot stays at 4096 ctx and can
+	// serve multi-KB prompts at full speed while keeping 2-way concurrency
+	// (with -np 4 the fit shrinks each slot to 2048 and 8 KB prompts are
+	// refused; with -np 1 a single slot gets the full 8192 but decode sits
+	// at ~40 tok/s — the 4096-token-slot shape is the measured sweet spot:
+	// ~53-55 tok/s short AND long prompts). `-b 2048 -ub 512` are already
+	// llama-server defaults and measured at full speed, so they stay implicit.
+	if ctx <= 0 {
+		ctx = llamaDefaultCtx
+	}
+	argv = append(argv, "-c", strconv.Itoa(ctx), "-fa", "on", "-np", "2")
+	return argv
+}
+
 // Spawn starts llama-server on loopback at the internal port; the GGUF
 // llamaBackend.Prepare resolved rides -m. Model-less start (cfgPath
 // "") is a legal llama-server mode. No secrets in argv (A7).
@@ -150,10 +200,5 @@ func (b llamaBackend) Spawn(runtimeDir, cfgPath, logPath string, port int, extra
 		return nil, fmt.Errorf("backend %q needs llama-server on PATH (build llama.cpp and put llama-server on PATH, or run the tabby engine with `stone-llama serve --backend tabby`): %w",
 			BackendLlama, err)
 	}
-	argv := []string{bin, "--host", "127.0.0.1", "--port", strconv.Itoa(port),
-		"--api-key-file", llamaKeyFile(runtimeDir)}
-	if cfgPath != "" {
-		argv = append(argv, "-m", cfgPath)
-	}
-	return startProcess(argv, "", logPath, port, extraEnv)
+	return startProcess(llamaArgv(bin, runtimeDir, cfgPath, port, b.ctx), "", logPath, port, extraEnv)
 }

@@ -43,9 +43,15 @@ type Config struct {
 	Backend string `json:"backend"`
 	// DeviceBudgetMiB caps the GGUF weights a llama spawn may load
 	// (0 = no check). Weights only — KV cache and runtime overhead are
-	// excluded, so this is a pre-spawn floor, not the engine's memory
 	// use. Tabby ignores it.
 	DeviceBudgetMiB int `json:"backend_device_budget_mib"`
+
+	// LlamaCtx is the context window (tokens) passed to the llama/GGUF
+	// backend. 0 = the measured safe default for the reference 4 GB card
+	// (8192 — see internal/serve/llama_backend.go). A larger value widens
+	// long-prompt capacity but measurably slows decode; the chosen value
+	// must fit VRAM. Non-zero values are passed to llama-server as -c.
+	LlamaCtx int `json:"llama_ctx"`
 }
 
 // Default returns the built-in configuration. Missing file fields keep
@@ -66,6 +72,7 @@ func Default() Config {
 			NgramMatchMin:  2,
 			DraftNumTokens: 0,
 		},
+		LlamaCtx: 8192,
 		Upstream: "http://127.0.0.1:5002",
 	}
 
@@ -140,11 +147,13 @@ func Load() (Config, error) {
 	if c := cfg.Autofit.ChunkSize; c != 0 && (c < 512 || c > 4096) {
 		return Config{}, fmt.Errorf("autofit.chunk_size must be 0 (auto) or 512-4096 (got %d) — remove it to let the fit decide", c)
 	}
+	if c := cfg.LlamaCtx; c != 0 && (c < 512 || c > 1048576) {
+		return Config{}, fmt.Errorf("llama_ctx must be 0 (the measured default) or 512-1048576 (got %d)", c)
+	}
 	cfg.ModelsDir = expandHome(cfg.ModelsDir)
 	cfg.RuntimeDir = expandHome(cfg.RuntimeDir)
 	return cfg, nil
 }
-
 func expandHome(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
