@@ -142,6 +142,11 @@ slots, aggregate throughput ~2× single-stream. ollama runs one slot (`-np 1`)
 and queues: no aggregate gain, TTFTs spread 0.03–6.9 s. Stone wins
 concurrency on both throughput and TTFT stability.
 
+> **Note (added 2026-11-01):** The 99.7 aggregate above was the pre-pin 4-slot auto-fit
+> with 2048-token slots. The shipped 2-slot default (`-c 8192 -fa on -np 2`) measures
+> ~86.7 aggregate with p95 TTFT ~3.0 s (see Round 3 below). Round 2's own numbers are
+> unchanged; only the comparison conditions are annotated.
+
 Stability finding (excluded from benchmark numbers): one stone daemon instance
 collapsed from 2756 to 188 MiB resident after serving the prefill batch +
 a concurrency round, with decode dropping to 2.4–8.4 tok/s; restarting the
@@ -234,3 +239,48 @@ each other. Warm-only Qwen decode (runs 1, 4, 5: 35.0/28.3/33.1 tok/s, mean ~32)
 - **VRAM: Qwen uses more** (2445 vs 2283 MiB) because it is a larger model with a
   larger context config (262 144 vs 65 536 n_ctx_train). Both fit on the 4 GB card
   with headroom for the 128-token workload.
+
+
+## Results — Round 3, 2026-11-01 (results-20261101-conc.json)
+
+**Shipped pinned default**: stone-llama llama backend now pins `-c 8192 -fa on -np 2`
+(commit 9bf4f13). Same-quant pair: smollm3-q4km-test (Q4_K_M GGUF) vs ollama smollm3:3b.
+Both engines measured in one session on port 5195 through the stone daemon; ollama
+probe-only (unload via keep_alive=0, never restart/kill). GPU clock state recorded
+alongside each measurement.
+
+### Single stream (5 runs, max_tokens=128, temperature=0.7)
+
+| metric | stone-llama (shipped) | ollama (same day) |
+|---|---|---|
+| tok/s client basis | 54.7 | 49.0 |
+| tok/s eval clock | 55.4 (boosted) | n/a (ollama reports via llama-server) |
+| TTFT warm (s) | 0.053 | 0.026 |
+| TTFT cold run 1 (s) | 0.064 | 2.982 |
+| peak VRAM (MiB) | 2575 | 2577 |
+| SM clock during decode (MHz) | 1050–1740 | 810–1747 |
+
+### 4-way concurrency (4 streams × 128 tokens, 3 reps)
+
+| metric | stone-llama (shipped) | ollama (same day) |
+|---|---|---|
+| aggregate tok/s | 88.9 | 48.0 |
+| wall per rep (s) | 5.7–5.9 | 10.6–10.7 |
+| SM clock during decode (MHz) | 1042–1740 | 480–1740 |
+
+### 8 KB unique-prompt TTFT (3 runs, max_tokens=64, cold)
+
+| metric | stone-llama (shipped) |
+|---|---|
+| TTFT (s) | 1.16–1.19 |
+| decode tok/s (client) | 52.7–53.1 |
+| prefill (ms) | 1007–1043 |
+
+### Verdict
+
+The shipped 2×4096 shape decodes ~54 tok/s by eval clock on this boosted session
+(ollama ~49 tok/s client basis, single stream). Absolute decode tracks GPU boost
+state: ~40 tok/s at idle clock (210 MHz) to ~55 tok/s boosted (1050+ MHz). Only
+within-session comparisons (e.g. `-fa` on vs off) are valid flag A/Bs. The earlier
+`~40 vs ~53` pair was never a clean flag comparison — it was an idle-clock session
+vs a boosted session of the same shipped shape.

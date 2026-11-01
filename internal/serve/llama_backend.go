@@ -180,13 +180,14 @@ func llamaArgv(bin, runtimeDir, cfgPath string, port, ctx int) []string {
 	// OFF — a measurable decode cost on this card (see RESULTS.md,
 	// 2026-11-01); -np 2 so each slot stays at 4096 ctx and can
 	// serve multi-KB prompts at full speed while keeping 2-way concurrency:
-	// the shipped 2 x 4096 shape decodes ~40-42 tok/s by llama-server's eval
-	// clock at ~2570 MiB resident (RESULTS.md, 2026-11-01). Basis is the
-	// eval clock, not client wall — wall varies with GPU boost state. With
-	// -np 4 the fit shrinks each slot to 2048 and refuses an 8 KB prompt;
-	// with -np 1 a single slot gets the full 8192 at the same ~40 tok/s.
-	// `-b 2048 -ub 512` are already llama-server defaults and measured at
-	// full speed, so they stay implicit.
+	// the shipped 2 x 4096 shape decodes ~40-56 tok/s by llama-server's eval
+	// clock depending on GPU boost state (~55 boosted, ~40 at idle clock) at
+	// ~2566 MiB resident (RESULTS.md, 2026-11-01). The -fa on/off cost was
+	// measured within one session. Basis is the eval clock, not client wall —
+	// wall varies with GPU boost state. With -np 4 the fit shrinks each slot
+	// to 2048 and refuses an 8 KB prompt; with -np 1 a single slot gets the
+	// full 8192 at the same ~40 tok/s. `-b 2048 -ub 512` are already
+	// llama-server defaults and measured at full speed, so they stay implicit.
 	if ctx <= 0 {
 		ctx = llamaDefaultCtx
 	}
