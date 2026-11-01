@@ -268,10 +268,13 @@ alongside each measurement.
 |---|---|---|
 | tok/s client basis | 54.7 | 49.0 |
 | tok/s eval clock | 55.4 (boosted) | n/a (ollama reports via llama-server) |
-| TTFT warm (s) | 0.053 | 0.026 |
-| TTFT cold run 1 (s) | 0.064 | 2.982 |
+| TTFT warm (s) | 0.050 | 0.026 |
+| TTFT cold (model load, s) | 0.271 | 2.982 |
+| TTFT first req after load (s) | 0.064 | — |
 | peak VRAM (MiB) | 2575 | 2577 |
 | SM clock during decode (MHz) | 1050–1740 | 810–1747 |
+
+> TTFT basis (stone-llama): "cold (model load)" = 0.271 s - first request after daemon start, model loading from disk (from the aborted round-3 session; daemon freshly started, model not yet resident). "first req after load" = 0.064 s - first measurement request after warmup (max_tokens=1) completed, model already resident, first of the 5-run batch (this round-3 session). "warm" = 0.050 s - mean of runs 2-5, model resident, cache warm. The two cold-ish figures measure different conditions and must not be compared as one metric; the JSON stores 0.271 / 0.064 / 0.0504 under ttft_cold_s / ttft_first_after_load_s / ttft_warm_s_mean respectively.
 
 ### 4-way concurrency (4 streams × 128 tokens, 3 reps)
 

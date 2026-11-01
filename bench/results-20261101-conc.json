@@ -40,7 +40,7 @@
       17.96
     ],
     "llama_eval_clock_tok_s_mean": 55.42,
-    "ttft_warm_s_mean": 0.0486,
+    "ttft_warm_s_mean": 0.0504,
     "ttft_cold_s": 0.271,
     "vram_child_mib": 2566,
     "vram_free_mib": 1197,
@@ -58,7 +58,8 @@
           "sm_mhz_range": [
             1132,
             1207
-          ]
+          ],
+          "ttft_s": 0.0643
         },
         {
           "run": 2,
@@ -67,7 +68,8 @@
           "sm_mhz_range": [
             1117,
             1740
-          ]
+          ],
+          "ttft_s": 0.0496
         },
         {
           "run": 3,
@@ -76,7 +78,8 @@
           "sm_mhz_range": [
             862,
             1740
-          ]
+          ],
+          "ttft_s": 0.0524
         },
         {
           "run": 4,
@@ -85,7 +88,8 @@
           "sm_mhz_range": [
             1110,
             1320
-          ]
+          ],
+          "ttft_s": 0.0501
         },
         {
           "run": 5,
@@ -94,7 +98,8 @@
           "sm_mhz_range": [
             1155,
             1162
-          ]
+          ],
+          "ttft_s": 0.0494
         }
       ],
       "tok_s_client_mean": 54.68,
@@ -103,7 +108,9 @@
         1740
       ],
       "gpu_state": "boosted"
-    }
+    },
+    "ttft_first_after_load_s": 0.064,
+    "ttft_basis_note": "ttft_cold_s = 0.271: TRUE COLD - first request after daemon start, model loading from disk (from the aborted round-3 session; daemon freshly started, model not yet resident). ttft_first_after_load_s = 0.064: first measurement request after warmup (max_tokens=1) completed - model already resident, first of the 5-run batch (this round-3 session). ttft_warm_s_mean = 0.0504: mean of runs 2-5, model resident, cache warm (0.0496, 0.0524, 0.0501, 0.0494). The cold-ish figures measure different conditions and must not be compared as one metric."
   },
   "concurrency_4way": {
     "note": "4 parallel streams x 128 tokens, 3 reps, through the stone daemon (shipped -np 2 = 2 slots). Aggregate = total chunks / wall per rep. With 2 slots, 4 requests queue 2-at-a-time: TTFTs pair up (~0.1s then ~3s); aggregate ~87 tok/s. Honest cost of the shipped 2-slot shape vs the old 4-slot auto-fit's 99.7 (which used 2048-token slots).",
