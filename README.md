@@ -56,10 +56,11 @@ supervised backend child (parent env preserved; config keys win).
 On the `llama` backend, the GGUF child is spawned with **pinned flags** —
 `-c 8192 -fa on -np 2` (measured 2026-11-01 on the reference RTX 3050 Laptop 4 GB):
 context is sized to the card for stable decode (llama-server's auto-fit divides
-the KV across the 2 slots, so effectively 2 × 4096-token slots), flash attention
+the KV across the 2 slots, so effectively 2 × 4096-token slots; the shipped
+shape decodes ~55 tok/s by eval clock on a boosted session and ~40 at idle
+clock — the same configuration, different GPU clock states), flash attention
 is forced on (this llama.cpp build's `auto` leaves it **off** — a measurable
-decode cost on this card; see [bench/README.md](bench/README.md) — measured
-~55 tok/s by eval clock on a boosted session, ~40 at idle clock, same shape),
+decode cost on this card; see [bench/README.md](bench/README.md)),
 and the context is deliberately **below** the model's training maximum — an
 unpinned context follows `n_ctx_train` and collapses decode on a 4 GB card
 (measured 15–23 tok/s at ctx 16384, ~5 tok/s at 32768, over-allocation not
