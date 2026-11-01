@@ -186,7 +186,7 @@ func llamaArgv(bin, runtimeDir, cfgPath string, port, ctx int) []string {
 	// measured within one session. Basis is the eval clock, not client wall —
 	// wall varies with GPU boost state. With -np 4 the fit shrinks each slot
 	// to 2048 and refuses an 8 KB prompt; with -np 1 a single slot gets the
-	// full 8192 at the same ~40 tok/s. `-b 2048 -ub 512` are already
+	// full 8192 at the same clock-dependent rate. `-b 2048 -ub 512` are already
 	// llama-server defaults and measured at full speed, so they stay implicit.
 	if ctx <= 0 {
 		ctx = llamaDefaultCtx

@@ -130,6 +130,13 @@ ollama holds ~53 tok/s.** Suspected cause: stone leaves llama-server defaults
 (unified KV, no `-b/-ub` pinning) while ollama pins `-c 8192 -b 512 -ub 512`.
 Follow-up: measure stone with explicit env overrides to isolate.
 
+> **Note (added 2026-11-01):** The collapse above was pre-fix. Round 2 left llama-server
+> unpinned (`-c` followed the model's `n_ctx_train` → oversized KV cache silently degrading
+> long-prompt decode; this build's `-fa auto` also left flash attention off). Both fixed in
+> 9bf4f13 (`-c 8192 -fa on -np 2`); Round 3 re-measures the 8 KB shape at ~53 tok/s decode
+> with ~1.16 s TTFT and no collapse (see Round 3 below). Round 2's own numbers are
+> unchanged; only the status is annotated.
+
 ### 4-way concurrency (4 parallel streams × 128 tokens, 3 reps)
 
 | | aggregate tok/s | p95 TTFT (s) | per-request TTFT spread |
@@ -153,22 +160,28 @@ a concurrency round, with decode dropping to 2.4–8.4 tok/s; restarting the
 same daemon restored 2752 MiB / 55 tok/s. Reproduced once, cause not isolated
 (no Xid, no OOM entry). Worth a follow-up ticket.
 
-## Honest reading (updated after round 2)
+## Honest reading (updated after round 3)
 
-- **Round 1's "stone loses warm decode" was the quant confound, not the
-  wrapper.** On identical Q4_K_M weights the two llama.cpp paths are at
-  decode parity (53.5 vs 55.2 tok/s, ~4%, different sessions).
-- **ollama wins warm TTFT** (0.039 vs 0.116 s) and prompt-cache-hit TTFT.
+- **Same-session numbers lead.** The same-quant pair was re-measured in one session with
+  the shipped pinned default (`-c 8192 -fa on -np 2`) and clock state recorded (Round 3):
+  single-stream 54.7 vs 49.0 tok/s and 4-way aggregate 88.9 vs 48.0 — both ahead. The
+  earlier cross-session pair (53.5 vs 55.2 tok/s, ~4%, round 2) is within session-to-session
+  variation: absolute decode tracks GPU boost state (~40-56 tok/s for the shipped shape),
+  so a boosted session vs an idle session swaps the order. That is "parity within
+  variation", not a claim that stone is faster.
+- **ollama wins warm TTFT** (0.039 vs 0.116 s, round 2) and prompt-cache-hit TTFT.
 - **stone-llama wins VRAM** for this pair (2761 vs 2568 MiB) **and context
-  capacity** (32768 vs 8192, 4×).
-- **stone-llama wins concurrency decisively** (~2× aggregate, tight TTFTs vs
-  queueing).
-- **Open: long-prompt decode** — stone's decode collapses to ~5 tok/s on
-  8 KB-prompt continuations. Measured, unexplained, flagged for follow-up.
-- Claimed honestly: stone-llama's edge on a 4 GB card is **context capacity,
-  concurrency, and comparable VRAM**, not raw warm decode or TTFT on a 3 B
-  model. Long-prompt throughput needs the flag-isolation follow-up before any
-  claim either way.
+  capacity** (32768 vs 8192, 4×, round 2; shipped 2 x 4096 slots, round 3).
+- **concurrency**: pre-pin 4-slot auto-fit gave ~2x aggregate with tight TTFTs (round 2);
+  the shipped 2-slot default holds ~max(single-stream) aggregate with p95 TTFT ~3.0 s
+  (round 3) — the honest cost of the pin, annotated under the round-2 table.
+- **long-prompt decode collapse: fixed.** The ~5 tok/s collapse on 8 KB-prompt
+  continuations was caused by unpinned context over-allocating KV plus this build's
+  `-fa auto` leaving flash attention off; both pinned in 9bf4f13. Round 3 re-measures the
+  8 KB shape at ~53 tok/s decode with ~1.16 s TTFT and no collapse.
+- Claimed honestly: stone-llama's edge on a 4 GB card is **context capacity, comparable
+  VRAM, and parity-within-variation decode** against ollama — not a consistent raw-speed
+  or TTFT win on a 3 B model.
 
 ## Results — 2026-10-30 Qwen EXL3 (results-20261030-qwen.json, run 20261030T150929Z)
 
