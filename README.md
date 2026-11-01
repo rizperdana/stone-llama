@@ -121,9 +121,11 @@ workload, harness, and caveats. Reproduce with `STONE_START=1 bench/run.sh`.
   Same-session stone measured ahead; cross-session the two swap places — do
   not overclaim from one session. There is no "faster than ollama" claim
   here.
-- **ollama wins warm TTFT** — same session 0.026 vs 0.053 s (Round 2 pair
+- **ollama wins warm TTFT** — same session 0.026 vs 0.050 s (Round 2 pair
   0.039 vs 0.116 s) — and prompt-cache-hit TTFT; stone wins cold TTFT
-  decisively (0.064 vs 2.982 s, same session).
+  decisively on the like-for-like model-load condition (0.271 vs 2.982 s,
+  same session), and serves the first request in 0.064 s once the model is
+  resident (a separate, post-load condition).
 - **stone-llama wins VRAM on the EXL3/tabby path** (2274 vs 2568 MiB) and holds
   **4× the context** there (32768 vs 8192) — the 4 GB card's edge, not raw speed.
 - **stone-llama wins 4-way concurrency at the shipped 2-slot shape** — same-day
