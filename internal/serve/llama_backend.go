@@ -34,12 +34,12 @@ type llamaBackend struct {
 // llamaDefaultCtx is the measured safe context (tokens) for the reference
 // RTX 3050 Laptop 4 GB card with a SmolLM3-class Q4_K_M GGUF. With -np 2
 // llama-server's fit gives each slot half, so the pinned 8192 yields
-// 2 x 4096-token slots that serve multi-KB prompts at ~53-55 tok/s while
-// larger ctx (16384/32768) drops decode to 15-23 tok/s (measured
-// 2026-11-01, see /home/anon/ai/llamafix). A smaller value (e.g. 3072)
-// decodes slightly faster but caps the longest served prompt; a larger
-// value widens it at a measurable decode cost. Users override via config
-// `llama_ctx`.
+// 2 x 4096-token slots that serve multi-KB prompts at ~40-42 tok/s by
+// llama-server's eval clock (~2570 MiB resident) while larger ctx
+// (16384/32768) drops decode to 15-23 tok/s (measured 2026-11-01, see
+// /home/anon/ai/llamafix). A smaller value (e.g. 3072) decodes slightly
+// faster but caps the longest served prompt; a larger value widens it at a
+// measurable decode cost. Users override via config `llama_ctx`.
 // ponytail: card-specific constant; derive from llama.cpp's reported KV
 // bytes (its startup log) instead if the reference card changes.
 const llamaDefaultCtx = 8192
@@ -178,12 +178,14 @@ func llamaArgv(bin, runtimeDir, cfgPath string, port, ctx int) []string {
 	// the model's n_ctx_train — 16384+ collapses decode to 15-23 tok/s);
 	// -fa on because this llama.cpp build's `auto` leaves flash attention
 	// OFF (~40 vs ~53 tok/s); -np 2 so each slot stays at 4096 ctx and can
-	// serve multi-KB prompts at full speed while keeping 2-way concurrency
-	// (with -np 4 the fit shrinks each slot to 2048 and 8 KB prompts are
-	// refused; with -np 1 a single slot gets the full 8192 but decode sits
-	// at ~40 tok/s — the 4096-token-slot shape is the measured sweet spot:
-	// ~53-55 tok/s short AND long prompts). `-b 2048 -ub 512` are already
-	// llama-server defaults and measured at full speed, so they stay implicit.
+	// serve multi-KB prompts at full speed while keeping 2-way concurrency:
+	// the shipped 2 x 4096 shape decodes ~40-42 tok/s by llama-server's eval
+	// clock at ~2570 MiB resident (RESULTS.md, 2026-11-01). Basis is the
+	// eval clock, not client wall — wall varies with GPU boost state. With
+	// -np 4 the fit shrinks each slot to 2048 and refuses an 8 KB prompt;
+	// with -np 1 a single slot gets the full 8192 at the same ~40 tok/s.
+	// `-b 2048 -ub 512` are already llama-server defaults and measured at
+	// full speed, so they stay implicit.
 	if ctx <= 0 {
 		ctx = llamaDefaultCtx
 	}
