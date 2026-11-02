@@ -103,8 +103,10 @@ type Options struct {
 	contenders func() ([]doctor.Contender, error)
 	probeGPU   func() (doctor.Report, error)
 
-	SessionTTL time.Duration // idle TTL for sessions, default 1h
-	KeepAlive  time.Duration // warm-model keepalive, default 5m
+	SessionTTL    time.Duration // idle TTL for sessions, default 1h
+	KeepAlive     time.Duration // warm-model keepalive; default = short hold
+	KeepAliveSet  bool          // explicit --keepalive 0 (immediate unload) vs default
+	SessionTTLSet bool
 }
 
 func (o *Options) withDefaults() {
@@ -245,11 +247,33 @@ type daemon struct {
 	mu              sync.Mutex
 	loadMu          sync.Mutex // serializes /-/load and /-/unload
 	st              State
-	sessions        sync.Map // sessionID -> *Session
-	keepAliveValue  time.Duration
+	sessions        sync.Map  // sessionID -> *Session
+	holdUntil       time.Time // warm-model keepalive deadline (zero = client active / no hold)
+	holdTick        chan time.Time
 	sessionTTLValue time.Duration
 
 	fit *autofit.Result // last accepted fit for OOM advice (nil = unknown)
+}
+
+// holdWake nudges the keepalive maintenance loop that the deadline
+// moved (or was cancelled). Buffered, never blocking: a lost nudge
+// only delays expiry to the loop's next wake, never drops state.
+func (d *daemon) holdWake(until time.Time) {
+	if d.holdTick == nil {
+		return
+	}
+	select {
+	case d.holdTick <- until:
+	default:
+	}
+}
+
+// now is the injectable clock (opts.Now, time.Now by default).
+func (d *daemon) now() time.Time {
+	if d.opts.Now != nil {
+		return d.opts.Now()
+	}
+	return time.Now()
 }
 
 func (d *daemon) setChild(c *child) {
@@ -589,8 +613,10 @@ func Serve(ctx context.Context, opts Options) error {
 	if c == nil {
 		supCh = nil
 	}
+	d.holdTick = make(chan time.Time, 1)
 	go d.sampleVRAM(supCtx)
 	go d.sessionMaintenance(supCtx)
+	go d.keepAliveMaintenance(supCtx)
 	// `stone-llama serve <model>`: load the positional model through our own
 	// /-/load — the same supervised path `run` uses — once the listener is up.
 	// Attach mode never reaches this (the upstream owns loading there; the CLI

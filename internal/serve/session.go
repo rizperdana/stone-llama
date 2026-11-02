@@ -307,14 +307,17 @@ func (d *daemon) sessionTTL() time.Duration {
 	return time.Hour
 }
 
+// keepAliveDur is the warm-model hold window: opts.KeepAlive when set
+// (0 = immediate-unload policy), else the short default. Zero opts +
+// zero explicit value = the default window, not "no hold".
 func (d *daemon) keepAliveDur() time.Duration {
-	if d.keepAliveValue > 0 {
-		return d.keepAliveValue
-	}
 	if d.opts.KeepAlive > 0 {
 		return d.opts.KeepAlive
 	}
-	return 5 * time.Minute
+	if d.opts.KeepAliveSet {
+		return 0 // explicit 0: unload immediately
+	}
+	return defaultKeepAlive
 }
 
 // ensure maintenance goroutine started once

@@ -201,11 +201,11 @@ func inferBackendForModel(modelsDir, model string) string {
 }
 
 func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--backend tabby|llama] [--attach host:port] [--key-file path] [--local] [--new] [--continue] [--history] [-p "prompt"]`
+	usageLine := `usage: stone-llama run <model> [--ctx N] [--cache-mode M] [--draft-mode ngram|off] [--no-autofit] [--max-tokens N] [--temperature F] [--top-p F] [--system TEXT | --no-system] [--thinking | --no-thinking] [--backend tabby|llama] [--attach host:port] [--key-file path] [--local] [--continue] [--history] [-p "prompt"]`
 	model, cacheMode, oneShot := "", "", ""
 	attach, keyFile := "", ""
 	runBackend := "" // --backend: "" = configured value or inferred; explicit only if set
-	ctxN, noAutofit, localForce, contFlag, histFlag, newFlag := 0, false, false, false, false, false
+	ctxN, noAutofit, localForce, contFlag, histFlag := 0, false, false, false, false
 	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
 	// defaultSystemMsg is overridable via --system, removed via --no-system.
 	systemMsg, noSystem := defaultSystemMsg, false
@@ -333,7 +333,17 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			} else {
 				val = strings.TrimPrefix(a, "--attach=")
 			}
-			attach = val
+		case a == "--key-file" || strings.HasPrefix(a, "--key-file="):
+			if a == "--key-file" {
+				if val, ok = need(&i, "--key-file"); !ok {
+					return 2
+				}
+			} else {
+				val = strings.TrimPrefix(a, "--key-file=")
+			}
+			keyFile = val
+		case a == "--local":
+			localForce = true
 		case a == "-p" || a == "--prompt" || strings.HasPrefix(a, "--prompt="):
 			if strings.HasPrefix(a, "--prompt=") {
 				val = strings.TrimPrefix(a, "--prompt=")
@@ -343,8 +353,6 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			oneShot = val
 		case a == "--continue":
 			contFlag = true
-		case a == "--new":
-			newFlag = true
 		case a == "--history":
 			histFlag = true
 		case a == "-h" || a == "--help":
@@ -365,11 +373,6 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
-	if newFlag && contFlag {
-		fmt.Fprintf(stderr, "stone-llama run: --new and --continue contradict each other\n")
-		return 2
-	}
-
 	// --history prints the newest session's turns and exits before backend
 	// resolution: no HTTP request, no daemon spawn. A real history error
 	// (unreadable dir) is reported as such and exits 1 — only a genuinely
@@ -440,14 +443,15 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "profile: max_tokens %s, %s, thinking %s, %s\n", capN, samp, th, sysDesc)
 	}
 
-	// Chat history: a plain run resumes the model's newest persisted
-	// session (ollama parity; --continue is the explicit form of the same
-	// default) — --new forces a fresh one. Every completed turn is saved
-	// under chats/<model>/. Only a genuinely empty history gets the
-	// no-session notice; a real error (unreadable dir) is reported as
-	// itself before starting fresh.
+	// Chat history: a plain run starts a FRESH session. ollama's convention
+	// is fresh-by-default with no auto-resume and no --continue/--resume flag
+	// (history lives in-process; /save and /load are explicit). --continue
+	// is stone-llama's explicit resume of the newest saved session for this
+	// model. Every completed turn is saved under chats/<model>/. Only a
+	// genuinely empty history gets the no-session notice; a real error
+	// (unreadable dir) is reported as itself before starting fresh.
 	session := newSession(model, prof.System)
-	if !newFlag {
+	if contFlag {
 		switch s, err := lastSession(model, stderr); {
 		case err == nil:
 			session = s
@@ -457,6 +461,8 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		default:
 			fmt.Fprintf(stderr, "stone-llama: history: %v, starting a new one\n", err)
 		}
+	} else {
+		fmt.Fprintf(stderr, "stone-llama: new session\n")
 	}
 
 	dataDir := config.DataDir()

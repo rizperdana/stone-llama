@@ -491,7 +491,7 @@ func TestRunOneShotStreams(t *testing.T) {
 	// message; --thinking sets the template toggle.
 	out.Reset()
 	errb.Reset()
-	if code := runRun([]string{"fake-model", "--new", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
+	if code := runRun([]string{"fake-model", "--temperature", "0.3", "--top-p", "0.5", "--no-system", "--thinking", "-p", "hello"}, bytes.NewReader(nil), &out, &errb); code != 0 {
 		t.Fatalf("run -p flags: code=%d err=%q", code, errb.String())
 	}
 	c = parse()
@@ -1840,10 +1840,10 @@ func fakeUpstream(t *testing.T) *sync.Map {
 	return bodies
 }
 
-// Session resume is the DEFAULT (ollama parity): a plain `run` continues
-// the model's newest session — the second run's request carries the first
-// turn, and the session file gains a turn instead of a second file.
-func TestRunResumesSessionByDefault(t *testing.T) {
+// A plain `run` starts a FRESH session (ollama parity: history lives
+// in-process; no auto-resume). The second run does NOT carry the first
+// turn, and a second session file is created.
+func TestRunStartsFreshSessionByDefault(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
 	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
@@ -1857,15 +1857,8 @@ func TestRunResumesSessionByDefault(t *testing.T) {
 	}
 
 	ids, err := listSessionIDs("m")
-	if err != nil || len(ids) != 1 {
-		t.Fatalf("session files = %v (err %v), want exactly ONE (resume, not a fresh session)", ids, err)
-	}
-	s, err := loadSession("m", ids[0], io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(s.Turns) != 2 {
-		t.Errorf("turns = %d, want 2 (both runs appended)", len(s.Turns))
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("session files = %v (err %v), want TWO (fresh, not resume)", ids, err)
 	}
 
 	raw, ok := bodies.Load(1)
@@ -1878,50 +1871,27 @@ func TestRunResumesSessionByDefault(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
 		t.Fatal(err)
 	}
-	found := false
 	for _, m := range sent.Messages {
 		if m.Role == "user" && m.Content == "hello" {
-			found = true
+			t.Errorf("fresh run replayed prior history: %v", sent.Messages)
 		}
-	}
-	if !found {
-		t.Errorf("second run did not replay the first turn (no resume): %v", sent.Messages)
 	}
 }
 
-// --new forces a fresh session even when history exists.
-func TestRunNewFlagStartsFresh(t *testing.T) {
+// --new is REMOVED: unknown-flag usage error, exit 2. No alias.
+func TestRunNewFlagRejected(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
-	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
-	bodies := fakeUpstream(t)
-
-	if code, _, errb := run("run", "m", "-p", "hello"); code != 0 {
-		t.Fatalf("seed run: code = %d, err = %q", code, errb)
+	code, _, errb := run("run", "m", "--new", "-p", "hi")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2 (unknown flag)", code)
 	}
-	if code, _, errb := run("run", "m", "--new", "-p", "fresh start"); code != 0 {
-		t.Fatalf("--new run: code = %d, err = %q", code, errb)
-	}
-
-	ids, err := listSessionIDs("m")
-	if err != nil || len(ids) != 2 {
-		t.Fatalf("session files = %v (err %v), want TWO (--new must not resume)", ids, err)
-	}
-	raw, _ := bodies.Load(1)
-	var sent struct {
-		Messages []struct{ Role, Content string } `json:"messages"`
-	}
-	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range sent.Messages {
-		if m.Content == "hello" {
-			t.Errorf("--new run replayed prior history: %v", sent.Messages)
-		}
+	if !strings.Contains(errb, "unknown flag \"--new\"") {
+		t.Errorf("err = %q, want unknown-flag message", errb)
 	}
 }
 
-// --continue keeps working as the explicit form of the default.
+// --continue explicitly resumes the newest saved session for the model.
 func TestRunContinueStillResumes(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	isolateConfig(t)
@@ -1955,6 +1925,92 @@ func TestRunContinueStillResumes(t *testing.T) {
 	}
 }
 
+// A resumed session's request carries EVERY prior turn with correct roles
+// and order: system, then alternating user/assistant pairs, then the new
+// prompt. Table-driven over the expected message list (no network —
+// fakeUpstream captures the wire body).
+func TestRunContinueReplaysExactRolesAndOrder(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	bodies := fakeUpstream(t)
+
+	if code, _, errb := run("run", "m", "--no-system", "-p", "hello"); code != 0 {
+		t.Fatalf("seed run: code = %d, err = %q", code, errb)
+	}
+	if code, _, errb := run("run", "m", "--continue", "--no-system", "-p", "again"); code != 0 {
+		t.Fatalf("--continue run: code = %d, err = %q", code, errb)
+	}
+
+	raw, ok := bodies.Load(1)
+	if !ok {
+		t.Fatal("second chat request never arrived")
+	}
+	var sent struct {
+		Messages []struct{ Role, Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &sent); err != nil {
+		t.Fatal(err)
+	}
+	// fakeUpstream answers "ok" to every prompt.
+	want := []struct{ Role, Content string }{
+		{"user", "hello"},
+		{"assistant", "ok"},
+		{"user", "again"},
+	}
+	if len(sent.Messages) != len(want) {
+		t.Fatalf("messages = %+v, want %d (system+turns+prompt, exact order)", sent.Messages, len(want))
+	}
+	for i, w := range want {
+		if sent.Messages[i].Role != w.Role || sent.Messages[i].Content != w.Content {
+			t.Errorf("messages[%d] = %q/%q, want %q/%q", i, sent.Messages[i].Role, sent.Messages[i].Content, w.Role, w.Content)
+		}
+	}
+}
+
+// Table-driven fresh/continue decision matrix: (flags, prior history) →
+// expected session layout and whether the prior turn hits the wire.
+func TestRunSessionSelectionMatrix(t *testing.T) {
+	cases := []struct {
+		name       string
+		flags      []string
+		wantFiles  int
+		wantReplay bool // "hello" (turn 1) present in request 2
+	}{
+		{"plain-fresh-even-with-history", []string{}, 2, false},
+		{"continue-resumes-newest", []string{"--continue"}, 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			isolateConfig(t)
+			t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+			bodies := fakeUpstream(t)
+
+			if code, _, errb := run("run", "m", "-p", "hello"); code != 0 {
+				t.Fatalf("seed run: code = %d, err = %q", code, errb)
+			}
+			args := append([]string{"run", "m"}, append(tc.flags, "-p", "second")...)
+			if code, _, errb := run(args...); code != 0 {
+				t.Fatalf("second run: code = %d, err = %q", code, errb)
+			}
+
+			ids, err := listSessionIDs("m")
+			if err != nil || len(ids) != tc.wantFiles {
+				t.Fatalf("session files = %v (err %v), want %d", ids, err, tc.wantFiles)
+			}
+			raw, ok := bodies.Load(1)
+			if !ok {
+				t.Fatal("second chat request never arrived")
+			}
+			gotReplay := strings.Contains(raw.(string), `"hello"`)
+			if gotReplay != tc.wantReplay {
+				t.Errorf("replayed prior turn = %v, want %v: %s", gotReplay, tc.wantReplay, raw)
+			}
+		})
+	}
+}
+
 // Markdown rendering applies ONLY when stdout is a real terminal: a
 // piped run (bytes.Buffer stand-in) must be byte-identical passthrough,
 // no ANSI escapes even when the model emits markdown.
@@ -1981,7 +2037,7 @@ func TestRunPipedOutputHasNoANSI(t *testing.T) {
 	t.Cleanup(ts.Close)
 	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
 
-	code, out, errb := run("run", "m", "--new", "-p", "hi")
+	code, out, errb := run("run", "m", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("code = %d, out = %q, err = %q", code, out, errb)
 	}
