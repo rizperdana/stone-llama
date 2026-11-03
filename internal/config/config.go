@@ -45,6 +45,10 @@ type Config struct {
 	// (0 = no check). Weights only — KV cache and runtime overhead are
 	// use. Tabby ignores it.
 	DeviceBudgetMiB int `json:"backend_device_budget_mib"`
+	// KeepAliveSeconds holds the loaded model this many seconds after the
+	// last client exits; 0 or absent unloads immediately (the default —
+	// a held model cannot coexist with a game on a 4 GiB card).
+	KeepAliveSeconds int `json:"keepalive_seconds"`
 
 	// LlamaCtx is the context window (tokens) passed to the llama/GGUF
 	// backend. 0 = the measured safe default for the reference 4 GB card
@@ -149,6 +153,9 @@ func Load() (Config, error) {
 	}
 	if c := cfg.LlamaCtx; c != 0 && (c < 512 || c > 1048576) {
 		return Config{}, fmt.Errorf("llama_ctx must be 0 (the measured default) or 512-1048576 (got %d)", c)
+	}
+	if c := cfg.KeepAliveSeconds; c < 0 {
+		return Config{}, fmt.Errorf("keepalive_seconds must be >= 0 (got %d)", c)
 	}
 	cfg.ModelsDir = expandHome(cfg.ModelsDir)
 	cfg.RuntimeDir = expandHome(cfg.RuntimeDir)
