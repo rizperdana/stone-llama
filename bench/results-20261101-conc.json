@@ -1,0 +1,312 @@
+{
+  "round": 3,
+  "date": "2026-11-01",
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU (4096 MiB)",
+    "driver": "580.178.04 (userspace extracted to /home/anon/ai/nv178; system nvidia-smi broken by no-reboot mismatch)",
+    "os": "linux 7.3.0-4-cachyos x64"
+  },
+  "workload": {
+    "prompt": "Explain quantum entanglement in simple terms.",
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "repeats": 5
+  },
+  "pair_note": "Same-quant pair, shipped pinned default: stone-llama llama backend spawns '-c 8192 -fa on -np 2' (2x4096 slots after llama-server -fit divides the pinned 8192 across slots) on smollm3-q4km-test (identical Q4_K_M GGUF to ollama smollm3:3b). Re-measure BOTH engines in one session on port 5195 through the stone daemon, to give the README's decode-parity and concurrency bullets one same-basis set of numbers under the shipped config. Ollama probe-only (unload via keep_alive=0, never restart/kill). Round-2's pre-pin numbers (53.5 / 99.7) were measured at llama-server's old 4-slot auto-fit with 2048-token slots. GPU clock state recorded per measurement.",
+  "stone_argv": "llama-server --host 127.0.0.1 --port <internal> --api-key-file <runtime>/upstream_key -m /home/anon/.local/share/stone-llama/models/smollm3-q4km-test/model.gguf -c 8192 -fa on -np 2",
+  "shipped_shape_note": "llama-server -fit divides -c across -np: the pinned 8192 with -np 2 gives 2 x 4096-token slots; n_ctx_seq 4096, n_slots 2 confirmed in child log.",
+  "single_stream": {
+    "basis_note": "Two bases recorded: (a) client-side stream chunks/wall (128 chunks; warm runs 2-5), (b) llama-server's own eval time log lines. GPU boost state makes client wall vary (idle-clock 210MHz vs boost 2100MHz); the eval clock is the stable decode figure. Absolute decode for the shipped 2x4096 shape on this 4GB laptop GPU ranges ~40 tok/s (idle clock, 210 MHz) to ~55 tok/s (boosted, 1050-1207 MHz). Only within-session comparisons (e.g. -fa on vs off) are valid for flag A/Bs; cross-session absolute numbers track GPU clock state, not configuration. This session the card stayed boosted.",
+    "client_stream_tok_s_mean": 54.4,
+    "client_stream_wall_s": [
+      2.524,
+      2.315,
+      2.333,
+      2.328,
+      2.318
+    ],
+    "llama_eval_clock_tok_s": [
+      55.92,
+      55.75,
+      55.33,
+      55.44,
+      55.68
+    ],
+    "eval_ms_per_tok": [
+      17.88,
+      17.94,
+      18.07,
+      18.04,
+      17.96
+    ],
+    "llama_eval_clock_tok_s_mean": 55.42,
+    "ttft_warm_s_mean": 0.0504,
+    "ttft_cold_s": 0.271,
+    "vram_child_mib": 2566,
+    "vram_free_mib": 1197,
+    "gpu_clock_state": "boosted (1050-1207 MHz SM during decode; idle 210 MHz between runs)",
+    "sm_clock_mhz_range": [
+      1050,
+      1207
+    ],
+    "re_measured_20261101": {
+      "runs": [
+        {
+          "run": 1,
+          "tok_s_client": 54.9,
+          "wall_s": 2.358,
+          "sm_mhz_range": [
+            1132,
+            1207
+          ],
+          "ttft_s": 0.0643
+        },
+        {
+          "run": 2,
+          "tok_s_client": 54.6,
+          "wall_s": 2.358,
+          "sm_mhz_range": [
+            1117,
+            1740
+          ],
+          "ttft_s": 0.0496
+        },
+        {
+          "run": 3,
+          "tok_s_client": 54.5,
+          "wall_s": 2.362,
+          "sm_mhz_range": [
+            862,
+            1740
+          ],
+          "ttft_s": 0.0524
+        },
+        {
+          "run": 4,
+          "tok_s_client": 54.6,
+          "wall_s": 2.356,
+          "sm_mhz_range": [
+            1110,
+            1320
+          ],
+          "ttft_s": 0.0501
+        },
+        {
+          "run": 5,
+          "tok_s_client": 54.8,
+          "wall_s": 2.349,
+          "sm_mhz_range": [
+            1155,
+            1162
+          ],
+          "ttft_s": 0.0494
+        }
+      ],
+      "tok_s_client_mean": 54.68,
+      "sm_clock_mhz_range": [
+        862,
+        1740
+      ],
+      "gpu_state": "boosted"
+    },
+    "ttft_first_after_load_s": 0.064,
+    "ttft_basis_note": "ttft_cold_s = 0.271: TRUE COLD - first request after daemon start, model loading from disk (from the aborted round-3 session; daemon freshly started, model not yet resident). ttft_first_after_load_s = 0.064: first measurement request after warmup (max_tokens=1) completed - model already resident, first of the 5-run batch (this round-3 session). ttft_warm_s_mean = 0.0504: mean of runs 2-5, model resident, cache warm (0.0496, 0.0524, 0.0501, 0.0494). The cold-ish figures measure different conditions and must not be compared as one metric."
+  },
+  "concurrency_4way": {
+    "note": "4 parallel streams x 128 tokens, 3 reps, through the stone daemon (shipped -np 2 = 2 slots). Aggregate = total chunks / wall per rep. With 2 slots, 4 requests queue 2-at-a-time: TTFTs pair up (~0.1s then ~3s); aggregate ~87 tok/s. Honest cost of the shipped 2-slot shape vs the old 4-slot auto-fit's 99.7 (which used 2048-token slots).",
+    "aggregate_tok_s_mean": 86.7,
+    "aggregate_tok_s_raw": [
+      84.6,
+      87.7,
+      87.9
+    ],
+    "wall_s_raw": [
+      5.956,
+      5.746,
+      5.733
+    ],
+    "p95_ttft_s_raw": [
+      3.126,
+      2.985,
+      2.957
+    ],
+    "per_request_ttft_spread_s": "pairs ~0.09-0.34 and ~2.96-3.17 (2 slots, queueing)",
+    "total_chunks_per_rep": 504,
+    "runs_ok": "4/4/4",
+    "gpu_clock_state": "boosted (1042-1740 MHz SM during decode)",
+    "sm_clock_mhz_range": [
+      1042,
+      1740
+    ],
+    "re_measured_20261101": {
+      "runs": [
+        {
+          "rep": 1,
+          "wall_s": 5.871,
+          "agg_tok_s": 87.2,
+          "sm_mhz_range": [
+            1042,
+            1725
+          ]
+        },
+        {
+          "rep": 2,
+          "wall_s": 5.708,
+          "agg_tok_s": 89.7,
+          "sm_mhz_range": [
+            1110,
+            1740
+          ]
+        },
+        {
+          "rep": 3,
+          "wall_s": 5.711,
+          "agg_tok_s": 89.7,
+          "sm_mhz_range": [
+            1102,
+            1470
+          ]
+        }
+      ],
+      "aggregate_tok_s_mean": 88.87,
+      "sm_clock_mhz_range": [
+        1042,
+        1740
+      ],
+      "gpu_state": "boosted"
+    }
+  },
+  "eight_kb_unique_prompt": {
+    "note": "Unique 8 KB prompt per repeat (no server-side cache absorb), max_tokens=64, 3 reps. The pinned 2x4096 shape serves it at full speed \u2014 this is the collapse the pin exists for; no collapse observed.",
+    "ttft_s_raw": [
+      1.186,
+      1.158,
+      1.159
+    ],
+    "decode_tok_s_client": [
+      52.7,
+      53.1,
+      53.0
+    ],
+    "llama_eval_clock_tok_s_raw": [
+      53.18,
+      53.73,
+      53.2
+    ],
+    "prefill_ms": [
+      1043,
+      1007,
+      1012
+    ],
+    "chunks_per_run": 62,
+    "runs_ok": "3/3"
+  },
+  "ollama_sameday": {
+    "note": "Ollama same-day 2026-11-01, smollm3:3b Q4_K_M, same prompt/params as stone. Card cleared of stone via keep_alive=0 before each phase. GPU clock state recorded per run (system nvidia-smi).",
+    "single_stream": {
+      "runs": [
+        {
+          "run": 1,
+          "wall_s": 5.577,
+          "tok_s_client": 49.3,
+          "ttft_s": 2.982,
+          "sm_clock_mhz_range": [
+            975,
+            1725
+          ],
+          "vram_mib": 2577
+        },
+        {
+          "run": 2,
+          "wall_s": 2.624,
+          "tok_s_client": 49.2,
+          "ttft_s": 0.024,
+          "sm_clock_mhz_range": [
+            810,
+            1747
+          ],
+          "vram_mib": 2577
+        },
+        {
+          "run": 3,
+          "wall_s": 2.645,
+          "tok_s_client": 49.0,
+          "ttft_s": 0.035,
+          "sm_clock_mhz_range": [
+            907,
+            1462
+          ],
+          "vram_mib": 2577
+        },
+        {
+          "run": 4,
+          "wall_s": 2.643,
+          "tok_s_client": 48.8,
+          "ttft_s": 0.023,
+          "sm_clock_mhz_range": [
+            990,
+            1005
+          ],
+          "vram_mib": 2577
+        },
+        {
+          "run": 5,
+          "wall_s": 2.644,
+          "tok_s_client": 48.8,
+          "ttft_s": 0.023,
+          "sm_clock_mhz_range": [
+            967,
+            1740
+          ],
+          "vram_mib": 2577
+        }
+      ],
+      "tok_s_client_mean": 49.0,
+      "ttft_warm_s_mean": 0.0263,
+      "ttft_cold_s": 2.982,
+      "vram_mib": 2577,
+      "sm_clock_mhz_range_overall": [
+        480,
+        1747
+      ],
+      "gpu_state": "boosted (900-1747 MHz SM during decode, idle 210 MHz between)"
+    },
+    "concurrency_4way": {
+      "runs": [
+        {
+          "rep": 1,
+          "wall_s": 10.629,
+          "agg_tok_s": 48.2,
+          "sm_clock_mhz_range": [
+            480,
+            1740
+          ]
+        },
+        {
+          "rep": 2,
+          "wall_s": 10.675,
+          "agg_tok_s": 48.0,
+          "sm_clock_mhz_range": [
+            930,
+            990
+          ]
+        },
+        {
+          "rep": 3,
+          "wall_s": 10.702,
+          "agg_tok_s": 47.8,
+          "sm_clock_mhz_range": [
+            937,
+            1072
+          ]
+        }
+      ],
+      "aggregate_tok_s_mean": 48.0,
+      "sm_clock_mhz_range_overall": [
+        480,
+        1740
+      ],
+      "gpu_state": "boosted (930-1740 MHz SM during decode)"
+    }
+  }
+}

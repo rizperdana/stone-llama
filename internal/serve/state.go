@@ -33,6 +33,8 @@ type State struct {
 	CacheMode   string `json:"cache_mode,omitempty"`
 	Attach      string `json:"attach,omitempty"`        // upstream base URL in attach mode
 	VRAMPeakMiB int    `json:"vram_peak_mib,omitempty"` // sampled from the child's nvidia-smi row
+	VRAMNowMiB  int    `json:"vram_now_mib,omitempty"`  // latest sample (collapse detectability)
+	Collapsed   bool   `json:"collapsed,omitempty"`     // VRAM dropped far below the model size while ready
 	StartedAt   int64  `json:"started_at"`              // unix seconds
 }
 
@@ -79,6 +81,9 @@ func Query(dataDir string) (Status, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return Status{}, errors.New("status endpoint: HTTP 401 (the daemon rejected this state's bearer — daemon.json is damaged, or it belongs to another data dir)")
+		}
 		return Status{}, fmt.Errorf("status endpoint: HTTP %d", resp.StatusCode)
 	}
 	var s Status

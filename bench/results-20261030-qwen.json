@@ -1,0 +1,204 @@
+{
+  "timestamp_utc": "20261030T150929Z",
+  "harness": "bench/run.sh measurement logic (bash + curl + python3 stdlib, stone-only)",
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "total_mib": 4096,
+    "used_mib_at_start": 1,
+    "free_mib_at_start": 3771,
+    "driver": "580.178.04",
+    "os": "linux"
+  },
+  "workload": {
+    "prompt": "Explain quantum entanglement in simple terms.",
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "repeats": 5,
+    "vram_sampling_ms": 100
+  },
+  "models": {
+    "qwen": {
+      "id": "Qwen_Qwen3-4B-Instruct-2507-EXL3",
+      "backend": "tabby / exllamav3",
+      "quant": "EXL3 2.5bpw (2.07 GiB)",
+      "source": "ArtusDev/Qwen_Qwen3-4B-Instruct-2507-EXL3"
+    },
+    "smollm3": {
+      "id": "SmolLM3-3B-exl3_4.0bpw",
+      "backend": "tabby / exllamav3",
+      "quant": "EXL3 ~3.5bpw (1.84 GiB)",
+      "source": "imported"
+    }
+  },
+  "pair_note": "Both models measured via stone-llama tabby/ExLlamaV3 backend on the same RTX 3050 Laptop GPU, identical workload (same prompt, max_tokens=128, temperature=0.7, 5 repeats, 100ms VRAM sampling). This is an ABSOLUTE numbers measurement, NOT a like-for-like Qwen-vs-ollama comparison: there is no ollama counterpart for Qwen_Qwen3-4B-Instruct-2507-EXL3 on disk. ollama qwen3.5:2b exists but is Qwen3.5 (2.7B, different architecture) \u2014 NOT comparable. ollama smollm3:3b is a different base model (smollm3, GGUF Q4_K_M) \u2014 NOT comparable to SmolLM3-3B-exl3. Numbers here isolate the stone-llama EXL3 path on two different base models with a consistent measurement basis.",
+  "measurements": {
+    "qwen": {
+      "runs_ok": 5,
+      "runs_failed": 0,
+      "failures": [],
+      "ttft_s": {
+        "mean": 1.0593,
+        "min": 0.16,
+        "max": 4.3277
+      },
+      "wall_s": {
+        "mean": 6.1209,
+        "min": 3.8111,
+        "max": 9.0812,
+        "median": 4.8322
+      },
+      "decode_tok_s": {
+        "mean": 27.57,
+        "min": 14.77,
+        "max": 35.02,
+        "basis": "stream_chunks(approx)"
+      },
+      "peak_vram_used_mib": 2445,
+      "vram_samples_in_window": 208,
+      "per_process_peak_mib": {
+        "/home/anon/.local/share/stone-llama/runtime/venv/bin/python": 2436
+      },
+      "ctx": {
+        "n_ctx": null,
+        "n_ctx_train": 262144
+      }
+    },
+    "smollm3": {
+      "runs_ok": 5,
+      "runs_failed": 0,
+      "failures": [],
+      "ttft_s": {
+        "mean": 0.1241,
+        "min": 0.1109,
+        "max": 0.1596
+      },
+      "wall_s": {
+        "mean": 2.9045,
+        "min": 2.8766,
+        "max": 2.9268,
+        "median": 2.8973
+      },
+      "decode_tok_s": {
+        "mean": 45.68,
+        "min": 45.2,
+        "max": 45.95,
+        "basis": "stream_chunks(approx)"
+      },
+      "peak_vram_used_mib": 2283,
+      "vram_samples_in_window": 124,
+      "per_process_peak_mib": {
+        "/home/anon/.local/share/stone-llama/runtime/venv/bin/python": 2274
+      },
+      "ctx": {
+        "n_ctx": null,
+        "n_ctx_train": 65536
+      }
+    }
+  },
+  "raw": {
+    "qwen": [
+      {
+        "ok": true,
+        "ttft_s": 0.18435239791870117,
+        "wall_s": 3.8111064434051514,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372886.5127747,
+        "t1": 1793372890.3238811
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.16001296043395996,
+        "wall_s": 8.756376504898071,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372891.3242044,
+        "t1": 1793372900.080581
+      },
+      {
+        "ok": true,
+        "ttft_s": 4.327717065811157,
+        "wall_s": 9.08123779296875,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372901.0809298,
+        "t1": 1793372910.1621675
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.3397207260131836,
+        "wall_s": 4.832183122634888,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372911.16278,
+        "t1": 1793372915.9949632
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.28487253189086914,
+        "wall_s": 4.123558044433594,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372916.9954681,
+        "t1": 1793372921.1190262
+      }
+    ],
+    "smollm3": [
+      {
+        "ok": true,
+        "ttft_s": 0.1596062183380127,
+        "wall_s": 2.926764488220215,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372945.5320268,
+        "t1": 1793372948.4587913
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.11274862289428711,
+        "wall_s": 2.876600503921509,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372949.4590564,
+        "t1": 1793372952.335657
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.11091732978820801,
+        "wall_s": 2.8961446285247803,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372953.3358932,
+        "t1": 1793372956.2320378
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.12138199806213379,
+        "wall_s": 2.897318124771118,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372957.2327075,
+        "t1": 1793372960.1300256
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.1158447265625,
+        "wall_s": 2.925814628601074,
+        "chunks": 128,
+        "completion_tokens": 0,
+        "prompt_tokens": null,
+        "t0": 1793372961.1303475,
+        "t1": 1793372964.056162
+      }
+    ]
+  }
+}

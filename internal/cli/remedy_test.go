@@ -89,14 +89,14 @@ func TestAutoStartFailureSinglePrefix(t *testing.T) {
 	probeUpstreamFn = func(context.Context, string, time.Duration) serve.ProbeResult {
 		return serve.ProbeResult{Err: errors.New("connection refused")}
 	}
-	startSupervisedFn = func(string, time.Duration) (serve.State, error) {
+	startSupervisedFn = func(string, time.Duration, []string) (serve.State, error) {
 		return serve.State{}, errors.New("auto-start failed: stone-llama serve: another stone-llama process is starting the daemon")
 	}
 	t.Cleanup(func() {
 		queryStatusFn, probeUpstreamFn, startSupervisedFn = origStatus, origProbe, origStart
 	})
 
-	_, err := ResolveBackend(context.Background(), io.Discard, io.Discard, dataDir, config.Config{}, "", "", false)
+	_, err := ResolveBackend(context.Background(), io.Discard, io.Discard, dataDir, config.Config{}, "", "", "", false)
 	if err == nil {
 		t.Fatal("want an auto-start failure")
 	}

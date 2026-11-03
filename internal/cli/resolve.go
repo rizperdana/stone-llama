@@ -52,14 +52,12 @@ var (
 	queryStatusFn     = serve.Query
 	probeUpstreamFn   = serve.ProbeAttach
 	upstreamModelFn   = serve.UpstreamModel
-	startSupervisedFn = func(dataDir string, timeout time.Duration) (serve.State, error) {
-		return serve.EnsureDaemon(dataDir, true, timeout)
+	startSupervisedFn = func(dataDir string, timeout time.Duration, args []string) (serve.State, error) {
+		return serve.EnsureDaemonArgs(dataDir, true, timeout, args)
 	}
 	discoverCheckoutFn = discoverTabbyCheckout
 )
 
-// runReadyTimeout is the readiness bound for the auto-attach probe (matches
-// the seam contract: any answer from /v1/models within the bound = serving).
 const runReadyTimeout = 30 * time.Second
 
 func runtimeDirOf(cfg config.Config, dataDir string) string {
@@ -175,7 +173,7 @@ func fileExists(p string) bool {
 // ResolveBackend implements the zero-config resolution order (see file doc).
 // noAttach forces the supervised path (--local); noAutostart() blocks the
 // supervised spawn but NOT direct attach (attaching starts nothing).
-func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir string, cfg config.Config, attachFlag, keyFileFlag string, noAttach bool) (Decision, error) {
+func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir string, cfg config.Config, model string, attachFlag, keyFileFlag string, noAttach bool) (Decision, error) {
 	// 1) our daemon already alive — use it (existing behaviour).
 	if st, err := queryStatusFn(dataDir); err == nil {
 		return Decision{Kind: "daemon", Status: st, Model: st.Model}, nil
@@ -228,7 +226,14 @@ func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir strin
 	if !noAutostart() {
 		rt := runtimeDirOf(cfg, dataDir)
 		if runtimeUsable(rt) {
-			if _, err := startSupervisedFn(dataDir, runReadyTimeout); err != nil {
+			var args []string
+			if cfg.Backend != "" {
+				args = append(args, "--backend", cfg.Backend)
+			}
+			if model != "" {
+				args = append(args, model)
+			}
+			if _, err := startSupervisedFn(dataDir, runReadyTimeout, args); err != nil {
 				// K1: the single "auto-start failed:" prefix comes from
 				// serve's startFailed — never re-wrap it here (G2).
 				return Decision{}, fmt.Errorf("%v%s", err, backendStartRemedy(err.Error(), upstream))
@@ -239,7 +244,6 @@ func ResolveBackend(ctx context.Context, stdout, stderr io.Writer, dataDir strin
 			return Decision{}, fmt.Errorf("daemon started but is not responding yet — check %s", filepath.Join(dataDir, "logs", "daemon.log"))
 		}
 	}
-
 	// 4) nothing available — one actionable message, remedies least-friction first.
 	return Decision{}, nothingAvailableErr(upstream, dataDir)
 }
