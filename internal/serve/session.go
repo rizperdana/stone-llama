@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rizperdana/stone-llama/internal/config"
 )
 
 // Turn is one user/assistant exchange (server-side session).
@@ -306,18 +304,3 @@ func (d *daemon) sessionTTL() time.Duration {
 	}
 	return time.Hour
 }
-
-// keepAliveDur is the warm-model hold window in effect for this daemon:
-// opts.KeepAlive seconds when configured, else 0. Zero/absent means
-// unload immediately — the default, because a held model (~2.3 GiB, ~62%
-// of the reference 4 GiB card) cannot coexist with anything else that
-// wants the GPU.
-func (d *daemon) keepAliveDur() time.Duration {
-	if d.opts.KeepAlive > 0 {
-		return d.opts.KeepAlive
-	}
-	return 0
-}
-
-// ensure maintenance goroutine started once
-var _ = config.Default

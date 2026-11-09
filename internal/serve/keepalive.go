@@ -10,17 +10,22 @@ import (
 	"time"
 )
 
-// Warm-model keep-alive: after the last client goes away the daemon can
-// hold the loaded model for a bounded window so the next `run` is warm
-// instead of paying a full reload. Expiry unloads through the same
-// /v1/model/unload path `/-/unload` uses, so VRAM is actually freed —
-// nothing leaks. The knob (config keepalive_seconds / --keepalive
-// SECONDS on serve+run):
+// Warm-model keep-alive: when a client (`run`) exits, it may ask this
+// daemon to hold the loaded model for a bounded window so the next `run`
+// is warm instead of paying a full reload (POST /-/hold {"seconds": N};
+// the effective window is the config knob keepalive_seconds, overridden
+// by `run --keepalive N`). Expiry unloads through the same
+// /v1/model/unload path /-/unload uses, so VRAM is actually freed —
+// nothing leaks. Semantics:
 //
 //	0 / absent   unload immediately (the DEFAULT — a held model, ~2.3 GiB
 //	             or ~62% of the reference 4 GiB card, cannot coexist with
 //	             anything else that wants the GPU, e.g. the owner's games)
 //	N            hold for N seconds after the last client exits
+//
+// The daemon never starts a hold on its own: it cannot observe "the last
+// client went away", so the client drives the window. markWanted at chat
+// entry cancels a pending window; expiry never unloads a wanted model.
 
 // markWanted records that a client is using the model right now: the
 // hold window is cancelled until the client goes away again.
@@ -63,20 +68,6 @@ func (d *daemon) handleHold(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, "{\"hold_until\":%d}\n", until.Unix())
 }
 
-// startHold begins the countdown (client went away). A non-positive
-// keepAlive never holds (immediate-unload policy).
-func (d *daemon) startHold() {
-	d.mu.Lock()
-	if d.keepAliveDur() <= 0 {
-		d.mu.Unlock()
-		return
-	}
-	d.holdUntil = d.now().Add(d.keepAliveDur())
-	until := d.holdUntil
-	d.mu.Unlock()
-	d.holdWake(until)
-}
-
 // modelHoldUntil reports the unix second the hold ends (0 = none).
 func (d *daemon) modelHoldUntil() int64 {
 	d.mu.Lock()
@@ -111,11 +102,11 @@ func (d *daemon) holdExpiry(ctx context.Context) bool {
 }
 
 // keepAliveMaintenance runs the expiry loop for the daemon's lifetime
-// (started by Serve next to sessionMaintenance). startHold nudges
-// holdTick; the loop waits out the window and unloads on expiry. Each
-// wake re-checks contention: a foreign GPU holder appearing mid-hold
-// (the owner's game) unloads immediately instead of waiting the window
-// out — the card must be reclaimable while we merely hold.
+// (started by Serve next to sessionMaintenance). A hold POSTed to
+// /-/hold nudges holdTick; the loop waits out the window and unloads on
+// expiry. Each wake re-checks contention: a foreign GPU holder appearing
+// mid-hold (the owner's game) unloads immediately instead of waiting the
+// window out — the card must be reclaimable while we merely hold.
 func (d *daemon) keepAliveMaintenance(ctx context.Context) {
 	for {
 		select {

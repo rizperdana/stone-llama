@@ -207,7 +207,7 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	runBackend := "" // --backend: "" = configured value or inferred; explicit only if set
 	ctxN, noAutofit, localForce, contFlag, histFlag := 0, false, false, false, false
 	maxTokens := 2048 // REPL generation cap; --max-tokens 0 opts out (to EOS)
-	keepAlive := 0    // --keepalive: hold window seconds; 0 = unset (config/default)
+	keepAlive := 0    // --keepalive: hold window seconds after exit; 0 = config value (itself defaulting to 0 = unload)
 	keepAliveSet := false
 	// defaultSystemMsg is overridable via --system, removed via --no-system.
 	systemMsg, noSystem := defaultSystemMsg, false
@@ -1566,9 +1566,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	port := 0
 	draftMode := "" // --draft-mode: "" = configured value; ngram | disabled ("off")
 	backend := ""   // --backend: "" = configured value; tabby | llama
-	keepAlive := 0
-	keepAliveSet := false
-	usageLine := "usage: stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>] [--draft-mode ngram|off] [--backend tabby|llama] [--keepalive N]"
+	usageLine := "usage: stone-llama serve [<model>] [--attach <host:port|url>] [--port <n>] [--key-file <path>] [--draft-mode ngram|off] [--backend tabby|llama]"
 	// the loop reassigns i when consuming flag values (explicit classic loop)
 	need := func(i *int, flag string) (string, bool) {
 		if *i+1 >= len(args) {
@@ -1649,25 +1647,6 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 			if !setBackend(strings.TrimPrefix(a, "--backend=")) {
 				return 2
 			}
-		case a == "--keepalive" || a == "-keepalive":
-			v, ok2 := need(&i, "--keepalive")
-			if !ok2 {
-				return 2
-			}
-			n, kerr := strconv.Atoi(v)
-			if kerr != nil || n < 0 {
-				fmt.Fprintf(stderr, "stone-llama serve: bad --keepalive %q (want >= 0 seconds)\n", v)
-				return 2
-			}
-			keepAlive, keepAliveSet = n, true
-		case strings.HasPrefix(a, "--keepalive="):
-			v := strings.TrimPrefix(a, "--keepalive=")
-			n, kerr := strconv.Atoi(v)
-			if kerr != nil || n < 0 {
-				fmt.Fprintf(stderr, "stone-llama serve: bad --keepalive %q (want >= 0 seconds)\n", v)
-				return 2
-			}
-			keepAlive, keepAliveSet = n, true
 		default:
 			// optional positional: the model to load once the supervised
 			// backend is ready (attach mode ignores it — see note below).
@@ -1698,9 +1677,6 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 	if backend != "" { // flag > env > config file > default ("" = llama)
 		cfg.Backend = backend
 	}
-	if keepAliveSet {
-		cfg.KeepAliveSeconds = keepAlive
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = serve.Serve(ctx, serve.Options{
@@ -1718,7 +1694,6 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		Backend:         cfg.Backend,
 		DeviceBudgetMiB: cfg.DeviceBudgetMiB,
 		LlamaCtx:        cfg.LlamaCtx,
-		KeepAlive:       time.Duration(cfg.KeepAliveSeconds) * time.Second,
 		Stdout:          stdout,
 		Stderr:          stderr,
 	})
