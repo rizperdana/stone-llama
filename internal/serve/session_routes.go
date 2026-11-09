@@ -142,6 +142,9 @@ func (d *daemon) handleSessionKeepalive(w http.ResponseWriter, r *http.Request) 
 // handleChatCompletionsSession wraps proxy to inject session history.
 // We implement as middleware in mux? Instead add route /v1/chat/completions handled here, then proxy.
 func (d *daemon) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	// A client is using the model: cancel any pending hold window so it
+	// restarts when this client goes away.
+	d.markWanted()
 	// parse body
 	var raw map[string]any
 	b, _ := io.ReadAll(r.Body)

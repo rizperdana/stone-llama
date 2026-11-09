@@ -69,11 +69,15 @@ func (d *daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 // fields.
 
 func (d *daemon) keepAliveUntil() string {
-	// "Infinite" for resident model; warm keepalive default 5m => countdown
-	if d.modelLoaded() {
+	// Single source of truth: modelHoldUntil() (the hold deadline).
+	// 0 => no hold active => model in use / resident => "Infinite".
+	if !d.modelLoaded() {
+		return ""
+	}
+	if d.modelHoldUntil() == 0 {
 		return "Infinite"
 	}
-	return ""
+	return time.Unix(d.modelHoldUntil(), 0).UTC().Format(time.RFC3339)
 }
 
 func (d *daemon) currentStatus() Status {
