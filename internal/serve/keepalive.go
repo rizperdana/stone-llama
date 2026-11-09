@@ -8,23 +8,17 @@ import (
 	"time"
 )
 
-// Warm-model keep-alive: after the last client goes away the daemon
-// holds the loaded model for a bounded window (default 90 s) so the
-// next `run` is warm instead of paying a full reload. Expiry unloads
-// through the same /v1/model/unload path `/-/unload` uses, so VRAM is
-// actually freed — nothing leaks. The knob (config keepalive_seconds /
-// --keepalive SECONDS on serve+run):
+// Warm-model keep-alive: after the last client goes away the daemon can
+// hold the loaded model for a bounded window so the next `run` is warm
+// instead of paying a full reload. Expiry unloads through the same
+// /v1/model/unload path `/-/unload` uses, so VRAM is actually freed —
+// nothing leaks. The knob (config keepalive_seconds / --keepalive
+// SECONDS on serve+run):
 //
-//	0   unload immediately (the old behaviour — free the card now)
-//	N   hold for N seconds after the last client exits
-//
-// A resident model holds ~62% of a 4 GB card, so the default is short:
-// it covers "closed it, one more question" without pinning VRAM all day.
-
-// defaultKeepAlive is the hold window when neither flag nor config set
-// it. Short by design: instant warm restart beats reload, but a game
-// (or anything else) must be able to reclaim the VRAM promptly.
-const defaultKeepAlive = 90 * time.Second
+//	0 / absent   unload immediately (the DEFAULT — a held model, ~2.3 GiB
+//	             or ~62% of the reference 4 GiB card, cannot coexist with
+//	             anything else that wants the GPU, e.g. the owner's games)
+//	N            hold for N seconds after the last client exits
 
 // markWanted records that a client is using the model right now: the
 // hold window is cancelled until the client goes away again.

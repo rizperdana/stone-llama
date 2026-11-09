@@ -307,17 +307,16 @@ func (d *daemon) sessionTTL() time.Duration {
 	return time.Hour
 }
 
-// keepAliveDur is the warm-model hold window: opts.KeepAlive when set
-// (0 = immediate-unload policy), else the short default. Zero opts +
-// zero explicit value = the default window, not "no hold".
+// keepAliveDur is the warm-model hold window in effect for this daemon:
+// opts.KeepAlive seconds when configured, else 0. Zero/absent means
+// unload immediately — the default, because a held model (~2.3 GiB, ~62%
+// of the reference 4 GiB card) cannot coexist with anything else that
+// wants the GPU.
 func (d *daemon) keepAliveDur() time.Duration {
 	if d.opts.KeepAlive > 0 {
 		return d.opts.KeepAlive
 	}
-	if d.opts.KeepAliveSet {
-		return 0 // explicit 0: unload immediately
-	}
-	return defaultKeepAlive
+	return 0
 }
 
 // ensure maintenance goroutine started once

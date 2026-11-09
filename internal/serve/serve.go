@@ -104,8 +104,7 @@ type Options struct {
 	probeGPU   func() (doctor.Report, error)
 
 	SessionTTL    time.Duration // idle TTL for sessions, default 1h
-	KeepAlive     time.Duration // warm-model keepalive; default = short hold
-	KeepAliveSet  bool          // explicit --keepalive 0 (immediate unload) vs default
+	KeepAlive     time.Duration // warm-model hold window after the last client exits; 0/absent = unload immediately
 	SessionTTLSet bool
 }
 

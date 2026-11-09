@@ -1714,7 +1714,6 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		DeviceBudgetMiB: cfg.DeviceBudgetMiB,
 		LlamaCtx:        cfg.LlamaCtx,
 		KeepAlive:       time.Duration(cfg.KeepAliveSeconds) * time.Second,
-		KeepAliveSet:    true,
 		Stdout:          stdout,
 		Stderr:          stderr,
 	})
