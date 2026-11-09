@@ -570,7 +570,7 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		(errors.Is(serr, serve.ErrCorruptState) && state.Token != "") {
 		token = state.Token
 	}
-	return streamDaemon(st, token, prof, oneShot, session, stdin, stdout, stderr)
+	return streamDaemon(st, token, prof, oneShot, session, stdin, stdout, stderr, cfg.KeepAliveSeconds)
 }
 
 // streamDirect posts a one-shot or REPL straight to a live upstream (the
@@ -621,10 +621,11 @@ func chatOut(stdout io.Writer) (io.Writer, func()) {
 }
 
 // streamDaemon posts a one-shot or REPL through our daemon's proxy
-// (supervised path). Unloads after /bye; attach mode leaves the upstream
-// model alone. Every completed turn is appended to session and persisted
-// under chats/.
-func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer) int {
+// (supervised path). On exit: keepAliveS > 0 asks the daemon to hold the
+// model for that window; 0 unloads exactly as before; attach mode leaves
+// the upstream model alone. Every completed turn is appended to session
+// and persisted under chats/.
+func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string, session *Session, stdin io.Reader, stdout, stderr io.Writer, keepAliveS int) int {
 	base := "http://" + st.Addr()
 	nCtx := upstreamCtx(base, token) // context window, once per run
 	out, flush := chatOut(stdout)    // ollama-style markdown on a TTY only
@@ -656,7 +657,11 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 	loadUnload := st.Mode != "attach"
 	code := repl(ask, oneShot, sessionPrompts(session), rc, stdin, stdout, stderr)
 	if loadUnload {
-		if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
+		if keepAliveS > 0 {
+			if err := serve.Hold(context.Background(), config.DataDir(), keepAliveS); err == nil {
+				fmt.Fprintf(stdout, "holding for %ds (keep-alive).\n", keepAliveS)
+			}
+		} else if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
 			fmt.Fprintln(stdout, "unloaded.")
 		}
 	}
