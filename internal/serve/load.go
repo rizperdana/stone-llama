@@ -822,6 +822,36 @@ func Unload(ctx context.Context, dataDir string) error {
 	return fmt.Errorf("%s", envelopeMessage(b, resp.StatusCode))
 }
 
+// Hold is the run-side client for /-/hold: ask the daemon to keep the
+// loaded model for seconds after this client goes away (seconds <= 0 is
+// an immediate /-/unload).
+func Hold(ctx context.Context, dataDir string, seconds int) error {
+	st, err := ReadState(dataDir)
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(map[string]int{"seconds": seconds})
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+st.Addr()+holdPath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if st.Token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+st.Token)
+	}
+	resp, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+	return fmt.Errorf("%s", envelopeMessage(b, resp.StatusCode))
+}
+
 // envelopeMessage pulls {"error":{"message"}} out of an error body.
 func envelopeMessage(b []byte, code int) string {
 	var env struct {
