@@ -65,6 +65,7 @@ const (
 	statusPath      = "/-/status"
 	loadPath        = "/-/load"
 	unloadPath      = "/-/unload"
+	holdPath        = "/-/hold"
 	defaultReady    = 120 * time.Second
 	defaultRetry    = time.Second
 	killGrace       = 5 * time.Second
@@ -905,6 +906,7 @@ func (d *daemon) mux() http.Handler {
 	mux.HandleFunc(statusPath, d.handleStatus)
 	mux.HandleFunc(loadPath, d.handleLoad)
 	mux.HandleFunc(unloadPath, d.handleUnload)
+	mux.HandleFunc(holdPath, d.handleHold)
 
 	// Ollama compatibility shim (phase 4): literal patterns, longest
 	// match wins over the "/" catch-all — registration order irrelevant.
@@ -948,7 +950,7 @@ func (d *daemon) mux() http.Handler {
 // authed enforces downstream access, gates first: Host and Origin must
 // name loopback (421/403 otherwise — pure header checks; Go's ServeMux
 // never routes on Host), healthz stays open (our own probe), the
-// control routes /-/status, /-/load, /-/unload always demand the state
+// control routes /-/status, /-/load, /-/unload, /-/hold always demand the state
 // token, and any other route needs the token only when the bind is not
 // loopback (§7) — whatever arrives is stripped by the Director.
 func (d *daemon) authed(next http.Handler) http.Handler {
@@ -960,7 +962,7 @@ func (d *daemon) authed(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		control := r.URL.Path == statusPath || r.URL.Path == loadPath || r.URL.Path == unloadPath
+		control := r.URL.Path == statusPath || r.URL.Path == loadPath || r.URL.Path == unloadPath || r.URL.Path == holdPath
 		if d.needToken || control {
 			got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
 			got = strings.TrimSpace(got)

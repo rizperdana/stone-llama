@@ -2,7 +2,9 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +28,39 @@ func (d *daemon) markWanted() {
 	d.mu.Lock()
 	d.holdUntil = time.Time{}
 	d.mu.Unlock()
+}
+
+// handleHold serves POST /-/hold {"seconds": N}: ask the daemon to hold
+// the loaded model N seconds after the last client goes away. N <= 0
+// behaves exactly like /-/unload (immediate). With N > 0 a live foreign
+// GPU contender refuses the hold and unloads instead — the fail-safe
+// direction is always "free the card". Control-route authed (state
+// token) like /-/unload.
+func (d *daemon) handleHold(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, "use POST", "method_not_allowed")
+		return
+	}
+	var req struct {
+		Seconds int `json:"seconds"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req)
+	if req.Seconds <= 0 {
+		d.handleUnload(w, r)
+		return
+	}
+	if ce := d.contention(); ce != nil {
+		d.handleUnload(w, r)
+		fmt.Fprintf(d.opts.Stderr, "stone-llama: hold refused — %v\n", ce)
+		return
+	}
+	d.mu.Lock()
+	d.holdUntil = d.now().Add(time.Duration(req.Seconds) * time.Second)
+	until := d.holdUntil
+	d.mu.Unlock()
+	d.holdWake(until)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = fmt.Fprintf(w, "{\"hold_until\":%d}\n", until.Unix())
 }
 
 // startHold begins the countdown (client went away). A non-positive
