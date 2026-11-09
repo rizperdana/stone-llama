@@ -112,7 +112,10 @@ func (d *daemon) holdExpiry(ctx context.Context) bool {
 
 // keepAliveMaintenance runs the expiry loop for the daemon's lifetime
 // (started by Serve next to sessionMaintenance). startHold nudges
-// holdTick; the loop waits out the window and unloads on expiry.
+// holdTick; the loop waits out the window and unloads on expiry. Each
+// wake re-checks contention: a foreign GPU holder appearing mid-hold
+// (the owner's game) unloads immediately instead of waiting the window
+// out — the card must be reclaimable while we merely hold.
 func (d *daemon) keepAliveMaintenance(ctx context.Context) {
 	for {
 		select {
@@ -121,6 +124,11 @@ func (d *daemon) keepAliveMaintenance(ctx context.Context) {
 		case <-d.holdTick:
 			for {
 				if !d.modelLoaded() || d.modelHoldUntil() == 0 {
+					break
+				}
+				if ce := d.contention(); ce != nil {
+					fmt.Fprintf(d.opts.Stderr, "stone-llama: hold cut short — %v\n", ce)
+					d.expireUnload()
 					break
 				}
 				if d.holdExpiry(ctx) {
