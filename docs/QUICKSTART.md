@@ -124,6 +124,18 @@ window (token count from the upstream's `/v1/token/encode` when reachable, a
 the file too**, deliberately: context overflow means they could not have been
 replayed anyway.
 
+`run --keepalive N` (config `keepalive_seconds`, e.g. `"keepalive_seconds": 300` in
+`config.json`) holds the loaded model for N seconds after `run` exits, so the next `run`
+skips the reload — with `--keepalive 300` the exit line is
+`holding for 300s (keep-alive).` instead of `unloaded.` Measured on the reference card:
+11.8 s to a warm-again run before, 0.844 s with the model still resident (ollama's warm
+second run measures 0.37 s — a useful restart, not ollama-warm). `0` is the **default**
+and unloads immediately — the right setting whenever something else wants the GPU, since
+a held model is ~2.3 GiB, about 62 % of the 4 GB card. A request restarts the countdown;
+if another process is using the GPU the hold is refused and the model unloads instead,
+and a foreign GPU holder appearing during a hold cuts it short. `ps` prints the deadline
+on its `until` line. Attach mode never holds — the upstream owns that model.
+
 `run` auto-tunes one profile line in the REPL (nothing extra in `-p` output):
 
 ```console

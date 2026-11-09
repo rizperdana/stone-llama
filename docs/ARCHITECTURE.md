@@ -329,7 +329,8 @@ captures that *are* live since the plan).
   "engine_env": { "CUDA_MODULE_LOADING": "LAZY" },
   "backend": "llama",
   "backend_device_budget_mib": 0,
-  "llama_ctx": 8192
+  "llama_ctx": 8192,
+  "keepalive_seconds": 0
 }
 ```
 `llama_ctx` is the context window (tokens) for the `llama` backend: `0`/absent =
@@ -337,6 +338,9 @@ the measured 8192 default, validated **512–1048576**, flowed to the child as `
 (§7b). A larger value widens long-prompt capacity but measurably slows decode and
 must fit VRAM — the pinned card-sized default exists precisely because an
 over-large context collapses decode on a 4 GB card (§7a).
+
+`keepalive_seconds` is the warm-model hold window (§7d): `0`/absent = unload immediately
+when the last client exits (the default), `N` = hold N seconds.
 
 **Backend selection.** `Backend` (`internal/serve/backend.go`) is the seam between
 the supervision loop and the engine it supervises: `Prepare` owns everything that
@@ -410,9 +414,39 @@ collapse, `warning: model VRAM collapsed (weights evicted) — decode will be
 slow; restart the daemon`. The llama backend also records the pinned ctx in
 status (was always 0), so `ps`/`/-/status` show the context actually in use.
 
+### 7d. Warm-model keep-alive — client-driven hold window
+
+Re-running `run` against a daemon that has already unloaded the model pays a full load;
+the hold window keeps it resident across invocations instead. The knob is
+`keepalive_seconds` (config) / `run --keepalive N` (flag wins). **Default `0` unloads
+immediately** — behaviour is unchanged unless opted in, because a held model is
+~2.3 GiB, ~62 % of the reference 4 GB card, and cannot coexist with a game.
+
+- **Client-driven.** The daemon cannot observe "the last client went away", so the
+  client owns the window: on exit `run` POSTs `/-/hold {"seconds": N}`
+  (`internal/serve/load.go` `Hold`), a control route demanding the state token exactly
+  like `/-/unload`; `N <= 0` is an immediate unload. There is deliberately **no
+  `serve --keepalive` flag and no daemon-side window plumbing** — a server-side timer
+  has no signal for "the client is gone" and would pin the card for nothing.
+- **Expiry frees VRAM.** `keepAliveMaintenance` (`internal/serve/keepalive.go`) waits
+  out the window, then unloads through the same backend unload path `/-/unload` uses —
+  the card is genuinely released, nothing leaks.
+- **The countdown restarts on use.** A chat request entering the proxy cancels a
+  pending window (`markWanted`); the next `/-/hold` re-arms it. Expiry never unloads a
+  model a client is actively using.
+- **Contention, fail-safe = free the card.** A live foreign GPU contender refuses the
+  hold and unloads instead; one appearing *during* a hold cuts it short and unloads
+  immediately rather than waiting the window out.
+- **`until` semantics** (`/-/status`, `ps`; single source `modelHoldUntil`): empty when
+  no model is loaded, `Infinite` when a model is resident with no hold pending (a
+  client is using it), else the RFC3339 deadline of the hold.
+- Measured on the reference card: warm-again `run` cost **11.8 s** before the window
+  existed, **0.844 s** with the model still resident; ollama's warm second run measures
+  0.37 s, so this is a useful restart, not ollama-warm.
+
 **Precedence:** flag > env > file > default. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `STONE_LLAMA_BACKEND`, `HF_TOKEN`.
 
-**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log). Downstream, two header gates run before any handler: `Host` must name loopback or this daemon's own bind host (else **421** `invalid_request`, message `loopback only` — DNS-rebinding defence) and `Origin`, when present, must name that same accept-set (else **403** `browser_origin_forbidden`, message `cross-origin request refused`); an absent `Origin` (curl/CLI) passes. `/healthz` is bearer-exempt but not gate-exempt. The control routes `/-/status`, `/-/load`, `/-/unload` **always** require the daemon state token (`Authorization: Bearer`, constant-time compare → else **401** `unauthorized`, message `bearer token required`), including on a loopback bind. Every other route — the `/v1/*` proxy and the `/api/*` Ollama shim below — requires the token only when the configured bind host is not loopback; `/healthz` never does.
+**Auth:** proxy injects TabbyAPI key upstream (read from file, never argv/log). Downstream, two header gates run before any handler: `Host` must name loopback or this daemon's own bind host (else **421** `invalid_request`, message `loopback only` — DNS-rebinding defence) and `Origin`, when present, must name that same accept-set (else **403** `browser_origin_forbidden`, message `cross-origin request refused`); an absent `Origin` (curl/CLI) passes. `/healthz` is bearer-exempt but not gate-exempt. The control routes `/-/status`, `/-/load`, `/-/unload`, `/-/hold` **always** require the daemon state token (`Authorization: Bearer`, constant-time compare → else **401** `unauthorized`, message `bearer token required`), including on a loopback bind. Every other route — the `/v1/*` proxy and the `/api/*` Ollama shim below — requires the token only when the configured bind host is not loopback; `/healthz` never does.
 
 **Tool calling:** a server concern. stone-llama sets the format automatically and reports it; the OpenAI-compatible surface exposes whatever the loaded model advertises, unchanged, to any client or gateway.
 

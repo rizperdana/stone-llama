@@ -35,9 +35,9 @@ consent-gated `setup` step (≈ 1 GB announced before you confirm):
 | `rm <model>` | remove a model (import symlinks: link only, target untouched) |
 | `login` | HuggingFace token for gated repos (stored 0600) |
 | `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
-| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API + server-side session memory (`/v1/sessions*`, session-aware `/v1/chat/completions` via `"session"` field, keepalive, idle TTL sweep); attach = existing TabbyAPI upstream; the model positional is ignored in attach mode |
+| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API + server-side session memory (`/v1/sessions*`, session-aware `/v1/chat/completions` via `"session"` field, idle TTL sweep) and the client-driven warm-model hold (`POST /-/hold`, requested by `run --keepalive N`); attach = existing TabbyAPI upstream; the model positional is ignored in attach mode |
 | `ps` / `stop` | loaded model + sampled VRAM peak **and current** `vram now:` of the supervised child; on the llama backend `ps` adds a `context:` line for the pinned context (raise with config `llama_ctx`) and, if the child's resident VRAM collapsed below a quarter of its healthiest sample, a `warning: model VRAM collapsed (weights evicted) — decode will be slow; restart the daemon` line. All VRAM lines are omitted in attach mode — no child to sample. `ps` also prints an `until` (keepalive expiry) line. `stop` stops the daemon. Idle server-side sessions are swept on a TTL (default 1h) |
-| `run <model> [--continue] [--history] [--backend tabby\|llama] [-p "prompt"]` | streaming CLI chat with persistent history — a plain run starts a fresh conversation, `--continue` explicitly resumes the newest saved session (by file mtime) for the model, `--history` prints that session's turns as JSON and exits without touching the backend. Sessions are saved to `chats/<model>/` in the state dir; stone-llama's session persistence extends across invocations in a way ollama's interactive REPL does not. REPL slash commands: `/help /bye /clear /list /ps /sessions /show /set /rename`; on resume the system prompt is restored; named sessions; recap compaction on context overflow |
+| `run <model> [--continue] [--history] [--keepalive N] [--backend tabby\|llama] [-p "prompt"]` | streaming CLI chat with persistent history — a plain run starts a fresh conversation, `--continue` explicitly resumes the newest saved session (by file mtime) for the model, `--history` prints that session's turns as JSON and exits without touching the backend, `--keepalive N` holds the loaded model in VRAM for N seconds after exit so the next run starts warm (default `0` unloads immediately). Sessions are saved to `chats/<model>/` in the state dir; stone-llama's session persistence extends across invocations in a way ollama's interactive REPL does not. REPL slash commands: `/help /bye /clear /list /ps /sessions /show /set /rename`; on resume the system prompt is restored; named sessions; recap compaction on context overflow |
 | `version` | version |
 | `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
 | `uninstall [--dry-run] [--keep-models] [--yes]` | remove the install (weights optional to keep) |
@@ -52,6 +52,15 @@ no speedup is claimed;
 `run --draft-mode` parses and validates the value only — it cannot reach an already-
 running daemon and has no effect. Config `engine_env` adds extra environment for the
 supervised backend child (parent env preserved; config keys win).
+
+Keep-alive is opt-in and it costs VRAM: `run --keepalive N` (config `keepalive_seconds`)
+holds the loaded model N seconds after the last client exits, so the next `run` skips the
+reload — a held model is ~2.3 GiB, about 62 % of the reference 4 GB card, and cannot
+coexist with a game or anything else that wants the GPU. Default `0` unloads immediately:
+opt in for instant restarts, leave it at `0` to keep the card free. A request restarts the
+countdown; a foreign GPU contender refuses the hold and unloads instead, and one appearing
+mid-hold cuts it short. `ps` / `/-/status` report the deadline on their `until` line
+(`Infinite` while a loaded model is in use). See `docs/ARCHITECTURE.md` §7d.
 
 On the `llama` backend, the GGUF child is spawned with **pinned flags** —
 `-c 8192 -fa on -np 2` (measured 2026-11-01 on the reference RTX 3050 Laptop 4 GB):
