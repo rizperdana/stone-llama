@@ -846,6 +846,15 @@ func Hold(ctx context.Context, dataDir string, seconds int) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		// hold_until 0 = the daemon declined to hold (llama backend or
+		// contention): surface the daemon's note instead of claiming a hold.
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+		var out struct {
+			Note string `json:"note"`
+		}
+		if json.Unmarshal(b, &out) == nil && out.Note != "" {
+			return fmt.Errorf("%s", out.Note)
+		}
 		return nil
 	}
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))

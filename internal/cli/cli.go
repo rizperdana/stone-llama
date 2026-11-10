@@ -660,6 +660,8 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 		if keepAliveS > 0 {
 			if err := serve.Hold(context.Background(), config.DataDir(), keepAliveS); err == nil {
 				fmt.Fprintf(stdout, "holding for %ds (keep-alive).\n", keepAliveS)
+			} else {
+				fmt.Fprintf(stderr, "stone-llama: %v\n", err)
 			}
 		} else if err := serve.Unload(context.Background(), config.DataDir()); err == nil {
 			fmt.Fprintln(stdout, "unloaded.")

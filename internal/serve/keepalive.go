@@ -39,7 +39,9 @@ func (d *daemon) markWanted() {
 // the loaded model N seconds after the last client goes away. N <= 0
 // behaves exactly like /-/unload (immediate). With N > 0 a live foreign
 // GPU contender refuses the hold and unloads instead — the fail-safe
-// direction is always "free the card". Control-route authed (state
+// direction is always "free the card". On the llama backend the model
+// is resident for the process lifetime (no unload endpoint), so no hold
+// is recorded and the answer says so. Control-route authed (state
 // token) like /-/unload.
 func (d *daemon) handleHold(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -52,6 +54,15 @@ func (d *daemon) handleHold(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req)
 	if req.Seconds <= 0 {
 		d.handleUnload(w, r)
+		return
+	}
+	if _, isLlama := d.be.(llamaBackend); isLlama {
+		// llama-server's model is resident for the process lifetime (no
+		// /v1/model/unload — expiry would 404 and hold a deadline the
+		// backend can never deliver). Recording a hold would be a lie:
+		// accept the request, hold nothing, say so.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"hold_until":0,"note":"llama backend: the model is resident for the server process lifetime; keep-alive cannot unload it"}`+"\n")
 		return
 	}
 	if ce := d.contention(); ce != nil {
