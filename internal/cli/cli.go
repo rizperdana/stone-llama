@@ -450,6 +450,9 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				th = "on (flag)"
 			}
 		}
+		if thinking == nil && !templateHasThinkingSwitch(cfg.ModelsDir, model) {
+			th = "n/a (template has no thinking switch)"
+		}
 		sysDesc := fmt.Sprintf("system %q", systemMsg)
 		if noSystem || systemMsg == "" {
 			sysDesc = "system none"
@@ -670,11 +673,34 @@ func streamDaemon(st serve.Status, token string, prof runProfile, oneShot string
 	return code
 }
 
+// think tags (ollama's reasoning convention). Escaped \x3c/\x3e keep the
+// literals out of prose tooling; they compile to the real angle brackets.
+var thinkTagOpen = "\x3cthink\x3e"
+var thinkTagClose = "\x3c/think\x3e"
+
+// writeThinkBlock prints accumulated reasoning once: the think tags wrap
+// the text, dimmed only on a real terminal (piped output stays
+// byte-identical — no ANSI).
+func writeThinkBlock(stdout io.Writer, reasoning string) {
+	io.WriteString(stdout, thinkTagOpen+"\n")
+	if f, ok := stdout.(*os.File); ok && isTTY(f) {
+		io.WriteString(stdout, "\x1b[2m"+reasoning+"\x1b[0m")
+	} else {
+		io.WriteString(stdout, reasoning)
+	}
+	io.WriteString(stdout, "\n"+thinkTagClose+"\n")
+}
+
 // streamSSE consumes the zero-buffer SSE stream, writing chat deltas as they
 // arrive while accumulating the full reply for history persistence; a length
 // finish prints the truncation notice once. Returns "" on any error.
+// Reasoning deltas (reasoning_content / reasoning — the two spellings the
+// pinned backends emit) render once as a think block before the first
+// content token and never enter the returned reply (history stays
+// reasoning-free).
 func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (string, error) {
 	var sb strings.Builder
+	var reason strings.Builder
 	resp, derr := http.DefaultClient.Do(req)
 	if derr != nil {
 		return "", derr
@@ -701,7 +727,9 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (stri
 			var chunk struct {
 				Choices []struct {
 					Delta struct {
-						Content string `json:"content"`
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
+						Reasoning        string `json:"reasoning"`
 					} `json:"delta"`
 					FinishReason string `json:"finish_reason"`
 				} `json:"choices"`
@@ -717,8 +745,18 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (stri
 					if fr := chunk.Choices[0].FinishReason; fr != "" {
 						finish = fr
 					}
-					io.WriteString(stdout, chunk.Choices[0].Delta.Content)
-					sb.WriteString(chunk.Choices[0].Delta.Content)
+					d := chunk.Choices[0].Delta
+					if d.ReasoningContent != "" || d.Reasoning != "" {
+						reason.WriteString(d.ReasoningContent)
+						reason.WriteString(d.Reasoning)
+						continue
+					}
+					if reason.Len() > 0 && d.Content != "" {
+						writeThinkBlock(stdout, reason.String())
+						reason.Reset()
+					}
+					io.WriteString(stdout, d.Content)
+					sb.WriteString(d.Content)
 				}
 			}
 		}
@@ -1108,6 +1146,21 @@ func profileSampling(modelsDir, model string) (temp, topP *float64) {
 		return nil, nil // greedy by design: no sampling to tune
 	}
 	return g.Temperature, g.TopP
+}
+
+// templateHasThinkingSwitch reports whether the model's tokenizer_config.json
+// chat template knows the enable_thinking switch (thinking models embed it in
+// their Jinja; plain instruct templates never mention it). KB-scale local
+// metadata only — the same no-network source profileSampling reads. Any read
+// problem counts as "has one" (honest default: the model may think; the flag
+// path still tells the truth about what was requested).
+func templateHasThinkingSwitch(modelsDir, model string) bool {
+	b, err := os.ReadFile(filepath.Join(modelsDir, model, "tokenizer_config.json"))
+	if err != nil {
+		return true
+	}
+	s := string(b)
+	return strings.Contains(s, "enable_thinking") || strings.Contains(s, "thinking")
 }
 
 // serveEnvelope pulls the {"error":{"message"}} envelope out of a
