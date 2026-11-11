@@ -118,7 +118,12 @@ func chatBody(model string, msgs []map[string]string, p runProfile) []byte {
 		body["top_p"] = *p.TopP
 	}
 	if p.Thinking != nil {
+		// Both pinned shapes carry the bool (same reasoning as
+		// serve's ollama path): flat enable_thinking is TabbyAPI's,
+		// chat_template_kwargs.enable_thinking is the ONLY one
+		// llama-server reads (llama.cpp server-common.cpp:1074-1088).
 		body["enable_thinking"] = *p.Thinking
+		body["chat_template_kwargs"] = map[string]any{"enable_thinking": *p.Thinking}
 	}
 	b, _ := json.Marshal(body)
 	return b
