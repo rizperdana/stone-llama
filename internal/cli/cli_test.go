@@ -2050,3 +2050,203 @@ func TestRunPipedOutputHasNoANSI(t *testing.T) {
 		}
 	}
 }
+
+// streamSSETestSSE is a table-driven SSE feed: one delta per line, no
+// network (httptest server stands in for the upstream).
+func streamSSEFeed(t *testing.T, deltas []string) (string, string, error) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		fl := w.(http.Flusher)
+		for _, d := range deltas {
+			io.WriteString(w, "data: "+d+"\n\n")
+			fl.Flush()
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	reply, err := streamSSE(req, 2048, &out, &errb)
+	return out.String(), reply, err
+}
+
+// Reasoning-only chunks render once as a think block; the persisted reply
+// is clean — no think tags, no reasoning text, never silence-then-garbage.
+func TestStreamSSEReasoningOnlyRendersBlockAndCleanReply(t *testing.T) {
+	deltas := []string{
+		`{"choices":[{"delta":{"reasoning_content":"thinking "}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"hard"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	out, reply, err := streamSSEFeed(t, deltas)
+	if err != nil {
+		t.Fatalf("streamSSE: %v", err)
+	}
+	if !strings.Contains(out, "\x3c"+"think\x3e") {
+		t.Errorf("no think block rendered: %q", out)
+	}
+	if !strings.Contains(out, "thinking hard") {
+		t.Errorf("reasoning text missing from the block: %q", out)
+	}
+	if strings.Contains(reply, "\x3c"+"think\x3e") || strings.Contains(reply, "thinking hard") {
+		t.Errorf("reply must stay reasoning-free: %q", reply)
+	}
+}
+
+// Mixed interleaved chunks accumulate both builders separately: each
+// reasoning run renders as its own block at the next content token (stream
+// order — nothing discarded), content streams as today, never swapped.
+func TestStreamSSEMixedChunksSeparateBuilders(t *testing.T) {
+	deltas := []string{
+		`{"choices":[{"delta":{"reasoning_content":"hmm "}}]}`,
+		`{"choices":[{"delta":{"content":"4"}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"deep"}}]}`,
+		`{"choices":[{"delta":{"content":"2"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	out, reply, err := streamSSEFeed(t, deltas)
+	if err != nil {
+		t.Fatalf("streamSSE: %v", err)
+	}
+	// both reasoning runs rendered, each inside think tags
+	if !strings.Contains(out, "hmm ") || !strings.Contains(out, "deep") {
+		t.Errorf("reasoning chunks missing from blocks: %q", out)
+	}
+	if strings.Count(out, thinkTagOpen) != 2 || strings.Count(out, thinkTagClose) != 2 {
+		t.Errorf("want one block per reasoning run: %q", out)
+	}
+	if reply != "42" {
+		t.Errorf("reply = %q, want clean content 42 (no reasoning)", reply)
+	}
+	// stream order: first block before "4", second block between "4" and "2"
+	if strings.Index(out, "hmm ") > strings.Index(out, "4") ||
+		strings.LastIndex(out, "deep") > strings.LastIndex(out, "2") {
+		t.Errorf("blocks must render at the next content token: %q", out)
+	}
+}
+
+// llama-server's auto reasoning parser emits delta.reasoning (not
+// reasoning_content); both spellings accumulate into the same block.
+func TestStreamSSEReasoningSpellingRendersToo(t *testing.T) {
+	deltas := []string{
+		`{"choices":[{"delta":{"reasoning":"via reasoning field"}}]}`,
+		`{"choices":[{"delta":{"content":"answer"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}
+	out, reply, err := streamSSEFeed(t, deltas)
+	if err != nil {
+		t.Fatalf("streamSSE: %v", err)
+	}
+	if !strings.Contains(out, "via reasoning field") {
+		t.Errorf("reasoning spelling not rendered: %q", out)
+	}
+	if reply != "answer" {
+		t.Errorf("reply = %q, want the clean content", reply)
+	}
+}
+
+// [DONE] handling unchanged: the same newline + truncation-notice contract
+// (length finish prints once on stderr; stop stays silent).
+func TestStreamSSEDoneHandlingUnchanged(t *testing.T) {
+	mk := func(finish string) []string {
+		return []string{
+			`{"choices":[{"delta":{"content":"hi"}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"` + finish + `"}]}`,
+		}
+	}
+	out, reply, err := streamSSEFeed(t, mk("stop"))
+	if err != nil || reply != "hi" || !strings.HasSuffix(out, "\n") {
+		t.Errorf("stop: reply/out = %q/%q (err %v), want hi + trailing newline", reply, out, err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		fl := w.(http.Flusher)
+		for _, d := range mk("length") {
+			io.WriteString(w, "data: "+d+"\n\n")
+			fl.Flush()
+		}
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", nil)
+	var out2, errb bytes.Buffer
+	if _, err := streamSSE(req, 8, &out2, &errb); err != nil {
+		t.Fatalf("length streamSSE: %v", err)
+	}
+	if !strings.Contains(errb.String(), "output truncated at --max-tokens 8") {
+		t.Errorf("length truncation notice missing: %q", errb.String())
+	}
+}
+
+// The persisted session turn carries the assistant's answer WITHOUT the
+// think block: reasoning must never replay into later prompts.
+func TestRunSessionTurnHasNoReasoning(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateConfig(t)
+	t.Setenv("STONE_LLAMA_PORT", freeLocalPort(t))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/model", func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"id":"m"}`)
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		fl := w.(http.Flusher)
+		io.WriteString(w, `data: {"choices":[{"delta":{"reasoning_content":"scratchpad"}}]}`+"\n\n")
+		fl.Flush()
+		io.WriteString(w, `data: {"choices":[{"delta":{"content":"clean answer"}}]}`+"\n\n")
+		fl.Flush()
+		io.WriteString(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fl.Flush()
+		io.WriteString(w, "data: [DONE]\n\n")
+		fl.Flush()
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	t.Setenv("STONE_LLAMA_UPSTREAM", ts.URL)
+
+	code, out, errb := run("run", "m", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("run: code = %d, out = %q, err = %q", code, out, errb)
+	}
+	ids, err := listSessionIDs("m")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("session files = %v (err %v), want one", ids, err)
+	}
+	s, err := loadSession("m", ids[0], io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Turns) != 1 || s.Turns[0].Assistant != "clean answer" {
+		t.Errorf("persisted turn = %+v, want the clean answer only", s.Turns)
+	}
+	if strings.Contains(s.Turns[0].Assistant, "\x3c"+"think\x3e") || strings.Contains(s.Turns[0].Assistant, "scratchpad") {
+		t.Errorf("persisted turn carries reasoning: %q", s.Turns[0].Assistant)
+	}
+}
+
+// The profile line's thinking clause is truthful: unset flag on a template
+// with no thinking switch reads "n/a", not "model default".
+func TestRunProfileLineThinkingTruthful(t *testing.T) {
+	dir := t.TempDir()
+	tk := filepath.Join(dir, "models", "instruct-model", "tokenizer_config.json")
+	if err := os.MkdirAll(filepath.Dir(tk), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tk, []byte(`{"chat_template":"{% for m in messages %}{{ m.content }}{% endfor %}"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if templateHasThinkingSwitch(dir+"/models", "instruct-model") {
+		t.Error("plain instruct template must read as no thinking switch")
+	}
+	if !templateHasThinkingSwitch(dir+"/models", "missing-model") {
+		t.Error("unreadable metadata must default to 'has one' (honest default)")
+	}
+}

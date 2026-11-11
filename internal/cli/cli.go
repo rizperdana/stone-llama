@@ -718,6 +718,12 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (stri
 		if strings.HasPrefix(trimmed, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 			if payload == "[DONE]" {
+				if reason.Len() > 0 {
+					// reasoning-only stream: nothing else will
+					// arrive — render now or never.
+					writeThinkBlock(stdout, reason.String())
+					reason.Reset()
+				}
 				fmt.Fprintln(stdout)
 				if finish == "length" {
 					fmt.Fprintf(stderr, "stone-llama: output truncated at --max-tokens %d (use --max-tokens 0 for unbounded)\n", maxTokens)
@@ -762,6 +768,12 @@ func streamSSE(req *http.Request, maxTokens int, stdout, stderr io.Writer) (stri
 		}
 		if rerr != nil {
 			if rerr == io.EOF {
+				if reason.Len() > 0 {
+					// server ended without [DONE] — same rule:
+					// render pending reasoning, never discard.
+					writeThinkBlock(stdout, reason.String())
+					reason.Reset()
+				}
 				return sb.String(), nil
 			}
 			return "", rerr
