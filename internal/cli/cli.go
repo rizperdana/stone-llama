@@ -684,11 +684,14 @@ var thinkTagOpen = "\x3cthink\x3e"
 var thinkTagClose = "\x3c/think\x3e"
 
 // writeThinkBlock prints accumulated reasoning once: the think tags wrap
-// the text, dimmed only on a real terminal (piped output stays
-// byte-identical — no ANSI).
+// the text, dimmed only when the PROCESS stdout is a real terminal (piped
+// output stays byte-identical — no ANSI; a bytes.Buffer in tests never
+// claims TTY). The block rides the same writer the content deltas use, so
+// on a TTY it passes through the markdown renderer's Write — the tags and
+// the dim escape are plain text lines, never markdown constructs.
 func writeThinkBlock(stdout io.Writer, reasoning string) {
 	io.WriteString(stdout, thinkTagOpen+"\n")
-	if f, ok := stdout.(*os.File); ok && isTTY(f) {
+	if isTTY(os.Stdout) {
 		io.WriteString(stdout, "\x1b[2m"+reasoning+"\x1b[0m")
 	} else {
 		io.WriteString(stdout, reasoning)
