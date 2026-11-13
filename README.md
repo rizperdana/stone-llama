@@ -1,7 +1,3 @@
-<div align="center">
-  <img src="assets/stone-llama.png" alt="stone-llama icon" width="160">
-</div>
-
 # stone-llama
 
 **Ollama-style CLI + local model server for ExLlamaV3 + TabbyAPI** — one small Go
@@ -10,24 +6,10 @@ OpenAI-compatible API.
 
 **[Website](https://rizperdana.github.io/stone-llama/) · [Install](#install) · [Quickstart](docs/QUICKSTART.md)**
 
-Three things it does that a stock config cannot:
-
-- **VRAM-aware autofit** — computes a safe context window and cache mode from your GPU
-  and the model's own `config.json`, prints the arithmetic, warns when the margin is thin.
-- **Pre-download fit gate** — `fit` and `pull` check architecture, EXL3 format and VRAM fit
-  from metadata (KB of config, plus at most ~16 MiB of safetensors headers) *before any
-  gigabyte moves*, and refuse with the numbers.
-- **Auto-tuned, terse chat** — `run` builds a template-correct, bounded profile from the
-  model's own metadata (sampling, thinking, one-line default system message). Every
-  default is a flag: `--max-tokens` (0 = unbounded), `--temperature`, `--top-p`,
-  `--system` / `--no-system`, `--thinking` / `--no-thinking`.
-
-**Not a better Ollama.** exllamav3 — the engine stone-llama wraps — has no CPU, AMD/ROCm
-or Apple path. On CPU/AMD/Apple, use Ollama with GGUF; see [Platform support](#platform-support).
-
 ## Install
 
-NVIDIA GPU · Linux x86_64 · driver ≥ 570 · Go ≥ 1.24 to build.
+NVIDIA GPU · Linux x86_64 · driver ≥ 570 · Go ≥ 1.24 to build. The binary is
+static — Go is only needed to build.
 
 ```bash
 git clone https://github.com/rizperdana/stone-llama
@@ -36,24 +18,82 @@ go build -o stone-llama ./cmd/stone-llama
 install -Dm755 stone-llama ~/.local/bin/stone-llama
 ```
 
-The binary is static — Go is only needed to build. Prerequisites, the one-line
-installer, verification, uninstall, and the consent-gated `setup` step (≈ 1 GB
-announced before you confirm): [docs/INSTALLATION.md](docs/INSTALLATION.md).
+Prerequisites, the one-line installer, verification, uninstall, and the
+consent-gated `setup` step (≈ 1 GB announced before you confirm):
+[docs/INSTALLATION.md](docs/INSTALLATION.md).
 
-## Quickstart
+## Commands
 
-```bash
-stone-llama doctor                        # GPU + driver check, picks cu12/cu13 — no downloads
-stone-llama setup                         # reuse a verified runtime if present (0 B), else provision Python/torch; sizes announced first
-stone-llama fit async0x42/Qwen3-1.7B-exl3_4.0bpw    # gate + tok/s estimate from HF metadata — no download
-stone-llama pull async0x42/Qwen3-1.7B-exl3_4.0bpw   # gate runs first, then resumable download
-stone-llama run Qwen3-1.7B-exl3_4.0bpw    # CLI chat (prints the autofit decision)
-stone-llama serve                         # OpenAI-compatible API on 127.0.0.1:5111
-```
+| Command | Purpose |
+|---|---|
+| `doctor` | GPU/driver/runtime verdict, no changes made |
+| `fit <repo>` | gate + predicted tok/s `[est]` from metadata — **no model download** |
+| `list [--estimate]` | models with size, quant, gate verdict, source |
+| `rank --collection <owner/name>` | rank a HF collection by fit + predicted tok/s `[est]` |
+| `pull <repo[@branch][:quant>] [--force] [--quiet] [--yes]` | gate → consent → resumable download, sha256-verified |
+| `import <dir>` | symlink an existing model dir in (zero copy) |
+| `rm <model>` | remove a model (import symlinks: link only, target untouched) |
+| `login` | HuggingFace token for gated repos (stored 0600) |
+| `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
+| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API + server-side session memory (`/v1/sessions*`, session-aware `/v1/chat/completions` via `"session"` field, idle TTL sweep) and the client-driven warm-model hold (`POST /-/hold`, requested by `run --keepalive N`); attach = existing TabbyAPI upstream; the model positional is ignored in attach mode |
+| `ps` / `stop` | loaded model + sampled VRAM peak **and current** `vram now:` of the supervised child; on the llama backend `ps` adds a `context:` line for the pinned context (raise with config `llama_ctx`) and, if the child's resident VRAM collapsed below a quarter of its healthiest sample, a `warning: model VRAM collapsed (weights evicted) — decode will be slow; restart the daemon` line. All VRAM lines are omitted in attach mode — no child to sample. `ps` also prints an `until` (keepalive expiry) line. `stop` stops the daemon. Idle server-side sessions are swept on a TTL (default 1h) |
+| `run <model> [--continue] [--history] [--keepalive N] [--backend tabby\|llama] [-p "prompt"]` | streaming CLI chat with persistent history — a plain run starts a fresh conversation, `--continue` explicitly resumes the newest saved session (by file mtime) for the model, `--history` prints that session's turns as JSON and exits without touching the backend, `--keepalive N` holds the loaded model in VRAM for N seconds after exit so the next run starts warm (default `0` unloads immediately). Sessions are saved to `chats/<model>/` in the state dir; stone-llama's session persistence extends across invocations in a way ollama's interactive REPL does not. REPL slash commands: `/help /bye /clear /list /ps /sessions /show /set /rename`; on resume the system prompt is restored; named sessions; recap compaction on context overflow |
+| `version` | version |
+| `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
+| `uninstall [--dry-run] [--keep-models] [--yes]` | remove the install (weights optional to keep) |
 
-Step-by-step with expected output and a working `curl` request:
-[docs/QUICKSTART.md](docs/QUICKSTART.md). Handing this to a coding agent? Copy
-[docs/AGENT-SETUP.md](docs/AGENT-SETUP.md).
+## Key flags & env
+
+Flags that always win over autofit: `--ctx N`, `--cache-mode Q8|Q4|FP16|"2,2"`,
+`--no-autofit`. `serve --draft-mode ngram|off` selects speculative drafting (default
+off — no `draft_model` block is rendered; A/B run 2026-10-07 (n=1164/arm,
+3 reps) measured **INCONCLUSIVE — within noise (0.00% delta)**, so it stays off and
+no speedup is claimed;
+`run --draft-mode` parses and validates the value only — it cannot reach an already-
+running daemon and has no effect. Config `engine_env` adds extra environment for the
+supervised backend child (parent env preserved; config keys win).
+
+Keep-alive is opt-in and it costs VRAM: `run --keepalive N` (config `keepalive_seconds`)
+holds the loaded model N seconds after the last client exits, so the next `run` skips the
+reload — a held model is ~2.3 GiB, about 62 % of the reference 4 GB card, and cannot
+coexist with a game or anything else that wants the GPU. Default `0` unloads immediately:
+opt in for instant restarts, leave it at `0` to keep the card free. A request restarts the
+countdown; a foreign GPU contender refuses the hold and unloads instead, and one appearing
+mid-hold cuts it short. `ps` / `/-/status` report the deadline on their `until` line
+(`Infinite` while a loaded model is in use). See `docs/ARCHITECTURE.md` §7d.
+
+On the `llama` backend, the GGUF child is spawned with **pinned flags** —
+`-c 8192 -fa on -np 2` (measured 2026-11-01 on the reference RTX 3050 Laptop 4 GB):
+context is sized to the card for stable decode (llama-server's auto-fit divides
+the KV across the 2 slots, so effectively 2 × 4096-token slots; the shipped
+shape decodes ~55 tok/s by eval clock on a boosted session and ~40 at idle
+clock — the same configuration, different GPU clock states), flash attention
+is forced on (this llama.cpp build's `auto` leaves it **off** — a measurable
+decode cost on this card; see [bench/README.md](bench/README.md)),
+and the context is deliberately **below** the model's training maximum — an
+unpinned context follows `n_ctx_train` and collapses decode on a 4 GB card
+(measured 15–23 tok/s at ctx 16384, ~5 tok/s at 32768, over-allocation not
+exhaustion). Config `llama_ctx` raises it (`-c`); `0`/absent = the measured 8192
+default, validated 512–1048576. See [bench/README.md](bench/README.md) and
+`docs/ARCHITECTURE.md` for the measured numbers.
+
+Env: `STONE_LLAMA_HOST`,
+`STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`, `STONE_LLAMA_CONFIG`,
+`STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`. `serve --backend tabby|llama` selects the
+supervised engine (default `llama` = `llama-server` over GGUF; `tabby` = TabbyAPI +
+ExLlamaV3 — status in `docs/ARCHITECTURE.md`); an unknown value is a usage
+error, never a silent fallback. Env `STONE_LLAMA_BACKEND` and config `backend` do the
+same. State (`models/`, `runtime/`, `daemon.json`, logs, `chats/`, `sessions/`) is
+`$XDG_DATA_HOME/stone-llama`, config `$XDG_CONFIG_HOME/stone-llama/config.json`.
+`chats/<model>/chat-<id>.json` holds `run` history (files 0600, dirs 0700); when a
+session would overflow the context window it is trimmed to fit — **destructively:
+dropped turns leave the file too** (deliberate — they could not be replayed anyway);
+the dropped turns are folded into a ≤200-char recap (chained via `prev`) prepended
+as a system message so memory from ~3 turns ago survives. Server-side sessions
+(daemon) live under `sessions/<id>.json` (0600, dir 0700) and are reachable via
+`/v1/sessions*`; a `/v1/chat/completions` request may carry `"session": "<id>"`.
+`/ps` shows an `until` (keepalive expiry) line; idle sessions are swept on a TTL
+(default 1h). Ollama's `/api/chat` stays stateless — stone-llama adds memory.
 
 ## Platform support
 
@@ -74,108 +114,41 @@ configurable:
 **Linux/amd64 is the only supported platform in v1.** `stone-llama doctor` prints this
 verdict — with your actual GPU and driver numbers — before anything gets installed.
 
-## Commands
+## Performance (measured)
 
-| Command | Purpose |
-|---|---|
-| `doctor` | GPU/driver/runtime verdict, no changes made |
-| `fit <repo>` | gate + predicted tok/s `[est]` from metadata — **no model download** |
-| `list [--estimate]` | models with size, quant, gate verdict, source |
-| `rank --collection <owner/name>` | rank a HF collection by fit + predicted tok/s `[est]` |
-| `pull <repo[@branch][:quant>] [--force] [--quiet] [--yes]` | gate → consent → resumable download, sha256-verified |
-| `import <dir>` | symlink an existing model dir in (zero copy) |
-| `rm <model>` | remove a model (import symlinks: link only, target untouched) |
-| `login` | HuggingFace token for gated repos (stored 0600) |
-| `setup [--yes] [--cu12\|--cu13] [--adopt <path>] [--provision]` | provision the pinned Python runtime (consent-gated, resumable; no flag → `cu13`, so a `cu12` machine must pass `--cu12` — the driver→extra mapping lives in `doctor`, which prints it: ≥580 `cu13`, ≥570 `cu12`) — or **reuse** an already-present TabbyAPI venv when it passes the validation gate (0 bytes downloaded; `--provision` forces the classic path) |
-| `serve [<model>] [--attach host:port] [--port n] [--key-file path]` | daemon: OpenAI-compatible API (attach = existing TabbyAPI upstream; the model positional is ignored in attach mode) |
-| `ps` / `stop` | loaded model + sampled VRAM peak of the supervised child (line omitted in attach mode — no child to sample) / stop the daemon |
-| `run <model>` | streaming CLI chat |
-| `version` | version |
-| `update [--check] [--version <tag>] [--force] [--yes]` | self-update the binary — SHA-256 in `checksums.txt` must match before anything is replaced |
-| `uninstall [--dry-run] [--keep-models] [--yes]` | remove the install (weights optional to keep) |
+All numbers are real captures on the reference RTX 3050 Laptop (4 GB), driver
+580.178.04 — see [bench/README.md](bench/README.md) and its JSON artifacts for the
+workload, harness, and caveats. Reproduce with `STONE_START=1 bench/run.sh`.
 
-Flags that always win over autofit: `--ctx N`, `--cache-mode Q8|Q4|FP16|"2,2"`,
-`--no-autofit`. Env: `STONE_LLAMA_HOST`, `STONE_LLAMA_PORT`, `STONE_LLAMA_MODELS_DIR`,
-`STONE_LLAMA_CONFIG`, `STONE_LLAMA_NO_AUTOSTART`, `HF_TOKEN`.
-State (`models/`, `runtime/`, `daemon.json`, logs) is `$XDG_DATA_HOME/stone-llama`,
-config `$XDG_CONFIG_HOME/stone-llama/config.json`. **Testing? Point `XDG_DATA_HOME` at
-an empty directory** or `ps`/`run`/`serve` will find the live daemon.
-
-`[est]` = computed from metadata + your VRAM, not measured. The one measured anchor
-feeding these numbers: 42.7 tok/s decode (SmolLM3-3B, reference card); prefill has
-no fitted anchor (see `internal/estimate`).
-
-## Real terminal output
-
-Verbatim, 2026-09-26 (RTX 3050 Laptop, 4096&nbsp;MiB, driver 580.178.04, Linux/amd64)
-— the gate refusing before any weight byte moves:
-
-```console
-$ stone-llama pull ggml-org/SmolLM3-3B-GGUF
-stone-llama pull: repo ggml-org/SmolLM3-3B-GGUF has no config.json — not an EXL3 model layout
-```
-
-Every capture — `doctor`, `fit` (one that fits, one that does not), `rank`,
-`list --estimate`, live [`serve`](docs/screenshots/serve.txt) and
-[`run`](docs/screenshots/run.txt), [`version`](docs/screenshots/version.txt) — is in
-[docs/screenshots/](docs/screenshots/), rendered in [cli.svg](docs/screenshots/cli.svg).
-
-## How autofit picks your context
-
-Everything comes from the model's own `config.json` plus your VRAM: the ladder tries
-`ctx` = trained max, halves it down to 4096, and prefers better cache quality at each
-tier (FP16 → Q8 → Q4 → `"4,2"`; Q6 skipped, Q2 manual-only). It never exceeds
-`max_position_embeddings`, and the rule it applies is the **headroom rule**:
-`weights + KV + overhead ≤ VRAM − headroom(ctx)` — headroom grows with ctx, so on the
-4 GB card SmolLM3-3B lands at Q4 ctx 32768, *not* Q4 @ 65536. (The site's model table
-uses the other, **budget rule** — `weights + KV ≤ 3508 MiB`, a static
-4096 − 88 overhead − 500 headroom allowance from the project's research note — where
-65536 Q4 *does* fit; both figures are true of their own rule and are labelled as
-such.) The arithmetic is always printed, and a thin margin warns. If prefill OOMs
-(CUDA OOM *before* the first token), drop `--ctx` one tier; if nothing fits you get
-the full breakdown plus the largest ctx that *would* fit. Derivation, headroom terms
-and a worked example: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## The pre-download fit gate
-
-`fit` (and the gate inside `pull`) reads `config.json`, the file tree and at most
-~16 MiB of safetensors headers — never weights — then checks **architecture** (known to
-the installed exllamav3), **quant format** (`exl3` only; `exl2` and GGUF-only repos are
-refused) and **fit** (the arithmetic above, against *your* GPU): proceed, warn, or refuse
-with the numbers. An unreadable header warns, never silently passes. Caught mistakes
-cost KB instead of gigabytes; the verdict is saved to `manifest.json` and shown by
-`stone-llama list`. Detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Third-party components
-
-The binary has **zero third-party Go dependencies** — standard library only (`go.mod`
-has no `require` block, and there is no `go.sum`). Every component below is a *runtime*
-one: stone-llama **redistributes none** of them; `setup` fetches each from upstream on
-your machine, sizes announced, confirmation required. Per-package evidence in
-[THIRD-PARTY.md](THIRD-PARTY.md):
-
-| Component | License |
-|---|---|
-| uv | Apache-2.0 **OR** MIT (dual) |
-| CPython 3.12 | PSF-2.0 |
-| PyTorch (+cu130) | BSD-3-Clause |
-| exllamav3 | MIT |
-| Triton | MIT |
-| Flash-linear-attention | MIT |
-| NVIDIA CUDA/cuDNN (18 wheels) | Proprietary — NVIDIA EULA |
-| TabbyAPI (`f07131cd`) | **AGPL-3.0** |
-
-**AGPL note:** we neither distribute nor modify TabbyAPI — `setup` downloads upstream
-sources to your disk on request, and stone-llama talks to it over HTTP as a separate
-process.
-
-## Out of scope for v1
-
-- CPU/AMD/Apple inference; Windows/macOS/arm64 claims → [Platform support](#platform-support)
-- Multi-GPU `gpu_split` autofit (single GPU; TabbyAPI autosplit passes through)
-- Concurrent multi-model serving
-- GGUF, EXL2, draft/speculative models
-- Forking or vendoring TabbyAPI
+- **Decode parity, not superiority.** On **identical Q4_K_M weights**, the
+  strongest comparison available is Round 3's same-day, same-clock-window
+  measurement: stone-llama 54.7 tok/s client basis (55.4 by eval clock,
+  boosted) vs ollama 49.0 tok/s. An earlier cross-session pair measured
+  53.5 vs 55.2 tok/s at the pre-pin default (~4 %, different sessions).
+  Absolute decode tracks GPU boost state (~40–56 tok/s) for the same shipped
+  shape, so the small residual is within session-to-session variation.
+  Same-session stone measured ahead; cross-session the two swap places — do
+  not overclaim from one session. There is no "faster than ollama" claim
+  here.
+- **ollama wins warm TTFT** — same session 0.026 vs 0.050 s (Round 2 pair
+  0.039 vs 0.116 s) — and prompt-cache-hit TTFT; stone wins cold TTFT
+  decisively on the like-for-like model-load condition (0.271 vs 2.982 s,
+  same session), and serves the first request in 0.064 s once the model is
+  resident (a separate, post-load condition).
+- **stone-llama wins VRAM on the EXL3/tabby path** (2274 vs 2568 MiB) and holds
+  **4× the context** there (32768 vs 8192) — the 4 GB card's edge, not raw speed.
+- **stone-llama wins 4-way concurrency at the shipped 2-slot shape** — same-day
+  88.9 aggregate tok/s (wall 5.7–5.9 s) vs ollama 48.0 (wall 10.6–10.7 s), with
+  p95 TTFT ~3.0 s (2 slots queue 2-at-a-time). The earlier ~99.7 was the
+  pre-pin 4-slot auto-fit with 2048-token slots (Round 2 annotation) — the
+  claim this supports is stone wins concurrency, not 2× single-stream.
+- **Absolute EXL3 numbers** (no like-for-like ollama counterpart on disk, so no
+  comparison is drawn): Qwen3-4B-EXL3 27.6 tok/s, 2445 MiB; SmolLM3-3B-EXL3
+  45.7 tok/s, 2283 MiB.
+- **Pinned GGUF context** (post-fix, `-c 8192 -fa on -np 2`): ~54–55 tok/s
+  by eval clock on a boosted session (~40 at idle clock, same shape), ~2570 MiB
+  resident, ~1200 MiB headroom. The 8 KB unique prompt now serves at ~53 tok/s
+  with ~1.16 s TTFT and no collapse — that collapse was the defect the pin fixed.
 
 ## Documentation
 
@@ -185,9 +158,15 @@ process.
 | [docs/INSTALLATION.md](docs/INSTALLATION.md) | prerequisites, install paths, `setup` provisioning, uninstall |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | first-run walkthrough with real output |
 | [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md) | copy-paste prompt for a coding agent |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | full plan, milestones, open gaps |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | full plan, milestones, open gaps — incl. backend selection (default `llama`), server-side session memory + keepalive + idle TTL sweep, CLI REPL slash commands & recap compaction |
+| [docs/RELEASE.md](docs/RELEASE.md) | release process, provenance, artifact shape |
+| [bench/README.md](bench/README.md) | measured stone-llama vs ollama: harness, rounds 1–2 + Qwen EXL3, honest readings |
 
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party runtime components: see
 [THIRD-PARTY.md](THIRD-PARTY.md).
+
+**AGPL note:** we neither distribute nor modify TabbyAPI — `setup` downloads upstream
+sources to your disk on request, and stone-llama talks to it over HTTP as a separate
+process.

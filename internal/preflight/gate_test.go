@@ -144,7 +144,7 @@ func TestEvaluateOtherQuantMethodsRefuse(t *testing.T) {
 	}
 }
 
-func TestEvaluateGGUFOnlyRefusesWithOllamaHint(t *testing.T) {
+func TestEvaluateGGUFOnlyRefuses(t *testing.T) {
 	in := baseInput()
 	in.QuantMethod = ""
 	in.HasQuantCfg = false
@@ -154,8 +154,11 @@ func TestEvaluateGGUFOnlyRefusesWithOllamaHint(t *testing.T) {
 	if !r.Refused {
 		t.Fatal("gguf-only must refuse")
 	}
-	if !strings.Contains(r.Checks[1].Detail, "ollama with GGUF") {
-		t.Errorf("quant detail = %q", r.Checks[1].Detail)
+	detail := r.Checks[1].Detail
+	if !strings.Contains(detail, "no EXL3 weights") ||
+		!strings.Contains(detail, "import a local .gguf instead") ||
+		strings.Contains(detail, "tok/s") {
+		t.Errorf("quant detail = %q", detail)
 	}
 }
 
@@ -184,7 +187,7 @@ func TestEvaluateUnconfirmedQuantRefuses(t *testing.T) {
 			continue
 		}
 		detail := r.Checks[1].Detail
-		for _, sub := range []string{tc.wantSub, "not EXL3 storage", "look for '-exl3'"} {
+		for _, sub := range []string{tc.wantSub, "not EXL3 storage", "look for an exl3 quantization_config"} {
 			if !strings.Contains(detail, sub) {
 				t.Errorf("%s: detail missing %q: %q", name, sub, detail)
 			}
@@ -544,7 +547,7 @@ func TestEvaluateNoExl3StorageGroupRefused(t *testing.T) {
 			continue
 		}
 		d := r.Checks[1].Detail
-		for _, want := range []string{".trellis", "not EXL3 storage", "look for '-exl3'"} {
+		for _, want := range []string{".trellis", "not EXL3 storage", "look for an exl3 quantization_config"} {
 			if !strings.Contains(d, want) {
 				t.Errorf("%s: detail missing %q: %s", tc.name, want, d)
 			}

@@ -1,0 +1,389 @@
+{
+  "round": 2,
+  "date": "2026-10-30",
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU (4096 MiB)",
+    "driver": "580.178.04",
+    "os": "linux 7.3.0-4-cachyos x64"
+  },
+  "workload": {
+    "prompt": "Explain quantum entanglement in simple terms.",
+    "max_tokens": 128,
+    "temperature": 0.7,
+    "repeats": 5,
+    "vram_sampling_ms": 100
+  },
+  "pair_note": "Both endpoints serve the identical ollama smollm3:3b Q4_K_M GGUF blob (ollama blob copied to /home/anon/ai/gguf/smollm3-q4km in the killed prior attempt, imported into stone-llama as 'smollm3-q4km-test'). Same weights, two llama.cpp wrappers. No downloads.",
+  "argv_note": "stone-llama default llama-backend argv, from internal/serve/llama_backend.go Spawn() and confirmed on the live child /proc cmdline (pid 644766): llama-server --host 127.0.0.1 --port <internal> --api-key-file <runtime>/upstream_key -m <gguf>. Nothing else: no -fa, no -ngl, no --ctx-size, no -c. No supported flag passthrough exists (argv hardcoded; config engine_env only extends child ENV, not argv) \u2014 but the env passthrough works: setting engine_env {\"LLAMA_ARG_FLASH_ATTN\": \"off\"} (or \"on\"/\"auto\") and {\"LLAMA_ARG_MMAP\": \"0\"} reaches llama-server.",
+  "harness_note": "One harness fix this round: run.sh chunk counter now also counts delta.reasoning_content (llama.cpp chat deltas carry visible text there; previously decode tok/s read 0.0 for stone). ollama numbers from round 1 used the same counter for delta.content, so basis is comparable (token chunks).",
+  "results": {
+    "same_quant_stone_vs_ollama": {
+      "stone": {
+        "model": "smollm3-q4km-test (identical Q4_K_M GGUF)",
+        "decode_tok_s_mean": 53.5,
+        "ttft_mean_s": 0.116,
+        "ttft_warm_mean_s": 0.116,
+        "wall_mean_s": 2.454,
+        "peak_vram_mib": 2761,
+        "per_proc_peak_mib": {
+          "llama.cpp llama-server (stone)": 2752
+        },
+        "ctx": "unlimited by stone (llama-server default = model training ctx, 32768 for smollm3)"
+      },
+      "ollama": {
+        "model": "smollm3:3b (same Q4_K_M GGUF)",
+        "confounded_measurement": {
+          "decode_tok_s_mean": 6.0,
+          "decode_tok_s_warm_only": 6.0,
+          "ttft_mean_s": 8.991,
+          "ttft_warm_mean_s": 0.196,
+          "wall_mean_s": 30.336,
+          "peak_vram_mib": 2922,
+          "per_proc_peak_mib": {
+            "stone llama-server (still resident)": 2752,
+            "ollama llama-server": 156
+          },
+          "ctx": 8192,
+          "note": "ollama's daemon kept a resident stone daemon's GGUF on the card during this window (run.sh STONE_START=0 path does not stop it) \u2014 its timings are confounded; the clean warm numbers are TTFT 0.196 s / decode 6.0 tok/s / peak 2922 MiB. Round 1's clean ollama numbers (55.8 tok/s, 2568 MiB, ctx 8192) were measured with stone fully unloaded and remain the honest baseline.",
+          "confounded": true,
+          "confound_reason": "stone daemon stayed resident during the ollama window (STONE_START=0 path of run.sh does not stop it); nvidia-smi per_proc_peak_mib shows stone's llama-server holding 2752 MiB and ollama starved to 156 MiB. These numbers are NOT comparable to stone's and must not be cited as a comparison baseline. Clean ollama baseline to be recorded in clean_ollama_remeasure below."
+        },
+        "clean_baseline_pending": "see clean_ollama_remeasure (to be added after step 2)",
+        "clean_baseline": "see clean_ollama_remeasure (55.2 tok/s, 0.039 s TTFT, 2568 MiB, ctx 8192)"
+      },
+      "verdict": "On identical Q4_K_M weights, stone-llama is at decode PARITY with ollama's warm path: 53.5 (stone, clean window) vs 55.2 (ollama, clean re-measure) tok/s = +3.2% ollama, within session noise. The 6.0 tok/s / 2922 MiB ollama figure was measured with stone's daemon resident on the card (confounded; see confounded_measurement) and is not a comparison. ollama wins warm TTFT (0.039 vs 0.116 s); stone holds 4x the context (32768 vs 8192) for +193 MiB VRAM. The round-1 'stone loses warm decode' verdict was the EXL3-vs-Q4_K_M quant confound, not the wrapper."
+    },
+    "flash_attn_ab": {
+      "base": "stone-llama default argv (LLAMA_ARG_FLASH_ATTN unset -> llama-server default 'auto')",
+      "fa_auto": {
+        "decode_tok_s_mean": 54.8,
+        "ttft_mean_s": 0.059,
+        "wall_mean_s": 2.338,
+        "peak_vram_mib": 2752
+      },
+      "fa_off": {
+        "decode_tok_s_mean": 50.2,
+        "ttft_mean_s": 0.063,
+        "wall_mean_s": 2.552,
+        "peak_vram_mib": 2766
+      },
+      "delta": {
+        "decode_tok_s": "+9.2% with auto/on vs off",
+        "wall_s": "-8.4%",
+        "ttft_s": "-6.3%",
+        "peak_vram_mib": "-14 MiB"
+      },
+      "verdict": "Flash attention gives a measurable +9% decode and -8% wall on this 3B Q4_K_M pair; VRAM difference is noise (14 MiB). llama-server's default is 'auto', which already enables it, so there is NO flag change to make \u2014 stone-llama gets this for free. On identical weights stone-llama is at decode parity with ollama (53.5 vs 55.8 tok/s), so -fa does not change the verdict either way."
+    },
+    "nommap_ab": {
+      "mmap_on_default": {
+        "decode_tok_s_mean": 54.8,
+        "ttft_mean_s": 0.059,
+        "wall_mean_s": 2.338,
+        "peak_vram_mib": 2752
+      },
+      "nommap": {
+        "decode_tok_s_mean": 54.8,
+        "ttft_mean_s": 0.059,
+        "wall_mean_s": 2.341,
+        "peak_vram_mib": 2752
+      },
+      "verdict": "No measurable difference on this model/size (decode identical, wall within 0.1%, VRAM identical). --no-mmap is not worth exercising further; mmap is fine."
+    },
+    "round1_comparison": {
+      "round1_ollama_Q4_K_M": {
+        "decode_tok_s": 55.8,
+        "ttft_warm_s": 0.04,
+        "peak_vram_mib": 2568,
+        "ctx": 8192
+      },
+      "round2_stone_Q4_K_M": {
+        "decode_tok_s": 53.5,
+        "ttft_warm_s": 0.116,
+        "peak_vram_mib": 2761,
+        "ctx": 32768
+      },
+      "note": "Round 1's ollama number (55.8 tok/s) was measured with stone fully unloaded and ollama warm; round 2's stone number (53.5 tok/s) is within ~4% of it. On identical weights stone-llama matches ollama's warm decode while offering 4x the context (32768 vs 8192) at +193 MiB VRAM. The round-1 'stone loses warm decode' verdict was an artifact of comparing EXL3 4.0bpw (3.5 bpw) against Q4_K_M, not of the wrapper."
+    },
+    "prefill_cold_8kb": {
+      "note": "Each repeat sends a DIFFERENT 8KB prompt (run-index prefix) so server-side prompt cache cannot absorb the prefill. max_tokens=64. Raw files: raw-prefill-stone-cold.json / raw-prefill-ollama-cold.json.",
+      "stone": {
+        "ttft_mean_s": 3.464,
+        "ttft_all": [
+          4.012,
+          3.062,
+          3.318
+        ],
+        "wall_mean_s": 15.719,
+        "decode_tok_s_mean": 5.2
+      },
+      "ollama": {
+        "ttft_mean_s": 3.195,
+        "ttft_all": [
+          7.122,
+          1.331,
+          1.132
+        ],
+        "wall_mean_s": 4.381,
+        "decode_tok_s_mean": 53.1
+      },
+      "verdict": "Cold 8KB prefill (unique prompt per repeat, max_tokens=64): stone TTFT 3.5 s vs ollama 1.2 s warm-loop mean (ollama's own run 1 cold-load TTFT was 7.1 s, worse than stone's, because it had been unloaded). After the first token, decode collapses on stone to ~5 tok/s (11-14 s for 62 chunks) vs ollama steady ~53 tok/s. That stone decode drop on long prompts is the real finding: same weights, stone's llama.cpp path serves long-context continuations ~10x slower than ollama's. Likely ctx/cache handling difference (stone leaves llama-server defaults; ollama pins -c 8192 -b 512 -ub 512). Follow-up next round: measure stone with explicit -c/-b/-ub env overrides to isolate."
+    },
+    "prefill_warm_2kb_8kb": {
+      "note": "Same 2KB / 8KB prompt repeated 3x per size, so run 1 is the true prefill and runs 2-3 are server-side prompt-cache hits. max_tokens=64. Harness: prefill_measure.py.",
+      "stone": {
+        "2kb_ttft_s": [
+          0.518,
+          0.055,
+          0.054
+        ],
+        "8kb_ttft_s": [
+          0.815,
+          0.059,
+          0.056
+        ],
+        "2kb_decode_tok_s": null,
+        "8kb_decode_tok_s": null
+      },
+      "ollama": {
+        "2kb_ttft_s": [
+          0.319,
+          0.019,
+          0.019
+        ],
+        "8kb_ttft_s": [
+          0.772,
+          0.029,
+          0.026
+        ]
+      },
+      "verdict": "Run-1 (true prefill) TTFT on the same prompt: stone 0.52 s (2KB) / 0.82 s (8KB), ollama 0.32 s / 0.77 s \u2014 near parity. Cached repeats: stone 0.055/0.059 s vs ollama 0.019/0.029 s \u2014 ollama's prompt cache serves hits ~2-3x faster. The stone numbers are consistent with llama-server's default prompt cache; the difference is not a stone bug but ollama's keep-alive + smaller ctx making cache hits cheaper. See prefill_cold_8kb for the cold, unique-prompt comparison, where stone's post-first-token decode collapses to ~5 tok/s."
+    },
+    "concurrency_4way": {
+      "note": "4 parallel streaming requests x 128 tokens, 3 reps. Aggregate tok/s = total chunks / wall. p95 TTFT across per-request TTFTs.",
+      "stone_clean": {
+        "aggregate_tok_s_mean": 99.7,
+        "wall_mean_s": 5.06,
+        "p95_ttft_s_mean": 0.685,
+        "raw": [
+          {
+            "rep": 0,
+            "wall_s": 4.926313161849976,
+            "aggregate_tok_s": 102.3,
+            "per_request_ttft": [
+              0.591,
+              0.59,
+              0.589,
+              0.515
+            ],
+            "p95_ttft_s": 0.59,
+            "total_chunks": 504,
+            "runs_ok": 4,
+            "runs_failed": 0
+          },
+          {
+            "rep": 1,
+            "wall_s": 5.097473382949829,
+            "aggregate_tok_s": 98.9,
+            "per_request_ttft": [
+              0.719,
+              0.718,
+              0.719,
+              0.718
+            ],
+            "p95_ttft_s": 0.719,
+            "total_chunks": 504,
+            "runs_ok": 4,
+            "runs_failed": 0
+          },
+          {
+            "rep": 2,
+            "wall_s": 5.1443352699279785,
+            "aggregate_tok_s": 98.0,
+            "per_request_ttft": [
+              0.747,
+              0.747,
+              0.747,
+              0.746
+            ],
+            "p95_ttft_s": 0.747,
+            "total_chunks": 504,
+            "runs_ok": 4,
+            "runs_failed": 0
+          }
+        ]
+      },
+      "ollama_clean": {
+        "aggregate_tok_s_mean": 55.7,
+        "wall_mean_s": 9.18,
+        "p95_ttft_s_mean": 4.622,
+        "raw": [
+          {
+            "rep": 0,
+            "wall_s": 9.200681686401367,
+            "aggregate_tok_s": 55.6,
+            "per_request_ttft": [
+              0.056,
+              6.946,
+              4.66,
+              2.369
+            ],
+            "p95_ttft_s": 4.66,
+            "total_chunks": 512,
+            "runs_ok": 4,
+            "runs_failed": 0
+          },
+          {
+            "rep": 1,
+            "wall_s": 9.160557746887207,
+            "aggregate_tok_s": 55.9,
+            "per_request_ttft": [
+              4.593,
+              0.025,
+              6.893,
+              2.306
+            ],
+            "p95_ttft_s": 4.593,
+            "total_chunks": 512,
+            "runs_ok": 4,
+            "runs_failed": 0
+          },
+          {
+            "rep": 2,
+            "wall_s": 9.193109035491943,
+            "aggregate_tok_s": 55.7,
+            "per_request_ttft": [
+              0.026,
+              6.916,
+              2.319,
+              4.614
+            ],
+            "p95_ttft_s": 4.614,
+            "total_chunks": 512,
+            "runs_ok": 4,
+            "runs_failed": 0
+          }
+        ]
+      },
+      "stone_degraded_case": {
+        "note": "First attempt ran while the daemon had collapsed to 188 MiB resident (weights evicted, cause unresolved \u2014 see vram_collapse_finding); aggregate 9.4 tok/s, wall ~54 s. Excluded from the headline; kept as evidence.",
+        "raw": [
+          {
+            "rep": 0,
+            "wall_s": 55.23545980453491,
+            "aggregate_tok_s": 9.1,
+            "per_request_ttft": [
+              2.584,
+              2.584,
+              2.584,
+              2.265
+            ],
+            "p95_ttft_s": 2.584,
+            "total_chunks": 504,
+            "runs_ok": 4,
+            "runs_failed": 0
+          },
+          {
+            "rep": 1,
+            "wall_s": 52.21601986885071,
+            "aggregate_tok_s": 9.7,
+            "per_request_ttft": [
+              1.427,
+              1.423,
+              1.426,
+              1.423
+            ],
+            "p95_ttft_s": 1.426,
+            "total_chunks": 504,
+            "runs_ok": 4,
+            "runs_failed": 0
+          },
+          {
+            "rep": 2,
+            "wall_s": 53.84470796585083,
+            "aggregate_tok_s": 9.4,
+            "per_request_ttft": [
+              0.903,
+              0.908,
+              0.903,
+              0.906
+            ],
+            "p95_ttft_s": 0.906,
+            "total_chunks": 504,
+            "runs_ok": 4,
+            "runs_failed": 0
+          }
+        ]
+      },
+      "vram_collapse_finding": "After a previous session's stone daemon (pid 728130/738774 line) served the 8KB-prefill batch and a 4-way concurrency round, the llama-server child dropped from 2756 to 188 MiB resident with decode at 2.4-8.4 tok/s and prompt eval 38-40 ms/token. A restart of the same daemon (no config change) restored 2752 MiB and 55 tok/s. Reproduced once, cause not isolated (no Xid, no OOM in log; llama-server reports 'graphs reused' normally). Marking as a stability finding for the README, not a benchmark number.",
+      "verdict": "4-way concurrency on clean cards: stone-llama aggregates ~99.7 tok/s (near-linear 2x over its 53.5 single-stream, llama-server runs n_parallel=4 slots) with p95 TTFT 0.6-0.7 s; ollama aggregates ~55.7 tok/s (no aggregate gain over single-stream: it runs ONE slot, -np 1, requests queue) with p95 TTFT 4.6 s and per-request TTFTs spread 0.03-6.9 s (queueing). Stone does not serialise; ollama does. Stone wins concurrency on both throughput and TTFT stability."
+    }
+  },
+  "not_exercised": [
+    "stone-llama's own default argv has no -ngl flag (llama-server defaults to 'auto' GPU offload); measuring -ngl all vs auto was not requested and the model already offloads fully (2752 MiB resident).",
+    "ollama warm decode on a clean card (round 1's 55.8 tok/s stands as the clean baseline; this round's ollama window was confounded by the resident stone daemon).",
+    "Long-prompt prefill (2 KB / 8 KB), 4-way concurrency, and README round-2 section are deferred to the next turn per the brief."
+  ],
+  "control_measurement_disclosure": "The -fa on/off and --no-mmap A/B were run by invoking stone-llama serve with engine_env set (LLAMA_ARG_FLASH_ATTN / LLAMA_ARG_MMAP), which is the supported passthrough \u2014 NOT by invoking llama-server directly. stone-llama's own default argv remained unchanged; only the child environment changed. All numbers above are stone-llama measurements.",
+  "clean_ollama_remeasure": {
+    "model": "smollm3:3b (Q4_K_M, identical weights to smollm3-q4km-test)",
+    "conditions": "stone daemon fully stopped first; ollama unloaded via keep_alive=0; nvidia-smi confirmed card clear (0 compute apps) before load; measured with ctrl_measure.py (same harness as stone, 5 repeats, 128 tokens, temp 0.7, same prompt).",
+    "decode_tok_s_mean": 55.2,
+    "decode_tok_s_min": 54.4,
+    "decode_tok_s_max": 56.1,
+    "ttft_mean_s": 0.039,
+    "ttft_min_s": 0.025,
+    "ttft_max_s": 0.062,
+    "wall_mean_s": 2.34,
+    "peak_vram_mib": 2568,
+    "ctx": 8192,
+    "raw_runs": [
+      {
+        "ok": true,
+        "ttft_s": 0.061571359634399414,
+        "wall_s": 2.3958799839019775,
+        "chunks": 128,
+        "t0": 1793368669.7401145,
+        "t1": 1793368672.1359944
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.05162525177001953,
+        "wall_s": 2.364522933959961,
+        "chunks": 128,
+        "t0": 1793368673.1365142,
+        "t1": 1793368675.5010371
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.026187658309936523,
+        "wall_s": 2.2917284965515137,
+        "chunks": 128,
+        "t0": 1793368676.5013428,
+        "t1": 1793368678.7930713
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.024707794189453125,
+        "wall_s": 2.3258631229400635,
+        "chunks": 128,
+        "t0": 1793368679.7933393,
+        "t1": 1793368682.1192024
+      },
+      {
+        "ok": true,
+        "ttft_s": 0.033263444900512695,
+        "wall_s": 2.3239006996154785,
+        "chunks": 128,
+        "t0": 1793368683.1196396,
+        "t1": 1793368685.4435403
+      }
+    ],
+    "vs_stone": {
+      "stone_decode_tok_s": 53.5,
+      "ollama_decode_tok_s": 55.2,
+      "delta_pct": 3.2,
+      "verdict": "Decode parity: 53.5 (stone) vs 55.2 (ollama) = +3.2% in ollama's favour, within session-to-session noise. Not 9x. ollama wins warm TTFT (0.039 vs 0.116 s). Stone holds 4x context (32768 vs 8192) for +193 MiB VRAM."
+    }
+  }
+}

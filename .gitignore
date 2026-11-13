@@ -32,3 +32,6 @@ __pycache__/
 
 # local env
 .env
+
+# agent tool artifacts (skills/state), not project source
+.omp/

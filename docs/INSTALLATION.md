@@ -9,8 +9,8 @@ NVIDIA-CUDA-only, so on CPU/AMD/Apple machines nothing below will ever serve.
 | Requirement | Detail |
 |---|---|
 | Platform | NVIDIA CUDA GPU, Linux x86_64 (amd64), driver ≥ **570** (`cu12` runtime extra) or ≥ **580** (`cu13`). No CPU path, no AMD/ROCm, no Apple/Metal; older driver → `doctor` refuses with the upgrade hint. Full table: [README platform support](../README.md#platform-support). |
-| Disk (binary alone) | ~9 MB — measured 8,941,752 B for the installed `v0.1.0-rc1` binary (release asset 8,933,560 B ≈ 8.5 MiB) and 7,770,296 B ≈ 7.41 MiB for the current source build. |
-| Disk (`setup` runtime) | **≈ 1 GB of downloads** — measured here: torch+cu130 531 MB, exllamav3 419 MB, uv 24 MB (950 MB total, HEAD-announced per URL before consent), plus a pinned CPython and the TabbyAPI checkout; the unpacked venv takes more than the downloads. Free space is checked with `statfs` and the run refuses if short. |
+| Disk (binary alone) | ~9 MB — measured 8,941,752 B for the installed `v0.1.0-rc1` binary (release asset 8,933,560 B ≈ 8.5 MiB) and 8,265,912 B ≈ 7.88 MiB for the current source build (`docs/screenshots/version.txt`, re-captured 2026-10-09). |
+| Disk (`setup` runtime) | **≈ 1 GB of downloads** — measured here: torch+cu130 531 MB, exllamav3 419 MB, uv 24 MB (974 MB total, HEAD-announced per URL before consent), plus a pinned CPython and the TabbyAPI checkout; the unpacked venv takes more than the downloads. Free space is checked with `statfs` and the run refuses if short. |
 | Disk (models) | Whatever the weights are — e.g. `SmolLM3-3B-exl3` is 1.84 GiB. Checked per-pull before any byte moves. |
 | Network | Only for `setup` (runtime) and `pull` (weights). `doctor`, `list`, `fit`, `import` need none (aside from small HuggingFace metadata for `fit`). |
 

@@ -1,0 +1,980 @@
+{
+ "meta": {
+  "fixture_version": 1,
+  "generator": "internal/runner/testdata/gen_golden.py",
+  "command": "ASDF_PYTHON_VERSION=3.14.3 python3 internal/runner/testdata/gen_golden.py",
+  "transformers": "5.13.1",
+  "jinja2": "3.1.4",
+  "python": "3.14.3",
+  "fixed_clock": "2026-01-01T12:00:00 (strftime_now kwarg override)",
+  "oracle": "AutoTokenizer.apply_chat_template(tokenize=False), local_files_only=True, no downloads"
+ },
+ "entries": [
+  {
+   "name": "smollm3_chat",
+   "kind": "chat",
+   "template": "{# ───── defaults ───── #}\n{%- if enable_thinking is not defined -%}\n{%- set enable_thinking = true -%}\n{%- endif -%}\n\n{# ───── reasoning mode ───── #}\n{%- if enable_thinking -%}\n  {%- set reasoning_mode = \"/think\" -%}\n{%- else -%}\n  {%- set reasoning_mode = \"/no_think\" -%}\n{%- endif -%}\n\n{# ───── header (system message) ───── #}\n{{- \"<|im_start|>system\\n\" -}}\n\n{%- if messages[0].role == \"system\" -%}\n  {%- set system_message = messages[0].content -%}\n  {%- if \"/no_think\" in system_message -%}\n    {%- set reasoning_mode = \"/no_think\" -%}\n  {%- elif \"/think\" in system_message -%}\n    {%- set reasoning_mode = \"/think\" -%}\n  {%- endif -%}\n  {%- set custom_instructions = system_message.replace(\"/no_think\", \"\").replace(\"/think\", \"\").rstrip() -%}\n{%- endif -%}\n\n{%- if \"/system_override\" in system_message -%}\n  {{- custom_instructions.replace(\"/system_override\", \"\").rstrip() -}}\n  {{- \"<|im_end|>\\n\" -}}\n{%- else -%}\n  {{- \"## Metadata\\n\\n\" -}}\n  {{- \"Knowledge Cutoff Date: June 2025\\n\" -}}\n  {%- set today = strftime_now(\"%d %B %Y\") -%}\n  {{- \"Today Date: \" ~ today ~ \"\\n\" -}}\n  {{- \"Reasoning Mode: \" + reasoning_mode + \"\\n\\n\" -}}\n  \n  {{- \"## Custom Instructions\\n\\n\" -}}\n  {%- if custom_instructions -%}\n    {{- custom_instructions + \"\\n\\n\" -}}\n  {%- elif reasoning_mode == \"/think\" -%}\n    {{- \"You are a helpful AI assistant named SmolLM, trained by Hugging Face. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion.\\n\\n\" -}}\n  {%- else -%}\n    {{- \"You are a helpful AI assistant named SmolLM, trained by Hugging Face.\\n\\n\" -}}\n  {%- endif -%}\n\n  {%- if xml_tools or python_tools -%}\n    {{- \"### Tools\\n\\n\" -}}\n    {%- if xml_tools -%}\n      {%- set ns = namespace(xml_tool_string=\"You may call one or more functions to assist with the user query.\\nYou are provided with function signatures within <tools></tools> XML tags:\\n\\n<tools>\\n\") -%}\n      {%- for tool in xml_tools[:] -%} {# The slicing makes sure that xml_tools is a list #}\n        {%- set ns.xml_tool_string = ns.xml_tool_string ~ (tool | string) ~ \"\\n\" -%}\n      {%- endfor -%}\n      {%- set xml_tool_string = ns.xml_tool_string + \"</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call>\" -%}\n      {{- xml_tool_string -}}\n    {%- endif -%}\n    {%- if python_tools -%}\n      {%- set ns = namespace(python_tool_string=\"When you send a message containing Python code between '<code>' and '</code>' tags, it will be executed in a stateful Jupyter notebook environment, and you will then be given the output to continued reasoning in an agentic loop.\\n\\nYou can use the following tools in your python code like regular functions:\\n<tools>\\n\") -%}\n      {%- for tool in python_tools[:] -%} {# The slicing makes sure that python_tools is a list #}\n        {%- set ns.python_tool_string = ns.python_tool_string ~ (tool | string) ~ \"\\n\" -%}\n      {%- endfor -%}\n      {%- set python_tool_string = ns.python_tool_string + \"</tools>\\n\\nThe state persists between code executions: so variables that you define in one step are still available thereafter.\" -%}\n      {{- python_tool_string -}}\n    {%- endif -%}\n    {{- \"\\n\\n\" -}}\n    {{- \"<|im_end|>\\n\" -}}\n  {%- endif -%}\n{%- endif -%}\n{# ───── main loop ───── #}\n{%- for message in messages -%}\n    {%- set content = message.content if message.content is string else \"\" -%}\n    {%- if message.role == \"user\" -%}\n        {{ \"<|im_start|>\" + message.role + \"\\n\"  + content + \"<|im_end|>\\n\" }}\n    {%- elif message.role == \"assistant\" -%}\n        {% generation %}\n        {%- if reasoning_mode == \"/think\" -%}\n            {{ \"<|im_start|>assistant\\n\" + content.lstrip(\"\\n\") + \"<|im_end|>\\n\" }}\n        {%- else -%}\n            {{ \"<|im_start|>assistant\\n\" + \"<think>\\n\\n</think>\\n\" + content.lstrip(\"\\n\") + \"<|im_end|>\\n\" }}\n        {%- endif -%}\n        {% endgeneration %}\n    {%- elif message.role == \"tool\" -%}\n    {{ \"<|im_start|>\" + \"user\\n\"  + content + \"<|im_end|>\\n\" }}\n    {%- endif -%}\n{%- endfor -%}\n{# ───── generation prompt ───── #}\n{%- if add_generation_prompt -%}\n    {%- if reasoning_mode == \"/think\" -%}\n        {{ \"<|im_start|>assistant\\n\" }}\n    {%- else -%}\n        {{ \"<|im_start|>assistant\\n\" + \"<think>\\n\\n</think>\\n\"  }}\n    {%- endif -%}\n{%- endif -%}",
+   "cases": [
+    {
+     "name": "sys_multi_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "sys_multi_nogen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": false
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n"
+    },
+    {
+     "name": "no_system_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "single_turn_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "empty_system_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": ""
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "unicode_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "héllo — 日本語 مرحبا 🚀 naïve straße?"
+       },
+       {
+        "role": "assistant",
+        "content": "Café ☕ : Ünïcode OK ✔"
+       },
+       {
+        "role": "user",
+        "content": "Danke!🙏"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nhéllo — 日本語 مرحبا 🚀 naïve straße?<|im_end|>\n<|im_start|>assistant\nCafé ☕ : Ünïcode OK ✔<|im_end|>\n<|im_start|>user\nDanke!🙏<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "special_chars_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "She said \"hi\" & <tag> 'single' \\ back\\slash\nnewline\ttab | pipe $var {{jinja}} %s %d {# not a comment #}"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "Continue, please."
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nShe said \"hi\" & <tag> 'single' \\ back\\slash\nnewline\ttab | pipe $var {{jinja}} %s %d {# not a comment #}<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nContinue, please.<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "tool_turns",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What's the weather in Paris?"
+       },
+       {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+         {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+           "name": "get_weather",
+           "arguments": "{\"city\": \"Paris\"}"
+          }
+         }
+        ]
+       },
+       {
+        "role": "tool",
+        "content": "{\"temperature\": 21, \"unit\": \"celsius\"}",
+        "tool_call_id": "call_1"
+       },
+       {
+        "role": "user",
+        "content": "Thanks."
+       }
+      ],
+      "add_generation_prompt": true,
+      "tools": [
+       {
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "description": "Get current weather for a city",
+         "parameters": {
+          "type": "object",
+          "properties": {
+           "city": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "city"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat's the weather in Paris?<|im_end|>\n<|im_start|>assistant\n<|im_end|>\n<|im_start|>user\n{\"temperature\": 21, \"unit\": \"celsius\"}<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "thinking_off",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true,
+      "enable_thinking": false
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    }
+   ]
+  },
+  {
+   "name": "smollm3_tabby",
+   "kind": "chat",
+   "template": "{# ───── defaults ───── #}\n{%- if enable_thinking is not defined -%}\n{%- set enable_thinking = false -%}\n{%- endif -%}\n\n{# ───── reasoning mode ───── #}\n{%- if enable_thinking -%}\n  {%- set reasoning_mode = \"/think\" -%}\n{%- else -%}\n  {%- set reasoning_mode = \"/no_think\" -%}\n{%- endif -%}\n\n{# ───── header (system message) ───── #}\n{{- \"<|im_start|>system\\n\" -}}\n\n{%- if messages[0].role == \"system\" -%}\n  {%- set system_message = messages[0].content -%}\n  {%- if \"/no_think\" in system_message -%}\n    {%- set reasoning_mode = \"/no_think\" -%}\n  {%- elif \"/think\" in system_message -%}\n    {%- set reasoning_mode = \"/think\" -%}\n  {%- endif -%}\n  {%- set custom_instructions = system_message.replace(\"/no_think\", \"\").replace(\"/think\", \"\").rstrip() -%}\n{%- endif -%}\n\n{%- if \"/system_override\" in system_message -%}\n  {{- custom_instructions.replace(\"/system_override\", \"\").rstrip() -}}\n  {{- \"<|im_end|>\\n\" -}}\n{%- else -%}\n  {{- \"## Metadata\\n\\n\" -}}\n  {{- \"Knowledge Cutoff Date: June 2025\\n\" -}}\n  {%- set today = strftime_now(\"%d %B %Y\") -%}\n  {{- \"Today Date: \" ~ today ~ \"\\n\" -}}\n  {{- \"Reasoning Mode: \" + reasoning_mode + \"\\n\\n\" -}}\n  \n  {{- \"## Custom Instructions\\n\\n\" -}}\n  {%- if custom_instructions -%}\n    {{- custom_instructions + \"\\n\\n\" -}}\n  {%- elif reasoning_mode == \"/think\" -%}\n    {{- \"You are a helpful AI assistant named SmolLM, trained by Hugging Face. Your role as an assistant involves thoroughly exploring questions through a systematic thinking process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution using the specified format: <think> Thought section </think> Solution section. In the Thought section, detail your reasoning process in steps. Each step should include detailed considerations such as analysing questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The Solution section should be logical, accurate, and concise and detail necessary steps needed to reach the conclusion.\\n\\n\" -}}\n  {%- else -%}\n    {{- \"You are a helpful AI assistant named SmolLM, trained by Hugging Face.\\n\\n\" -}}\n  {%- endif -%}\n\n  {%- if xml_tools or python_tools or tools -%}\n    {{- \"### Tools\\n\\n\" -}}\n    {%- if xml_tools or tools -%}\n      {%- if tools -%}\n        {%- set xml_tools = tools -%}\n      {%- endif -%}\n      {%- set ns = namespace(xml_tool_string=\"You may call one or more functions to assist with the user query.\\nYou are provided with function signatures within <tools></tools> XML tags:\\n\\n<tools>\\n\") -%}\n      {%- for tool in xml_tools[:] -%} {# The slicing makes sure that xml_tools is a list #}\n        {%- set ns.xml_tool_string = ns.xml_tool_string ~ (tool | string) ~ \"\\n\" -%}\n      {%- endfor -%}\n      {%- set xml_tool_string = ns.xml_tool_string + \"</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call>\" -%}\n      {{- xml_tool_string -}}\n    {%- endif -%}\n    {%- if python_tools -%}\n      {%- set ns = namespace(python_tool_string=\"When you send a message containing Python code between '<code>' and '</code>' tags, it will be executed in a stateful Jupyter notebook environment, and you will then be given the output to continued reasoning in an agentic loop.\\n\\nYou can use the following tools in your python code like regular functions:\\n<tools>\\n\") -%}\n      {%- for tool in python_tools[:] -%} {# The slicing makes sure that python_tools is a list #}\n        {%- set ns.python_tool_string = ns.python_tool_string ~ (tool | string) ~ \"\\n\" -%}\n      {%- endfor -%}\n      {%- set python_tool_string = ns.python_tool_string + \"</tools>\\n\\nThe state persists between code executions: so variables that you define in one step are still available thereafter.\" -%}\n      {{- python_tool_string -}}\n    {%- endif -%}\n    {{- \"\\n\\n\" -}}\n    {{- \"<|im_end|>\\n\" -}}\n  {%- endif -%}\n{%- endif -%}\n{# ───── main loop ───── #}\n{%- for message in messages -%}\n    {%- set content = message.content if message.content is string else \"\" -%}\n    {%- if message.role == \"user\" -%}\n        {{ \"<|im_start|>\" + message.role + \"\\n\"  + content + \"<|im_end|>\\n\" }}\n    {%- elif message.role == \"assistant\" -%}\n        {% generation %}\n        {%- set tc_calls = \"\" -%}\n        {%- if message.tool_calls -%}\n            {%- set ns = namespace(calls=\"\") -%}\n            {%- for tc in message.tool_calls -%}\n                {%- set raw_args = tc.function.arguments if tc.function.arguments is defined else \"{}\" -%}\n                {%- set args_frag = ((raw_args if raw_args[:1] == \"{\" else (raw_args | tojson)) if raw_args is string else (raw_args | tojson)) -%}\n                {%- set ns.calls = ns.calls ~ \"<tool_call>\\n\" ~ \"{\\\"name\\\": \" ~ (tc.function.name | tojson) ~ \", \\\"arguments\\\": \" ~ args_frag ~ \"}\" ~ \"\\n\" ~ \"</tool_call>\" -%}\n            {%- endfor -%}\n            {%- set tc_calls = ns.calls -%}\n        {%- endif -%}\n        {%- set body = (tc_calls ~ \"\\n\" ~ content) if (tc_calls and content) else (tc_calls if tc_calls else content) -%}\n\n        {%- if reasoning_mode == \"/think\" -%}\n            {{ \"<|im_start|>assistant\\n\" + body.lstrip(\"\\n\") + \"<|im_end|>\\n\" }}\n        {%- else -%}\n            {{ \"<|im_start|>assistant\\n\" + \"<think>\\n\\n</think>\\n\" + body.lstrip(\"\\n\") + \"<|im_end|>\\n\" }}\n        {%- endif -%}\n        {% endgeneration %}\n    {%- elif message.role == \"tool\" -%}\n    {{ \"<|im_start|>\" + \"user\\n\"  + content + \"<|im_end|>\\n\" }}\n    {%- endif -%}\n{%- endfor -%}\n{# ───── generation prompt ───── #}\n{%- if add_generation_prompt -%}\n    {%- if reasoning_mode == \"/think\" -%}\n        {{ \"<|im_start|>assistant\\n\" }}\n    {%- else -%}\n        {{ \"<|im_start|>assistant\\n\" + \"<think>\\n\\n</think>\\n\"  }}\n    {%- endif -%}\n{%- endif -%}",
+   "cases": [
+    {
+     "name": "sys_multi_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "sys_multi_nogen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": false
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n"
+    },
+    {
+     "name": "no_system_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "single_turn_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "empty_system_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": ""
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "unicode_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "héllo — 日本語 مرحبا 🚀 naïve straße?"
+       },
+       {
+        "role": "assistant",
+        "content": "Café ☕ : Ünïcode OK ✔"
+       },
+       {
+        "role": "user",
+        "content": "Danke!🙏"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nhéllo — 日本語 مرحبا 🚀 naïve straße?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nCafé ☕ : Ünïcode OK ✔<|im_end|>\n<|im_start|>user\nDanke!🙏<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "special_chars_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "She said \"hi\" & <tag> 'single' \\ back\\slash\nnewline\ttab | pipe $var {{jinja}} %s %d {# not a comment #}"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "Continue, please."
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nShe said \"hi\" & <tag> 'single' \\ back\\slash\nnewline\ttab | pipe $var {{jinja}} %s %d {# not a comment #}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nContinue, please.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "tool_turns",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What's the weather in Paris?"
+       },
+       {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+         {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+           "name": "get_weather",
+           "arguments": "{\"city\": \"Paris\"}"
+          }
+         }
+        ]
+       },
+       {
+        "role": "tool",
+        "content": "{\"temperature\": 21, \"unit\": \"celsius\"}",
+        "tool_call_id": "call_1"
+       },
+       {
+        "role": "user",
+        "content": "Thanks."
+       }
+      ],
+      "add_generation_prompt": true,
+      "tools": [
+       {
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "description": "Get current weather for a city",
+         "parameters": {
+          "type": "object",
+          "properties": {
+           "city": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "city"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n### Tools\n\nYou may call one or more functions to assist with the user query.\nYou are provided with function signatures within <tools></tools> XML tags:\n\n<tools>\n{'type': 'function', 'function': {'name': 'get_weather', 'description': 'Get current weather for a city', 'parameters': {'type': 'object', 'properties': {'city': {'type': 'string'}}, 'required': ['city']}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>\n\n<|im_end|>\n<|im_start|>user\nWhat's the weather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n{\"temperature\": 21, \"unit\": \"celsius\"}<|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    },
+    {
+     "name": "thinking_off",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true,
+      "enable_thinking": false
+     },
+     "expected": "<|im_start|>system\n## Metadata\n\nKnowledge Cutoff Date: June 2025\nToday Date: 01 January 2026\nReasoning Mode: /no_think\n\n## Custom Instructions\n\nYou are a helpful assistant. Answer briefly.\n\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n"
+    }
+   ]
+  },
+  {
+   "name": "qwen3_2507",
+   "kind": "chat",
+   "template": "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0].role == 'system' %}\n        {{- messages[0].content + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0].role == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}\n        {%- set ns.multi_step_tool = false %}\n        {%- set ns.last_query_index = index %}\n    {%- endif %}\n{%- endfor %}\n{%- for message in messages %}\n    {%- if message.content is string %}\n        {%- set content = message.content %}\n    {%- else %}\n        {%- set content = '' %}\n    {%- endif %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {%- set reasoning_content = '' %}\n        {%- if message.reasoning_content is string %}\n            {%- set reasoning_content = message.reasoning_content %}\n        {%- else %}\n            {%- if '</think>' in content %}\n                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}\n                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}\n            {%- endif %}\n        {%- endif %}\n        {%- if loop.index0 > ns.last_query_index %}\n            {%- if loop.last or (not loop.last and reasoning_content) %}\n                {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}\n            {%- else %}\n                {{- '<|im_start|>' + message.role + '\\n' + content }}\n            {%- endif %}\n        {%- else %}\n            {{- '<|im_start|>' + message.role + '\\n' + content }}\n        {%- endif %}\n        {%- if message.tool_calls %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if (loop.first and content) or (not loop.first) %}\n                    {{- '\\n' }}\n                {%- endif %}\n                {%- if tool_call.function %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {{- '<tool_call>\\n{\"name\": \"' }}\n                {{- tool_call.name }}\n                {{- '\", \"arguments\": ' }}\n                {%- if tool_call.arguments is string %}\n                    {{- tool_call.arguments }}\n                {%- else %}\n                    {{- tool_call.arguments | tojson }}\n                {%- endif %}\n                {{- '}\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.first or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n{%- endif %}",
+   "cases": [
+    {
+     "name": "sys_multi_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "sys_multi_nogen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": false
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n"
+    },
+    {
+     "name": "no_system_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "single_turn_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "empty_system_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": ""
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\n<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "unicode_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "héllo — 日本語 مرحبا 🚀 naïve straße?"
+       },
+       {
+        "role": "assistant",
+        "content": "Café ☕ : Ünïcode OK ✔"
+       },
+       {
+        "role": "user",
+        "content": "Danke!🙏"
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.<|im_end|>\n<|im_start|>user\nhéllo — 日本語 مرحبا 🚀 naïve straße?<|im_end|>\n<|im_start|>assistant\nCafé ☕ : Ünïcode OK ✔<|im_end|>\n<|im_start|>user\nDanke!🙏<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "special_chars_gen",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "She said \"hi\" & <tag> 'single' \\ back\\slash\nnewline\ttab | pipe $var {{jinja}} %s %d {# not a comment #}"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "Continue, please."
+       }
+      ],
+      "add_generation_prompt": true
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.<|im_end|>\n<|im_start|>user\nShe said \"hi\" & <tag> 'single' \\ back\\slash\nnewline\ttab | pipe $var {{jinja}} %s %d {# not a comment #}<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nContinue, please.<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "tool_turns",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What's the weather in Paris?"
+       },
+       {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+         {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+           "name": "get_weather",
+           "arguments": "{\"city\": \"Paris\"}"
+          }
+         }
+        ]
+       },
+       {
+        "role": "tool",
+        "content": "{\"temperature\": 21, \"unit\": \"celsius\"}",
+        "tool_call_id": "call_1"
+       },
+       {
+        "role": "user",
+        "content": "Thanks."
+       }
+      ],
+      "add_generation_prompt": true,
+      "tools": [
+       {
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "description": "Get current weather for a city",
+         "parameters": {
+          "type": "object",
+          "properties": {
+           "city": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "city"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get current weather for a city\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nWhat's the weather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n{\"temperature\": 21, \"unit\": \"celsius\"}\n</tool_response><|im_end|>\n<|im_start|>user\nThanks.<|im_end|>\n<|im_start|>assistant\n"
+    },
+    {
+     "name": "thinking_off",
+     "vars": {
+      "messages": [
+       {
+        "role": "system",
+        "content": "You are a helpful assistant. Answer briefly."
+       },
+       {
+        "role": "user",
+        "content": "What is the capital of France?"
+       },
+       {
+        "role": "assistant",
+        "content": "Paris is the capital of France."
+       },
+       {
+        "role": "user",
+        "content": "And what is its population?"
+       }
+      ],
+      "add_generation_prompt": true,
+      "enable_thinking": false
+     },
+     "expected": "<|im_start|>system\nYou are a helpful assistant. Answer briefly.<|im_end|>\n<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\nParis is the capital of France.<|im_end|>\n<|im_start|>user\nAnd what is its population?<|im_end|>\n<|im_start|>assistant\n"
+    }
+   ]
+  },
+  {
+   "name": "snippet_and_or_operand",
+   "kind": "snippet",
+   "template": "{{ 1 and \"b\" }}|{{ 0 or \"z\" }}|{{ \"\" and \"x\" }}|{{ \"a\" or 2 }}|{{ 3 and 4 }}|{{ 0 and 4 }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "b|z||a|4|0"
+    }
+   ]
+  },
+  {
+   "name": "snippet_eq_ne",
+   "kind": "snippet",
+   "template": "{{ 1 == 1 }}|{{ 1 == 1.0 }}|{{ true == 1 }}|{{ \"1\" == 1 }}|{{ none == 0 }}|{{ 1 != 2 }}|{{ \"a\" == \"a\" }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "True|True|True|False|False|True|True"
+    }
+   ]
+  },
+  {
+   "name": "snippet_ordered_comparisons",
+   "kind": "snippet",
+   "template": "{{ 1 < 2 }}|{{ 2 <= 2 }}|{{ \"b\" > \"a\" }}|{{ 3 >= 4 }}|{{ 1.5 < 2 }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "True|True|True|False|True"
+    }
+   ]
+  },
+  {
+   "name": "snippet_membership",
+   "kind": "snippet",
+   "template": "{{ \"b\" in \"abc\" }}|{{ 2 in lst }}|{{ \"x\" not in \"abc\" }}|{{ \"k\" in obj }}|{{ 4 in lst }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {
+      "lst": [
+       1,
+       2,
+       3
+      ],
+      "obj": {
+       "k": 1
+      }
+     },
+     "expected": "True|True|True|True|False"
+    }
+   ]
+  },
+  {
+   "name": "snippet_concat_tilde",
+   "kind": "snippet",
+   "template": "{{ \"x\" ~ 1 ~ true ~ none }}|{{ \"v=\" ~ 1.5 }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "x1TrueNone|v=1.5"
+    }
+   ]
+  },
+  {
+   "name": "snippet_arith_int64",
+   "kind": "snippet",
+   "template": "{{ 1 + 2 }}|{{ 10 - 3 }}|{{ 1 + 1.5 }}|{{ 2 - 0.5 }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "3|7|2.5|1.5"
+    }
+   ]
+  },
+  {
+   "name": "snippet_set_local",
+   "kind": "snippet",
+   "template": "{% set x = 7 %}{{ x }}{{ x + 1 }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "78"
+    }
+   ]
+  },
+  {
+   "name": "snippet_namespace_attr_set",
+   "kind": "snippet",
+   "template": "{% set ns = namespace(n=1) %}{% set ns.n = ns.n + 41 %}{{ ns.n }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "42"
+    }
+   ]
+  },
+  {
+   "name": "snippet_tojson_order_utf8",
+   "kind": "snippet",
+   "template": "{{ obj | tojson }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {
+      "obj": {
+       "b": 1,
+       "a": "ü",
+       "n": [
+        1,
+        2
+       ],
+       "s": "a'b"
+      }
+     },
+     "expected": "{\"b\": 1, \"a\": \"ü\", \"n\": [1, 2], \"s\": \"a'b\"}"
+    }
+   ]
+  },
+  {
+   "name": "snippet_ternary_undefined",
+   "kind": "snippet",
+   "template": "{{ \"y\" if flag else \"n\" }}|{{ \"z\" if missing_var else \"n\" }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {
+      "flag": true
+     },
+     "expected": "y|n"
+    }
+   ]
+  },
+  {
+   "name": "snippet_filters_length_string",
+   "kind": "snippet",
+   "template": "{{ \"abc\" | length }}|{{ 42 | string }}|{{ 3.5 | string }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "3|42|3.5"
+    }
+   ]
+  },
+  {
+   "name": "snippet_loop_index",
+   "kind": "snippet",
+   "template": "{% for i in lst %}{{ loop.index0 }},{% endfor %}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {
+      "lst": [
+       1,
+       2,
+       3
+      ]
+     },
+     "expected": "0,1,2,"
+    }
+   ]
+  },
+  {
+   "name": "snippet_tests_defined_none",
+   "kind": "snippet",
+   "template": "{{ z is defined }}|{{ y is defined }}|{{ x is none }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {
+      "x": null,
+      "z": 1
+     },
+     "expected": "True|False|True"
+    }
+   ]
+  },
+  {
+   "name": "snippet_strftime_fixed_clock",
+   "kind": "snippet",
+   "template": "Today: {{ strftime_now(\"%d %B %Y\") }}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "Today: 01 January 2026"
+    }
+   ]
+  },
+  {
+   "name": "snippet_whitespace_control",
+   "kind": "snippet",
+   "template": "{% if true %}\n  hello\n{% endif %}\n{%- if true %}\nworld{% endif %}",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "  hello\nworld"
+    }
+   ]
+  },
+  {
+   "name": "snippet_generation_tag",
+   "kind": "snippet",
+   "template": "A{% generation %}B{{ \"C\" }}{% endgeneration %}D",
+   "cases": [
+    {
+     "name": "render",
+     "vars": {},
+     "expected": "ABCD"
+    }
+   ]
+  }
+ ]
+}

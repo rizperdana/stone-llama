@@ -111,6 +111,15 @@ and pulls an analogous set of NVIDIA packages with a `cu12` suffix
 same proprietary EULA terms). Pinned versions and hashes are in
 `internal/setup/requirements-cu12.lock`.
 
+## Site assets
+
+Static assets that ship in-repo for the GitHub Pages site (`site/`) — these are
+bundled files, not fetched by `setup`:
+
+| Component | How it arrives | License | Evidence |
+|---|---|---|---|
+| Martian Mono (latin variable, wght 400–700, wdth 75–112.5%) | Ships self-hosted in-repo at `site/assets/fonts/martian-mono-latin-var.woff2` (37.6 KB); `@font-face` declared in `site/assets/tokens.css`; preloaded by `site/index.html` | **SIL Open Font License 1.1** | Full OFL text at `site/assets/fonts/LICENSE.txt` (not reproduced here). Upstream: `github.com/evilmartians/mono`. |
+
 ## Still open
 
 Nothing. All three previously-unverified items — **uv** (Apache-2.0 OR MIT),

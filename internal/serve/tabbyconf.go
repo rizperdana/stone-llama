@@ -38,6 +38,13 @@ type TabbyConfig struct {
 	// the boot (model-less) render stays byte-identical.
 	ChunkSize int
 	Warmup    bool
+	// Speculative decoding, load-time tuning like ChunkSize/Warmup. The
+	// whole draft_model block is omitted unless DraftMode is set; the two
+	// numbers are omitted at 0 so the backend's own default applies.
+	// Never rendered: draft_model_dir — stone-llama ships no draft weights.
+	DraftMode      string
+	NgramMatchMin  int
+	DraftNumTokens int
 }
 
 // RenderTabbyYAML emits the generated config passed to
@@ -68,6 +75,17 @@ func RenderTabbyYAML(c TabbyConfig) string {
 	if c.Warmup {
 		loadLines += "  warmup: true\n"
 	}
+	// draft_model: same omit-when-unset rule as the load keys above.
+	draftLines := ""
+	if c.DraftMode != "" {
+		draftLines = "\ndraft_model:\n  draft_mode: " + q(c.DraftMode) + "\n"
+		if c.NgramMatchMin > 0 {
+			draftLines += fmt.Sprintf("  ngram_match_min: %d\n", c.NgramMatchMin)
+		}
+		if c.DraftNumTokens > 0 {
+			draftLines += fmt.Sprintf("  draft_num_tokens: %d\n", c.DraftNumTokens)
+		}
+	}
 	return fmt.Sprintf(`network:
   host: %s
   port: %d
@@ -79,9 +97,9 @@ model:
 %s%s%s  tool_format: auto
   gpu_split_auto: true
   autosplit_reserve: [96]
-`, q(c.Host), c.Port,
+%s`, q(c.Host), c.Port,
 		q(c.ModelDir), q(c.ModelName),
-		ctxLines, modeLine, loadLines)
+		ctxLines, modeLine, loadLines, draftLines)
 }
 
 // --- attach convenience (TabbyAPI-specific seam lives here, per the seam

@@ -20,16 +20,42 @@ type Autofit struct {
 	OverheadMiB    int  `json:"overhead_mib"`
 	MinCtx         int  `json:"min_ctx"`
 	ChunkSize      int  `json:"chunk_size"` // TabbyAPI load chunk override: 0 auto (fit decides), else 512-4096
+	// Speculative drafting, all load-time tuning like ChunkSize. "" is the
+	// backend's own default and renders no draft_model block at all.
+	DraftMode      string `json:"draft_mode"`       // model | disabled | mtp | ngram
+	NgramMatchMin  int    `json:"ngram_match_min"`  // ngram_match_min: 0 backend default (2), else >= 1
+	DraftNumTokens int    `json:"draft_num_tokens"` // tokens drafted per iteration: 0 backend default, else >= 1
 }
 
 type Config struct {
-	ModelsDir       string  `json:"models_dir"`
-	Host            string  `json:"host"`
-	Port            int     `json:"port"`
-	Autofit         Autofit `json:"autofit"`
-	RuntimeDir      string  `json:"runtime_dir"`
-	UpstreamKeyFile string  `json:"upstream_key_file"` // attach-mode upstream Bearer source (file path only; secrets are not stored in config.json)
-	Upstream        string  `json:"upstream"`          // auto-attach probe address (default http://127.0.0.1:5002)
+	ModelsDir       string            `json:"models_dir"`
+	Host            string            `json:"host"`
+	Port            int               `json:"port"`
+	Autofit         Autofit           `json:"autofit"`
+	RuntimeDir      string            `json:"runtime_dir"`
+	UpstreamKeyFile string            `json:"upstream_key_file"` // attach-mode upstream Bearer source (file path only; secrets are not stored in config.json)
+	Upstream        string            `json:"upstream"`          // auto-attach probe address (default http://127.0.0.1:5002)
+	EngineEnv       map[string]string `json:"engine_env"`        // extra environment for the supervised backend child process; nil = none
+	// Backend selects the supervised inference engine: "" or "llama" is
+	// llama-server (llama.cpp) over GGUF (the default), "tabby" is
+	// TabbyAPI + ExLlamaV3. An unknown name is refused at
+	// serve time, never coerced to the default.
+	Backend string `json:"backend"`
+	// DeviceBudgetMiB caps the GGUF weights a llama spawn may load
+	// (0 = no check). Weights only — KV cache and runtime overhead are
+	// use. Tabby ignores it.
+	DeviceBudgetMiB int `json:"backend_device_budget_mib"`
+	// KeepAliveSeconds holds the loaded model this many seconds after the
+	// last client exits; 0 or absent unloads immediately (the default —
+	// a held model cannot coexist with a game on a 4 GiB card).
+	KeepAliveSeconds int `json:"keepalive_seconds"`
+
+	// LlamaCtx is the context window (tokens) passed to the llama/GGUF
+	// backend. 0 = the measured safe default for the reference 4 GB card
+	// (8192 — see internal/serve/llama_backend.go). A larger value widens
+	// long-prompt capacity but measurably slows decode; the chosen value
+	// must fit VRAM. Non-zero values are passed to llama-server as -c.
+	LlamaCtx int `json:"llama_ctx"`
 }
 
 // Default returns the built-in configuration. Missing file fields keep
@@ -46,7 +72,11 @@ func Default() Config {
 			CtxHeadroomMiB: 512,
 			OverheadMiB:    128,
 			MinCtx:         4096,
+			DraftMode:      "",
+			NgramMatchMin:  2,
+			DraftNumTokens: 0,
 		},
+		LlamaCtx: 8192,
 		Upstream: "http://127.0.0.1:5002",
 	}
 
@@ -110,6 +140,9 @@ func Load() (Config, error) {
 	if v := os.Getenv("STONE_LLAMA_UPSTREAM_KEY_FILE"); v != "" {
 		cfg.UpstreamKeyFile = v
 	}
+	if v := os.Getenv("STONE_LLAMA_BACKEND"); v != "" {
+		cfg.Backend = v
+	}
 	// schemeless upstream address (the documented attach form) wins a
 	// default scheme here so the rest of the code can treat Upstream as a URL
 	if cfg.Upstream != "" && !strings.Contains(cfg.Upstream, "://") {
@@ -118,11 +151,16 @@ func Load() (Config, error) {
 	if c := cfg.Autofit.ChunkSize; c != 0 && (c < 512 || c > 4096) {
 		return Config{}, fmt.Errorf("autofit.chunk_size must be 0 (auto) or 512-4096 (got %d) — remove it to let the fit decide", c)
 	}
+	if c := cfg.LlamaCtx; c != 0 && (c < 512 || c > 1048576) {
+		return Config{}, fmt.Errorf("llama_ctx must be 0 (the measured default) or 512-1048576 (got %d)", c)
+	}
+	if c := cfg.KeepAliveSeconds; c < 0 {
+		return Config{}, fmt.Errorf("keepalive_seconds must be >= 0 (got %d)", c)
+	}
 	cfg.ModelsDir = expandHome(cfg.ModelsDir)
 	cfg.RuntimeDir = expandHome(cfg.RuntimeDir)
 	return cfg, nil
 }
-
 func expandHome(p string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
